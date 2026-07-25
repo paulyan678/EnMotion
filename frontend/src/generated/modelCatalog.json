@@ -1,0 +1,1667 @@
+{
+  "compat": {
+    "legacy_model_ids": {
+      "deepseek-v4-flash": "newapi-chat/deepseek-v4-flash#chat",
+      "deepseek-v4-pro": "newapi-chat/deepseek-v4-pro#chat",
+      "doubao-seedance-2-0-260128": "seedance/doubao-seedance-2-0-260128#video",
+      "doubao-seedance-2-0-fast-260128": "seedance/doubao-seedance-2-0-fast-260128#video",
+      "doubao-seedance-2-0-mini-260615": "seedance/doubao-seedance-2-0-mini-260615#video",
+      "gpt-image-2": "gpt-image/gpt-image-2#image",
+      "qwen3.7-max": "newapi-chat/qwen3.7-max#chat"
+    }
+  },
+  "defaults": {
+    "canonical_model_settings": {
+      "chat_model": "newapi-chat/deepseek-v4-flash#chat",
+      "image_model": "gpt-image/gpt-image-2#image",
+      "video_model": "seedance/doubao-seedance-2-0-fast-260128#video"
+    },
+    "model_settings": {
+      "chat_model": "deepseek-v4-flash",
+      "image_model": "gpt-image-2",
+      "video_model": "doubao-seedance-2-0-fast-260128"
+    }
+  },
+  "families": {
+    "gpt-image": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_GPT_IMAGE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "display_name": "GPT Image",
+      "docs": {
+        "official_snapshot_ids": [
+          "newapi/gpt-image-2/2026-07-18"
+        ]
+      },
+      "family": "gpt-image",
+      "models": [
+        "gpt-image-2"
+      ],
+      "provider": "newapi",
+      "routing_prefixes": [
+        "gpt-image-"
+      ],
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "t2i",
+        "i2i"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "openai_multipart_image"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "newapi-chat": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_FLASH_API_KEY",
+          "NEWAPI_QWEN_37_MAX_API_KEY",
+          "NEWAPI_DEEPSEEK_V4_PRO_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "display_name": "New API Chat",
+      "docs": {
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "family": "newapi-chat",
+      "models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "qwen3.7-max"
+      ],
+      "provider": "newapi",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "chat"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "seedance": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_API_KEY",
+          "NEWAPI_SEEDANCE_2_FAST_API_KEY",
+          "NEWAPI_SEEDANCE_2_MINI_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "display_name": "Seedance",
+      "docs": {
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "family": "seedance",
+      "models": [
+        "doubao-seedance-2-0-260128",
+        "doubao-seedance-2-0-fast-260128",
+        "doubao-seedance-2-0-mini-260615"
+      ],
+      "provider": "newapi",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "t2v",
+        "i2v"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    }
+  },
+  "model_lines": {
+    "gpt-image/gpt-image-2": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_GPT_IMAGE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "GPT Image 2 through New API for text-to-image generation and image editing",
+      "display_name": "GPT Image 2",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/gpt-image-2"
+        ],
+        "official_snapshot_ids": [
+          "newapi/gpt-image-2/2026-07-18"
+        ]
+      },
+      "family": "gpt-image",
+      "id": "gpt-image/gpt-image-2",
+      "legacy_model_ids": [
+        "gpt-image-2"
+      ],
+      "modes": [
+        "gpt-image/gpt-image-2#image"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "gpt-image-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "t2i",
+        "i2i"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "openai_multipart_image"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "newapi-chat/deepseek-v4-flash": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_FLASH_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Fast DeepSeek V4 chat model through New API",
+      "display_name": "DeepSeek V4 Flash",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "family": "newapi-chat",
+      "id": "newapi-chat/deepseek-v4-flash",
+      "legacy_model_ids": [
+        "deepseek-v4-flash"
+      ],
+      "modes": [
+        "newapi-chat/deepseek-v4-flash#chat"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "chat"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "newapi-chat/deepseek-v4-pro": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_PRO_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "High-capability DeepSeek V4 chat model through New API",
+      "display_name": "DeepSeek V4 Pro",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "family": "newapi-chat",
+      "id": "newapi-chat/deepseek-v4-pro",
+      "legacy_model_ids": [
+        "deepseek-v4-pro"
+      ],
+      "modes": [
+        "newapi-chat/deepseek-v4-pro#chat"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "chat"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "newapi-chat/qwen3.7-max": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_QWEN_37_MAX_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Qwen 3.7 Max chat model through New API",
+      "display_name": "Qwen 3.7 Max",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "family": "newapi-chat",
+      "id": "newapi-chat/qwen3.7-max",
+      "legacy_model_ids": [
+        "qwen3.7-max"
+      ],
+      "modes": [
+        "newapi-chat/qwen3.7-max#chat"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "chat"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "seedance/doubao-seedance-2-0-260128": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Seedance 2.0 through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "family": "seedance",
+      "id": "seedance/doubao-seedance-2-0-260128",
+      "legacy_model_ids": [
+        "doubao-seedance-2-0-260128"
+      ],
+      "modes": [
+        "seedance/doubao-seedance-2-0-260128#video"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "t2v",
+        "i2v"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "seedance/doubao-seedance-2-0-fast-260128": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_FAST_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0 Fast",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "family": "seedance",
+      "id": "seedance/doubao-seedance-2-0-fast-260128",
+      "legacy_model_ids": [
+        "doubao-seedance-2-0-fast-260128"
+      ],
+      "modes": [
+        "seedance/doubao-seedance-2-0-fast-260128#video"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "t2v",
+        "i2v"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    },
+    "seedance/doubao-seedance-2-0-mini-260615": {
+      "backend_env_key": null,
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_MINI_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0 Mini",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "family": "seedance",
+      "id": "seedance/doubao-seedance-2-0-mini-260615",
+      "legacy_model_ids": [
+        "doubao-seedance-2-0-mini-260615"
+      ],
+      "modes": [
+        "seedance/doubao-seedance-2-0-mini-260615#video"
+      ],
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "supported_modalities": [
+        "t2v",
+        "i2v"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      }
+    }
+  },
+  "models": {
+    "deepseek-v4-flash": {
+      "backend_env_key": null,
+      "capabilities": [
+        "chat"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_FLASH_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Fast DeepSeek V4 chat model through New API",
+      "display_name": "DeepSeek V4 Flash",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "newapi-chat",
+      "id": "deepseek-v4-flash",
+      "inputs": {},
+      "params": {},
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 100,
+        "recommended": true,
+        "selection_group": "chat",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "deepseek-v4-pro": {
+      "backend_env_key": null,
+      "capabilities": [
+        "chat"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_PRO_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "High-capability DeepSeek V4 chat model through New API",
+      "display_name": "DeepSeek V4 Pro",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "newapi-chat",
+      "id": "deepseek-v4-pro",
+      "inputs": {},
+      "params": {},
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 80,
+        "recommended": false,
+        "selection_group": "chat",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "doubao-seedance-2-0-260128": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v",
+        "i2v"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Seedance 2.0 through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 15,
+        "min": 4,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "doubao-seedance-2-0-260128",
+      "inputs": {
+        "reference_images": {
+          "max": 1,
+          "reference_type": "image"
+        }
+      },
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1"
+          ]
+        },
+        "resolution": {
+          "default": "720p",
+          "options": [
+            "720p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 90,
+        "recommended": false,
+        "selection_group": "video",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "doubao-seedance-2-0-fast-260128": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v",
+        "i2v"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_FAST_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0 Fast",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 15,
+        "min": 4,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "doubao-seedance-2-0-fast-260128",
+      "inputs": {
+        "reference_images": {
+          "max": 1,
+          "reference_type": "image"
+        }
+      },
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1"
+          ]
+        },
+        "resolution": {
+          "default": "720p",
+          "options": [
+            "720p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 100,
+        "recommended": true,
+        "selection_group": "video",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "doubao-seedance-2-0-mini-260615": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v",
+        "i2v"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_MINI_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0 Mini",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 15,
+        "min": 4,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "doubao-seedance-2-0-mini-260615",
+      "inputs": {
+        "reference_images": {
+          "max": 1,
+          "reference_type": "image"
+        }
+      },
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1"
+          ]
+        },
+        "resolution": {
+          "default": "720p",
+          "options": [
+            "720p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 80,
+        "recommended": false,
+        "selection_group": "video",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "gpt-image-2": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2i",
+        "i2i"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_GPT_IMAGE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "GPT Image 2 through New API for text-to-image generation and image editing",
+      "display_name": "GPT Image 2",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/gpt-image-2"
+        ],
+        "official_snapshot_ids": [
+          "newapi/gpt-image-2/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "gpt-image",
+      "id": "gpt-image-2",
+      "inputs": {},
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "quality": {
+          "default": "high",
+          "options": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "seed": false,
+        "size": {
+          "default": "1024x1024",
+          "options": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536"
+          ]
+        },
+        "watermark": false
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "gpt-image-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "openai_multipart_image"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 100,
+        "recommended": true,
+        "selection_group": "image",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "qwen3.7-max": {
+      "backend_env_key": null,
+      "capabilities": [
+        "chat"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_QWEN_37_MAX_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Qwen 3.7 Max chat model through New API",
+      "display_name": "Qwen 3.7 Max",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "newapi-chat",
+      "id": "qwen3.7-max",
+      "inputs": {},
+      "params": {},
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 90,
+        "recommended": false,
+        "selection_group": "chat",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    }
+  },
+  "modes": {
+    "gpt-image/gpt-image-2#image": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2i",
+        "i2i"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_GPT_IMAGE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "GPT Image 2 through New API for text-to-image generation and image editing",
+      "display_name": "GPT Image 2",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/gpt-image-2"
+        ],
+        "official_snapshot_ids": [
+          "newapi/gpt-image-2/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "gpt-image",
+      "id": "gpt-image/gpt-image-2#image",
+      "inputs": {},
+      "legacy_model_id": "gpt-image-2",
+      "mode": "image",
+      "model_line_id": "gpt-image/gpt-image-2",
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "quality": {
+          "default": "high",
+          "options": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "seed": false,
+        "size": {
+          "default": "1024x1024",
+          "options": [
+            "1024x1024",
+            "1536x1024",
+            "1024x1536"
+          ]
+        },
+        "watermark": false
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "gpt-image-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "openai_multipart_image"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 100,
+        "recommended": true,
+        "selection_group": "image",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "newapi-chat/deepseek-v4-flash#chat": {
+      "backend_env_key": null,
+      "capabilities": [
+        "chat"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_FLASH_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Fast DeepSeek V4 chat model through New API",
+      "display_name": "DeepSeek V4 Flash",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "newapi-chat",
+      "id": "newapi-chat/deepseek-v4-flash#chat",
+      "inputs": {},
+      "legacy_model_id": "deepseek-v4-flash",
+      "mode": "chat",
+      "model_line_id": "newapi-chat/deepseek-v4-flash",
+      "params": {},
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 100,
+        "recommended": true,
+        "selection_group": "chat",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "newapi-chat/deepseek-v4-pro#chat": {
+      "backend_env_key": null,
+      "capabilities": [
+        "chat"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_DEEPSEEK_V4_PRO_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "High-capability DeepSeek V4 chat model through New API",
+      "display_name": "DeepSeek V4 Pro",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "newapi-chat",
+      "id": "newapi-chat/deepseek-v4-pro#chat",
+      "inputs": {},
+      "legacy_model_id": "deepseek-v4-pro",
+      "mode": "chat",
+      "model_line_id": "newapi-chat/deepseek-v4-pro",
+      "params": {},
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 80,
+        "recommended": false,
+        "selection_group": "chat",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "newapi-chat/qwen3.7-max#chat": {
+      "backend_env_key": null,
+      "capabilities": [
+        "chat"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_QWEN_37_MAX_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Qwen 3.7 Max chat model through New API",
+      "display_name": "Qwen 3.7 Max",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/chat-completions"
+        ],
+        "official_snapshot_ids": [
+          "newapi/chat-completions/2026-07-18"
+        ]
+      },
+      "duration": null,
+      "family": "newapi-chat",
+      "id": "newapi-chat/qwen3.7-max#chat",
+      "inputs": {},
+      "legacy_model_id": "qwen3.7-max",
+      "mode": "chat",
+      "model_line_id": "newapi-chat/qwen3.7-max",
+      "params": {},
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "deepseek-v4-",
+        "qwen3.7-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "unsupported"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 90,
+        "recommended": false,
+        "selection_group": "chat",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "global_settings"
+        ]
+      }
+    },
+    "seedance/doubao-seedance-2-0-260128#video": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v",
+        "i2v"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Seedance 2.0 through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 15,
+        "min": 4,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "seedance/doubao-seedance-2-0-260128#video",
+      "inputs": {
+        "reference_images": {
+          "max": 1,
+          "reference_type": "image"
+        }
+      },
+      "legacy_model_id": "doubao-seedance-2-0-260128",
+      "mode": "video",
+      "model_line_id": "seedance/doubao-seedance-2-0-260128",
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1"
+          ]
+        },
+        "resolution": {
+          "default": "720p",
+          "options": [
+            "720p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 90,
+        "recommended": false,
+        "selection_group": "video",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "seedance/doubao-seedance-2-0-fast-260128#video": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v",
+        "i2v"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_FAST_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0 Fast",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 15,
+        "min": 4,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "seedance/doubao-seedance-2-0-fast-260128#video",
+      "inputs": {
+        "reference_images": {
+          "max": 1,
+          "reference_type": "image"
+        }
+      },
+      "legacy_model_id": "doubao-seedance-2-0-fast-260128",
+      "mode": "video",
+      "model_line_id": "seedance/doubao-seedance-2-0-fast-260128",
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1"
+          ]
+        },
+        "resolution": {
+          "default": "720p",
+          "options": [
+            "720p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 100,
+        "recommended": true,
+        "selection_group": "video",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    },
+    "seedance/doubao-seedance-2-0-mini-260615#video": {
+      "backend_env_key": null,
+      "capabilities": [
+        "t2v",
+        "i2v"
+      ],
+      "credential_sources": {
+        "newapi": [
+          "NEWAPI_SEEDANCE_2_MINI_API_KEY"
+        ]
+      },
+      "default_backend": "newapi",
+      "description": "Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "display_name": "Seedance 2.0 Mini",
+      "docs": {
+        "context_hub_doc_ids": [
+          "newapi/seedance-2.0"
+        ],
+        "official_snapshot_ids": [
+          "newapi/seedance-2.0/2026-07-18"
+        ]
+      },
+      "duration": {
+        "default": 5,
+        "max": 15,
+        "min": 4,
+        "step": 1,
+        "type": "slider"
+      },
+      "family": "seedance",
+      "id": "seedance/doubao-seedance-2-0-mini-260615#video",
+      "inputs": {
+        "reference_images": {
+          "max": 1,
+          "reference_type": "image"
+        }
+      },
+      "legacy_model_id": "doubao-seedance-2-0-mini-260615",
+      "mode": "video",
+      "model_line_id": "seedance/doubao-seedance-2-0-mini-260615",
+      "params": {
+        "negativePrompt": false,
+        "promptExtend": false,
+        "ratio": {
+          "default": "16:9",
+          "options": [
+            "16:9",
+            "9:16",
+            "1:1"
+          ]
+        },
+        "resolution": {
+          "default": "720p",
+          "options": [
+            "720p"
+          ]
+        },
+        "seed": true,
+        "watermark": true
+      },
+      "provider": "newapi",
+      "release_stage": "stable",
+      "routing_prefixes": [
+        "doubao-seedance-"
+      ],
+      "runtime": {
+        "newapi": {
+          "gateway": "newapi"
+        }
+      },
+      "status": "active",
+      "supported_backends": [
+        "newapi"
+      ],
+      "transport": {
+        "audio_input_mode": {
+          "newapi": "unsupported"
+        },
+        "image_input_mode": {
+          "newapi": "newapi_image_url_or_data"
+        },
+        "reference_video_input_mode": {
+          "newapi": "unsupported"
+        }
+      },
+      "ui": {
+        "badges": [],
+        "order": 80,
+        "recommended": false,
+        "selection_group": "video",
+        "visible_in": [
+          "project_settings",
+          "series_settings",
+          "video_sidebar",
+          "global_settings"
+        ]
+      }
+    }
+  },
+  "version": 1
+}

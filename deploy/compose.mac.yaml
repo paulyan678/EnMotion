@@ -1,0 +1,18 @@
+services:
+  api:
+    environment:
+      ENMOTION_COOKIE_SECURE: "false"
+      ENMOTION_ALLOWED_ORIGINS: ${ENMOTION_ALLOWED_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+
+  worker:
+    environment:
+      ENMOTION_COOKIE_SECURE: "false"
+      ENMOTION_ALLOWED_ORIGINS: ${ENMOTION_ALLOWED_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+
+  edge:
+    environment:
+      ENMOTION_SITE_ADDRESS: http://:8080
+      ENMOTION_REDIRECT_ADDRESS: http://localhost:65535
+      ENMOTION_REDIRECT_TARGET: https://localhost
+    ports:
+      - "${ENMOTION_BIND_HOST:-127.0.0.1}:${ENMOTION_HTTP_PORT:-8080}:8080"

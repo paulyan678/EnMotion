@@ -1,0 +1,3 @@
+# Lightweight dependencies used by the cross-platform desktop contract tests.
+# Keep native packaging-only dependencies in requirements-desktop.txt.
+fastapi==0.139.2

@@ -1,0 +1,16 @@
+{
+  "releases": [
+    {
+      "version": "1.0.0",
+      "platform": "macos-arm64",
+      "channel": "stable",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 123456789,
+      "published_at": "2026-07-24T00:00:00Z",
+      "signature": "replace-with-tauri-minisign-signature",
+      "minimum_supported_version": "1.0.0",
+      "notes": "Initial EnMotion release",
+      "source_url": "https://github.com/paulyan678/EnMotion/releases/download/desktop-v1.0.0/EnMotion-1.0.0-macOS-arm64.app.tar.gz"
+    }
+  ]
+}

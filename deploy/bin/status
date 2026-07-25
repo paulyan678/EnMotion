@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+mode=${ENMOTION_DEPLOY_MODE:-mac}
+env_file=${ENMOTION_ENV_FILE:-}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode) [ "$#" -ge 2 ] || exit 2; mode=$2; shift 2 ;;
+        --env-file) [ "$#" -ge 2 ] || exit 2; env_file=$2; shift 2 ;;
+        -h|--help)
+            printf 'Usage: deploy/bin/status [--mode mac|production] [--env-file PATH]\n'
+            exit 0
+            ;;
+        *) exit 2 ;;
+    esac
+done
+
+export ENMOTION_DEPLOY_MODE=$mode
+[ -z "$env_file" ] || export ENMOTION_ENV_FILE=$env_file
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/_lib.sh"
+
+require_command docker
+require_env_file
+compose ps
+
+if [ "$DEPLOY_MODE" = mac ]; then
+    info "URL: http://127.0.0.1:$(env_value ENMOTION_HTTP_PORT)"
+else
+    info "URL: https://$(env_value ENMOTION_DOMAIN)"
+fi

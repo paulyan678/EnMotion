@@ -1,0 +1,17 @@
+[Unit]
+Description=Create an encrypted online backup of the EnMotion control database
+After=enmotion-control.service
+
+[Service]
+Type=oneshot
+User=enmotion-control
+Group=enmotion-control
+WorkingDirectory=/opt/enmotion-control
+EnvironmentFile=/etc/enmotion-control.env
+ExecStart=/opt/enmotion-control/.venv/bin/python -m app.backup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/enmotion-control /var/backups/enmotion-control
+UMask=0077

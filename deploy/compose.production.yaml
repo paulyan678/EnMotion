@@ -1,0 +1,34 @@
+services:
+  database:
+    restart: always
+
+  redis:
+    restart: always
+
+  api:
+    restart: always
+    environment:
+      ENMOTION_COOKIE_SECURE: "true"
+      ENMOTION_ALLOWED_ORIGINS: ${ENMOTION_ALLOWED_ORIGINS:?Set ENMOTION_ALLOWED_ORIGINS to https://your-domain in deploy/.env.server}
+      ENMOTION_PUBLIC_BASE_URL: https://${ENMOTION_DOMAIN:?Set ENMOTION_DOMAIN in deploy/.env.server}
+
+  worker:
+    restart: always
+    environment:
+      ENMOTION_COOKIE_SECURE: "true"
+      ENMOTION_ALLOWED_ORIGINS: ${ENMOTION_ALLOWED_ORIGINS:?Set ENMOTION_ALLOWED_ORIGINS to https://your-domain in deploy/.env.server}
+      ENMOTION_PUBLIC_BASE_URL: https://${ENMOTION_DOMAIN:?Set ENMOTION_DOMAIN in deploy/.env.server}
+
+  frontend:
+    restart: always
+
+  edge:
+    restart: always
+    environment:
+      ENMOTION_SITE_ADDRESS: ${ENMOTION_DOMAIN:?Set ENMOTION_DOMAIN in deploy/.env.server}:8443
+      ENMOTION_REDIRECT_ADDRESS: http://${ENMOTION_DOMAIN:?Set ENMOTION_DOMAIN in deploy/.env.server}:8080
+      ENMOTION_REDIRECT_TARGET: https://${ENMOTION_DOMAIN:?Set ENMOTION_DOMAIN in deploy/.env.server}
+    ports:
+      - "${ENMOTION_BIND_HOST:-0.0.0.0}:80:8080"
+      - "${ENMOTION_BIND_HOST:-0.0.0.0}:443:8443"
+      - "${ENMOTION_BIND_HOST:-0.0.0.0}:443:8443/udp"

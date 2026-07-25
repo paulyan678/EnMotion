@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+case "${1:-api}" in
+    api)
+        shift || true
+        exec python -m uvicorn "${ENMOTION_API_APP:-src.apps.comic_gen.api:app}" \
+            --host 0.0.0.0 \
+            --port "${ENMOTION_API_PORT:-17177}" \
+            --proxy-headers \
+            --forwarded-allow-ips "${ENMOTION_FORWARDED_ALLOW_IPS:-*}" \
+            "$@"
+        ;;
+    migrate)
+        shift || true
+        exec python -m src.apps.server.cli migrate "$@"
+        ;;
+    check-backup-compatibility|check-database-compatibility)
+        exec python -m src.apps.server.cli "$@"
+        ;;
+    bootstrap-admin)
+        shift || true
+        exec python -m src.apps.server.cli bootstrap-admin "$@"
+        ;;
+    worker)
+        shift || true
+        : "${ENMOTION_WORKER_COMMAND:=python -m src.apps.server.worker}"
+        touch /tmp/enmotion-worker-ready
+        exec /bin/sh -c "$ENMOTION_WORKER_COMMAND" enmotion-worker "$@"
+        ;;
+    shell)
+        shift || true
+        exec /bin/sh "$@"
+        ;;
+    *)
+        exec "$@"
+        ;;
+esac

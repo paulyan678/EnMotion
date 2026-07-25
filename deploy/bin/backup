@@ -1,0 +1,195 @@
+#!/bin/sh
+set -eu
+
+mode=${ENMOTION_DEPLOY_MODE:-mac}
+env_file=${ENMOTION_ENV_FILE:-}
+output_dir=
+passphrase_file=
+
+usage() {
+    printf '%s\n' \
+        'Usage: deploy/bin/backup [--mode mac|production] [--env-file PATH]' \
+        '                         [--output DIR] [--passphrase-file PATH]' \
+        '' \
+        'The state archive never includes deploy/.env.server. app-data.tar.gz may' \
+        'contain provider credentials saved through the UI; encrypt exported backups.'
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; mode=$2; shift 2 ;;
+        --env-file) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; env_file=$2; shift 2 ;;
+        --output) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; output_dir=$2; shift 2 ;;
+        --passphrase-file) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; passphrase_file=$2; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+
+export ENMOTION_DEPLOY_MODE=$mode
+[ -z "$env_file" ] || export ENMOTION_ENV_FILE=$env_file
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/_lib.sh"
+
+require_command docker
+require_command tar
+validate_env
+
+if [ "$DEPLOY_MODE" = production ]; then
+    [ -n "$passphrase_file" ] || die "production backups require --passphrase-file"
+fi
+if [ -n "$passphrase_file" ]; then
+    require_private_file "$passphrase_file" "backup passphrase file"
+fi
+
+[ -n "$output_dir" ] || output_dir=$APP_ROOT/backups
+mkdir -p "$output_dir"
+BACKUP_ROOT=$(CDPATH= cd -- "$output_dir" && pwd)
+lock_dir=$DEPLOY_DIR/.lifecycle.lock
+staging=
+partial_archive=
+partial_encrypted_archive=
+resume_services=
+services_stopped=false
+
+timestamp=$(file_timestamp)
+archive_name=enmotion-state-$timestamp.tar.gz
+if [ -n "$passphrase_file" ]; then
+    final_archive=$BACKUP_ROOT/$archive_name.enc
+else
+    final_archive=$BACKUP_ROOT/$archive_name
+fi
+
+archive_exists() {
+    [ -e "$1" ] || [ -L "$1" ]
+}
+
+refuse_existing_archive() {
+    if archive_exists "$1"; then
+        die "refusing to overwrite existing state backup: $1"
+    fi
+}
+
+publish_archive() {
+    publish_source=$1
+    publish_target=$2
+
+    refuse_existing_archive "$publish_target"
+    if ! mv -n -- "$publish_source" "$publish_target"; then
+        die "could not publish state backup: $publish_target"
+    fi
+    # BSD and GNU mv -n both leave the source in place when another process
+    # wins the destination-name race, but may still return success.
+    if archive_exists "$publish_source"; then
+        die "refusing to overwrite existing state backup: $publish_target"
+    fi
+}
+
+refuse_existing_archive "$final_archive"
+
+cleanup() {
+    exit_code=$?
+    trap - EXIT INT TERM
+    if [ "$services_stopped" = true ] && [ -n "$resume_services" ]; then
+        # Service names come only from Compose's fixed service set.
+        # shellcheck disable=SC2086
+        compose up -d --wait $resume_services >/dev/null 2>&1 || \
+            warn "backup could not restart every application service"
+    fi
+    case "${staging:-}" in
+        "$BACKUP_ROOT"/.enmotion-state.*) rm -rf -- "$staging" ;;
+    esac
+    case "${partial_archive:-}" in
+        "$BACKUP_ROOT"/.enmotion-state.archive.partial.*) rm -f -- "$partial_archive" ;;
+    esac
+    case "${partial_encrypted_archive:-}" in
+        "$BACKUP_ROOT"/.enmotion-state.encrypted.partial.*) rm -f -- "$partial_encrypted_archive" ;;
+    esac
+    release_lock "$lock_dir"
+    exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+
+acquire_lock "$lock_dir" backup
+staging=$(mktemp -d "$BACKUP_ROOT/.enmotion-state.XXXXXX")
+partial_archive=$(mktemp "$BACKUP_ROOT/.enmotion-state.archive.partial.XXXXXX")
+
+resume_services=$(compose ps --status running --services 2>/dev/null | \
+    awk '$0 == "edge" || $0 == "api" || $0 == "worker" { print }' | tr '\n' ' ')
+
+info "pausing public requests and workers for a consistent snapshot"
+compose stop edge worker api >/dev/null
+services_stopped=true
+compose up -d --wait database redis >/dev/null
+compose --profile tools run --rm migrate check-database-compatibility --require-head
+
+info "dumping PostgreSQL"
+compose exec -T database sh -ec \
+    'exec pg_dump --format=custom --no-owner --no-acl --username="$POSTGRES_USER" "$POSTGRES_DB"' \
+    >"$staging/database.dump"
+
+info "archiving private media and application data"
+compose run --rm --no-deps --entrypoint tar api \
+    -czf - -C /app output >"$staging/media.tar.gz"
+compose run --rm --no-deps --entrypoint tar api \
+    -czf - -C / data >"$staging/app-data.tar.gz"
+
+migration_revisions=$(compose exec -T database sh -ec \
+    'psql --no-align --tuples-only --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "select version_num from alembic_version"' \
+    2>/dev/null | awk 'NF { print }')
+[ "$(printf '%s\n' "$migration_revisions" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] || \
+    die "database must contain exactly one Alembic revision before backup"
+migration_revision=$(printf '%s\n' "$migration_revisions" | tr -cd 'A-Za-z0-9_.-')
+[ -n "$migration_revision" ] || die "database Alembic revision is empty"
+
+uses_external_oss=$(external_object_storage_in_use)
+
+created_at=$(utc_timestamp)
+revision=$(git_revision | tr -cd 'A-Za-z0-9_.-')
+architecture=$(uname -m | tr -cd 'A-Za-z0-9_.-')
+
+printf '%s\n' \
+    '{' \
+    '  "bundleFormatVersion": 1,' \
+    "  \"applicationVersion\": \"$(app_version)\"," \
+    "  \"stateSchemaVersion\": $(schema_version)," \
+    "  \"databaseRevision\": \"$migration_revision\"," \
+    "  \"sourceGitRevision\": \"$revision\"," \
+    "  \"createdAt\": \"$created_at\"," \
+    "  \"sourceArchitecture\": \"$architecture\"," \
+    '  "containsEnvironmentFile": false,' \
+    '  "containsCredentialBearingAppData": true,' \
+    "  \"usesExternalObjectStorage\": $uses_external_oss," \
+    '  "externalObjectStorageIncluded": false' \
+    '}' >"$staging/manifest.json"
+
+for artifact in database.dump media.tar.gz app-data.tar.gz manifest.json; do
+    printf '%s  %s\n' "$(sha256_file "$staging/$artifact")" "$artifact" \
+        >>"$staging/SHA256SUMS"
+done
+
+tar -czf "$partial_archive" -C "$staging" \
+    database.dump media.tar.gz app-data.tar.gz manifest.json SHA256SUMS
+chmod 0600 "$partial_archive"
+
+if [ -n "$passphrase_file" ]; then
+    require_command openssl
+    partial_encrypted_archive=$(mktemp "$BACKUP_ROOT/.enmotion-state.encrypted.partial.XXXXXX")
+    openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+        -pass "file:$passphrase_file" \
+        -in "$partial_archive" -out "$partial_encrypted_archive"
+    chmod 0600 "$partial_encrypted_archive"
+    publish_archive "$partial_encrypted_archive" "$final_archive"
+    rm -f -- "$partial_archive"
+else
+    publish_archive "$partial_archive" "$final_archive"
+    warn "state backup is not encrypted; protect it as sensitive data"
+fi
+
+if [ -n "$resume_services" ]; then
+    info "resuming application services"
+    # shellcheck disable=SC2086
+    compose up -d --wait $resume_services >/dev/null
+fi
+services_stopped=false
+
+info "state backup created: $final_archive"

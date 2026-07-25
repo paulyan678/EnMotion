@@ -1,0 +1,29 @@
+[Unit]
+Description=EnMotion lightweight account and provider control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=enmotion-control
+Group=enmotion-control
+WorkingDirectory=/opt/enmotion-control
+EnvironmentFile=/etc/enmotion-control.env
+ExecStartPre=/opt/enmotion-control/.venv/bin/alembic upgrade head
+ExecStart=/opt/enmotion-control/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/enmotion-control
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

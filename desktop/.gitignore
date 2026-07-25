@@ -1,0 +1,13 @@
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/binaries/
+/src-tauri/tauri.release.conf.json
+/web/static/
+/release-staging/
+__pycache__/
+*.py[cod]
+*.p12
+*.pfx
+*.pem
+*.key
+!.public-key.example

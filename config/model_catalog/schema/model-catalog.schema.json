@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "compat": {
+      "type": "object"
+    },
+    "defaults": {
+      "properties": {
+        "canonical_model_settings": {
+          "additionalProperties": false,
+          "properties": {
+            "chat_model": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "image_model": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "video_model": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_model",
+            "image_model",
+            "video_model"
+          ],
+          "type": "object"
+        },
+        "model_settings": {
+          "additionalProperties": false,
+          "properties": {
+            "chat_model": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "image_model": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "video_model": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "chat_model",
+            "image_model",
+            "video_model"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "model_settings",
+        "canonical_model_settings"
+      ],
+      "type": "object"
+    },
+    "families": {
+      "type": "object"
+    },
+    "model_lines": {
+      "type": "object"
+    },
+    "models": {
+      "type": "object"
+    },
+    "modes": {
+      "type": "object"
+    },
+    "version": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "defaults",
+    "families",
+    "models"
+  ],
+  "title": "EnMotion Model Catalog",
+  "type": "object"
+}

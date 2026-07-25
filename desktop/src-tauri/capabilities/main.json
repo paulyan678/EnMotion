@@ -1,0 +1,20 @@
+{
+  "identifier": "main",
+  "description": "Minimal IPC surface for the EnMotion desktop update controls.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*"
+    ]
+  },
+  "platforms": [
+    "macOS",
+    "windows"
+  ],
+  "permissions": [
+    "core:event:default"
+  ]
+}

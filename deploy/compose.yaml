@@ -1,0 +1,281 @@
+name: ${ENMOTION_COMPOSE_PROJECT_NAME:-enmotion-web}
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${ENMOTION_LOG_MAX_SIZE:-10m}
+    max-file: "${ENMOTION_LOG_MAX_FILES:-5}"
+    compress: "true"
+
+x-image-build-args: &image-build-args
+  ENMOTION_VERSION: ${ENMOTION_VERSION:-dev}
+  ENMOTION_SOURCE_REVISION: ${ENMOTION_SOURCE_REVISION:-unknown}
+  ENMOTION_SOURCE_STATE: ${ENMOTION_SOURCE_STATE:-unknown}
+  ENMOTION_SOURCE_TREE_IDENTITY: ${ENMOTION_SOURCE_TREE_IDENTITY:-unknown}
+
+x-app-environment: &app-environment
+  ENMOTION_DEPLOYMENT_MODE: server
+  ENMOTION_SERVER_MODE: "true"
+  ENMOTION_DATA_DIR: /data
+  ENMOTION_LOG_DIR: /data/logs
+  ENMOTION_MEDIA_ROOT: /app/output
+  ENMOTION_WORKSPACE_ROOT: /app/output/workspaces
+  ENMOTION_CONTAINER_LOCAL_DIAGNOSTICS: "false"
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-enmotion}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env.server}@database:5432/${POSTGRES_DB:-enmotion}
+  REDIS_URL: redis://redis:6379/0
+  ENMOTION_QUEUE_REDIS_URL: redis://redis:6379/0
+  ENMOTION_SESSION_SECRET: ${ENMOTION_SESSION_SECRET:?Set ENMOTION_SESSION_SECRET in deploy/.env.server}
+  ENMOTION_SESSION_COOKIE_NAME: ${ENMOTION_SESSION_COOKIE_NAME:-enmotion_session}
+  ENMOTION_SESSION_TTL_SECONDS: ${ENMOTION_SESSION_TTL_SECONDS:-604800}
+  ENMOTION_ALLOWED_ORIGINS: ${ENMOTION_ALLOWED_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+  ENMOTION_COOKIE_SECURE: ${ENMOTION_COOKIE_SECURE:-false}
+  ENMOTION_WORKER_COMMAND: ${ENMOTION_WORKER_COMMAND:-python -m src.apps.server.worker}
+  ENMOTION_MAX_ACTIVE_JOBS_PER_WORKSPACE: ${ENMOTION_MAX_ACTIVE_JOBS_PER_WORKSPACE:-10}
+  ENMOTION_MAX_DAILY_JOBS_PER_WORKSPACE: ${ENMOTION_MAX_DAILY_JOBS_PER_WORKSPACE:-100}
+  ENMOTION_MAX_JOBS_PER_REQUEST: ${ENMOTION_MAX_JOBS_PER_REQUEST:-10}
+  ENMOTION_MAX_JOB_PAYLOAD_BYTES: ${ENMOTION_MAX_JOB_PAYLOAD_BYTES:-262144}
+  ENMOTION_JOB_STORAGE_RESERVATION_BYTES: ${ENMOTION_JOB_STORAGE_RESERVATION_BYTES:-536870912}
+  ENMOTION_VIDEO_JOB_STORAGE_RESERVATION_BYTES: ${ENMOTION_VIDEO_JOB_STORAGE_RESERVATION_BYTES:-1073741824}
+  ENMOTION_BATCH_JOB_STORAGE_RESERVATION_BYTES: ${ENMOTION_BATCH_JOB_STORAGE_RESERVATION_BYTES:-4294967296}
+  ENMOTION_LONG_MEDIA_JOB_STORAGE_RESERVATION_BYTES: ${ENMOTION_LONG_MEDIA_JOB_STORAGE_RESERVATION_BYTES:-4294967296}
+  ENMOTION_MAX_JOB_STORAGE_RESERVATION_BYTES: ${ENMOTION_MAX_JOB_STORAGE_RESERVATION_BYTES:-4294967296}
+  ENMOTION_MAX_JOB_OUTPUT_BYTES: ${ENMOTION_MAX_JOB_OUTPUT_BYTES:-4294967296}
+  ENMOTION_JOB_RESERVATION_TTL_SECONDS: ${ENMOTION_JOB_RESERVATION_TTL_SECONDS:-300}
+  ENMOTION_QUEUE_RECONCILE_INTERVAL_SECONDS: ${ENMOTION_QUEUE_RECONCILE_INTERVAL_SECONDS:-30}
+  ENMOTION_JOB_FINALIZE_ATTEMPTS: ${ENMOTION_JOB_FINALIZE_ATTEMPTS:-5}
+  ENMOTION_JOB_FINALIZE_RETRY_DELAY_MS: ${ENMOTION_JOB_FINALIZE_RETRY_DELAY_MS:-200}
+  ENMOTION_JOB_TERMINAL_RECONCILE_BATCH: ${ENMOTION_JOB_TERMINAL_RECONCILE_BATCH:-100}
+  ENMOTION_JOB_HISTORY_RETENTION_DAYS: ${ENMOTION_JOB_HISTORY_RETENTION_DAYS:-30}
+  ENMOTION_MAX_TERMINAL_JOBS_PER_WORKSPACE: ${ENMOTION_MAX_TERMINAL_JOBS_PER_WORKSPACE:-500}
+  ENMOTION_JOB_COMPACTION_BATCH_SIZE: ${ENMOTION_JOB_COMPACTION_BATCH_SIZE:-1000}
+  ENMOTION_REMOTE_MEDIA_HOSTS: ${ENMOTION_REMOTE_MEDIA_HOSTS:-www.moyu.cn,*.moyu.cn,*.aliyuncs.com,*.tos-cn-beijing.volces.com}
+  ENMOTION_REMOTE_IMAGE_MAX_BYTES: ${ENMOTION_REMOTE_IMAGE_MAX_BYTES:-26214400}
+  ENMOTION_REMOTE_MEDIA_MAX_BYTES: ${ENMOTION_REMOTE_MEDIA_MAX_BYTES:-536870912}
+  NEWAPI_VIDEO_POLL_INTERVAL: ${NEWAPI_VIDEO_POLL_INTERVAL:-15}
+  NEWAPI_VIDEO_MAX_WAIT: ${NEWAPI_VIDEO_MAX_WAIT:-3600}
+  ENMOTION_WORKSPACE_LOCK_THREADS: ${ENMOTION_WORKSPACE_LOCK_THREADS:-8}
+  ENMOTION_MAX_REQUEST_BODY_BYTES: ${ENMOTION_MAX_REQUEST_BODY_BYTES:-16777216}
+  PYTHONUNBUFFERED: "1"
+  NO_PROXY: database,redis,api,frontend,edge,localhost,127.0.0.1,.aliyuncs.com,aliyuncs.com,.tos-cn-beijing.volces.com
+  no_proxy: database,redis,api,frontend,edge,localhost,127.0.0.1,.aliyuncs.com,aliyuncs.com,.tos-cn-beijing.volces.com
+
+x-app-service: &app-service
+  image: enmotion-web/backend:${ENMOTION_VERSION:-dev}
+  build:
+    context: ..
+    dockerfile: deploy/docker/backend.Dockerfile
+    args:
+      <<: *image-build-args
+      ENMOTION_PYTHON_REQUIREMENTS_SHA256: ${ENMOTION_PYTHON_REQUIREMENTS_SHA256:-unknown}
+  env_file:
+    - ${ENMOTION_SERVICE_ENV_FILE:-.env.server}
+  environment: *app-environment
+  restart: unless-stopped
+  logging: *default-logging
+  networks:
+    - app
+    - private
+  volumes:
+    - media:/app/output
+    - app_data:/data
+    - model_cache:/home/enmotion/.cache
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  database:
+    image: enmotion-web/postgres:${ENMOTION_POSTGRES_VERSION:-16-alpine}
+    build:
+      context: docker/postgres
+      args:
+        <<: *image-build-args
+        POSTGRES_IMAGE: ${ENMOTION_POSTGRES_IMAGE:-postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-enmotion}
+      POSTGRES_USER: ${POSTGRES_USER:-enmotion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/.env.server}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - private
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  redis:
+    image: enmotion-web/redis:${ENMOTION_REDIS_VERSION:-7-alpine}
+    build:
+      context: docker/redis
+      args:
+        <<: *image-build-args
+        REDIS_IMAGE: ${ENMOTION_REDIS_IMAGE:-redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "60"
+      - "1000"
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - private
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  migrate:
+    <<: *app-service
+    profiles: ["tools"]
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  api:
+    <<: *app-service
+    command: ["api"]
+    expose:
+      - "17177"
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:17177/ready', timeout=3).read()
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  worker:
+    <<: *app-service
+    command: ["worker"]
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from pathlib import Path; assert Path('/tmp/enmotion-worker-ready').is_file()"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    image: enmotion-web/frontend:${ENMOTION_VERSION:-dev}
+    build:
+      context: ..
+      dockerfile: deploy/docker/frontend.Dockerfile
+      args:
+        <<: *image-build-args
+        NEXT_PUBLIC_SERVER_MODE: "true"
+        ENMOTION_JAVASCRIPT_LOCK_SHA256: ${ENMOTION_JAVASCRIPT_LOCK_SHA256:-unknown}
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    expose:
+      - "8080"
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=32m,uid=101,gid=101
+      - /var/run:size=1m,uid=101,gid=101
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  edge:
+    image: enmotion-web/edge:${ENMOTION_VERSION:-dev}
+    build:
+      context: docker/edge
+      args: *image-build-args
+    environment:
+      ENMOTION_SITE_ADDRESS: ${ENMOTION_SITE_ADDRESS:-http://:8080}
+      ENMOTION_REDIRECT_ADDRESS: ${ENMOTION_REDIRECT_ADDRESS:-http://localhost:65535}
+      ENMOTION_REDIRECT_TARGET: ${ENMOTION_REDIRECT_TARGET:-https://localhost}
+      ENMOTION_MAX_REQUEST_BODY_BYTES: ${ENMOTION_MAX_REQUEST_BODY_BYTES:-16777216}
+    init: true
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - app
+    volumes:
+      - edge_data:/data
+      - edge_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  app:
+  private:
+    internal: true
+
+volumes:
+  database:
+  redis:
+  media:
+  app_data:
+  model_cache:
+  edge_data:
+  edge_config:

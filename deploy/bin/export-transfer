@@ -1,0 +1,331 @@
+#!/bin/sh
+set -eu
+
+output_dir=
+state_archive=
+complete=false
+
+usage() {
+    printf '%s\n' \
+        'Usage: deploy/bin/export-transfer [--output DIR] [--with-state ARCHIVE]' \
+        '                                  [--complete]' \
+        '' \
+        'Creates a secret-free application ZIP. State remains a separate sensitive' \
+        'artifact unless --complete explicitly wraps both files in one transfer ZIP.'
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --output) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; output_dir=$2; shift 2 ;;
+        --with-state) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; state_archive=$2; shift 2 ;;
+        --complete) complete=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/_lib.sh"
+
+require_command zip
+require_command unzip
+
+if [ "$complete" = true ]; then
+    [ -n "$state_archive" ] || die "--complete requires --with-state"
+    [ -f "$state_archive" ] || die "state archive not found: $state_archive"
+    [ ! -L "$state_archive" ] || die "state archive must not be a symbolic link"
+    case "$state_archive" in
+        *.enc) ;;
+        *) die "--complete accepts encrypted .enc state archives only" ;;
+    esac
+    require_command od
+    encrypted_magic=$(LC_ALL=C od -An -N8 -tx1 "$state_archive" | tr -d ' \n')
+    [ "$encrypted_magic" = 53616c7465645f5f ] || \
+        die "--complete state archive is not an OpenSSL salted encrypted artifact"
+fi
+
+python_manifest=$APP_ROOT/requirements-docker.txt
+javascript_lock=$APP_ROOT/frontend/package-lock.json
+[ -f "$python_manifest" ] || die "dependency manifest is missing: $python_manifest"
+[ -f "$javascript_lock" ] || die "dependency lock is missing: $javascript_lock"
+python_manifest_sha256=$(sha256_file "$python_manifest") || \
+    die "could not hash dependency manifest: $python_manifest"
+javascript_lock_sha256=$(sha256_file "$javascript_lock") || \
+    die "could not hash dependency lock: $javascript_lock"
+
+bundle_revision=$(git_revision)
+bundle_source_state=$(source_tree_state)
+bundle_tree_identity=$(source_tree_identity)
+case "$bundle_source_state" in
+    clean|unversioned) ;;
+    *) die "working tree does not match its recorded source identity; restore or commit intentional application changes before export" ;;
+esac
+[ -n "$bundle_tree_identity" ] && [ "$bundle_tree_identity" != unknown ] || \
+    die "could not derive a deterministic source-tree identity"
+
+# Capture the source list before creating staging files. This keeps a caller-
+# selected output directory inside the source tree from entering its own
+# archive. Clean Git exports use only tracked paths, written by the host zip
+# implementation; the printable-ASCII guard below keeps names interoperable.
+source_list=$(mktemp "${TMPDIR:-/tmp}/enmotion-export-source-list.XXXXXX") || \
+    die "could not create source-list staging file"
+bundle_capture=filesystem
+if command -v git >/dev/null 2>&1 && \
+        git -C "$APP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    [ "$bundle_source_state" = clean ] || \
+        die "working tree is not clean; commit intentional application changes before export"
+    bundle_capture=git-tracked-files
+    git -C "$APP_ROOT" -c core.quotepath=false ls-files >"$source_list" || \
+        die "could not enumerate tracked portable source files"
+    LC_ALL=C sort -o "$source_list" "$source_list" || \
+        die "could not sort tracked portable source files"
+else
+    source_manifest_paths "$APP_ROOT" >"$source_list" || \
+        die "could not enumerate portable source files"
+fi
+if LC_ALL=C grep -q '[^ -~]' "$source_list"; then
+    die "portable ZIP source paths must use printable ASCII; rename non-ASCII source paths before export"
+fi
+
+[ -n "$output_dir" ] || output_dir=$APP_ROOT/transfers
+mkdir -p "$output_dir"
+TRANSFER_ROOT=$(CDPATH= cd -- "$output_dir" && pwd)
+timestamp=$(file_timestamp)
+artifact_token=$(random_hex 6)
+app_name=enmotion-web-$(app_version)-$timestamp-$artifact_token.zip
+app_target=$TRANSFER_ROOT/$app_name
+app_sha_target=$app_target.SHA256
+complete_name=enmotion-complete-transfer-$timestamp-$artifact_token.zip
+complete_target=$TRANSFER_ROOT/$complete_name
+complete_sha_target=$complete_target.SHA256
+
+umask 077
+staging=$(mktemp -d "$TRANSFER_ROOT/.enmotion-export.XXXXXX") || \
+    die "could not create transfer staging directory"
+app_stage=$staging/$app_name
+app_sha_stage=$staging/$app_name.SHA256
+generated_root=$staging/generated
+provenance_file=$generated_root/deploy/TRANSFER_PROVENANCE.txt
+source_identity_stage=$generated_root/deploy/SOURCE_IDENTITY
+source_manifest_stage=$generated_root/deploy/SOURCE_MANIFEST.sha256
+state_target=
+state_sha_target=
+state_stage=
+state_sha_stage=
+state_for_bundle=
+state_sha_for_bundle=
+state_reused=false
+state_sha_reused=false
+complete_stage=$staging/$complete_name
+complete_sha_stage=$staging/$complete_name.SHA256
+app_published=false
+app_sha_published=false
+state_published=false
+state_sha_published=false
+complete_published=false
+complete_sha_published=false
+success=false
+
+cleanup() {
+    exit_code=$?
+    trap - EXIT INT TERM
+    if [ "$success" != true ]; then
+        [ "$complete_sha_published" = false ] || rm -f -- "$complete_sha_target"
+        [ "$complete_published" = false ] || rm -f -- "$complete_target"
+        [ "$state_sha_published" = false ] || rm -f -- "$state_sha_target"
+        [ "$state_published" = false ] || rm -f -- "$state_target"
+        [ "$app_sha_published" = false ] || rm -f -- "$app_sha_target"
+        [ "$app_published" = false ] || rm -f -- "$app_target"
+    fi
+    rm -rf -- "$staging"
+    [ -z "$source_list" ] || rm -f -- "$source_list"
+    exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+
+target_exists() {
+    [ -e "$1" ] || [ -L "$1" ]
+}
+
+refuse_existing_target() {
+    target_exists "$1" && die "refusing to overwrite existing transfer artifact: $1"
+    return 0
+}
+
+publish_no_clobber() {
+    publish_source=$1
+    publish_target=$2
+    refuse_existing_target "$publish_target"
+    if ! mv -n -- "$publish_source" "$publish_target"; then
+        die "could not publish transfer artifact: $publish_target"
+    fi
+    # BSD and GNU mv -n can report success when the destination appeared after
+    # the preflight check. The retained source makes that race detectable.
+    [ ! -e "$publish_source" ] || \
+        die "refusing to overwrite existing transfer artifact: $publish_target"
+}
+
+info "creating application ZIP without runtime state or secrets"
+(
+    cd "$APP_ROOT"
+    zip -q "$app_stage" -@ <"$source_list"
+)
+
+unzip -tq "$app_stage" >/dev/null || die "created source ZIP failed its integrity check"
+mkdir -p "$generated_root/deploy"
+if [ "$bundle_capture" = git-tracked-files ]; then
+    write_git_source_manifest "$APP_ROOT" "$source_manifest_stage" || \
+        die "committed source payload contains an unsupported path or could not be hashed"
+else
+    write_source_manifest "$APP_ROOT" "$source_manifest_stage" || \
+        die "source payload contains an unsupported path or could not be hashed"
+fi
+source_manifest_sha256=$(sha256_file "$source_manifest_stage")
+[ "$source_manifest_sha256" = "$bundle_tree_identity" ] || \
+    die "captured source payload does not match its derived source-tree identity"
+printf '%s\n' \
+    'format.version=1' \
+    "source.revision=$bundle_revision" \
+    "source.tree.identity=$bundle_tree_identity" \
+    "source.manifest.sha256=$source_manifest_sha256" \
+    >"$source_identity_stage"
+
+if check_running_image_provenance \
+    "$provenance_file" "$bundle_revision" "$bundle_source_state" \
+    "$bundle_tree_identity" "$(app_version)"; then
+    info "running container images match source identity $bundle_tree_identity"
+else
+    provenance_result=$?
+    case "$provenance_result" in
+        1)
+            sed -n '/\.status=stale$/p;/\.reasons=/p;/running\.images\.status=/p' \
+                "$provenance_file" >&2
+            die "running images are dirty, stale, or incomplete for this source; rebuild and recreate the complete stack before export"
+            ;;
+        2)
+            info "no running deployment images were observed; transfer records that state"
+            ;;
+        3)
+            warn "Docker image state is unavailable; transfer records it as unverified"
+            ;;
+        *) die "unexpected running-image provenance result: $provenance_result" ;;
+    esac
+fi
+{
+    printf 'artifact.kind=source-archive\n'
+    printf 'artifact.source_capture=%s\n' "$bundle_capture"
+    printf 'artifact.includes_container_images=false\n'
+    printf 'artifact.includes_runtime_state=false\n'
+    printf 'source.identity.file=deploy/SOURCE_IDENTITY\n'
+    printf 'source.manifest.file=deploy/SOURCE_MANIFEST.sha256\n'
+    printf 'source.manifest.sha256=%s\n' "$source_manifest_sha256"
+    printf 'dependencies.python_manifest=requirements-docker.txt\n'
+    printf 'dependencies.python_manifest_sha256=%s\n' "$python_manifest_sha256"
+    printf 'dependencies.javascript_lock=frontend/package-lock.json\n'
+    printf 'dependencies.javascript_lock_sha256=%s\n' "$javascript_lock_sha256"
+} >>"$provenance_file"
+(
+    cd "$generated_root"
+    zip -q "$app_stage" \
+        deploy/TRANSFER_PROVENANCE.txt \
+        deploy/SOURCE_IDENTITY \
+        deploy/SOURCE_MANIFEST.sha256
+)
+
+if unzip -Z1 "$app_stage" | LC_ALL=C awk '
+    /(^|\/)\.env($|\.)/ && $0 !~ /\.example$/ { found = 1 }
+    /\.pem$/ || /\.key$/ || /\.p12$/ || /\.pfx$/ || /(^|\/)config\.json$/ { found = 1 }
+    END { exit !found }
+'; then
+    die "refusing to export an application ZIP containing a secret-bearing file"
+fi
+chmod 0644 "$app_stage"
+printf '%s  %s\n' "$(sha256_file "$app_stage")" "$app_name" >"$app_sha_stage"
+chmod 0644 "$app_sha_stage"
+
+if [ -n "$state_archive" ]; then
+    [ -f "$state_archive" ] || die "state archive not found: $state_archive"
+    [ ! -L "$state_archive" ] || die "state archive must not be a symbolic link"
+    state_archive=$(CDPATH= cd -- "$(dirname -- "$state_archive")" && pwd)/$(basename -- "$state_archive")
+    state_name=$(basename -- "$state_archive")
+    state_target=$TRANSFER_ROOT/$state_name
+    state_sha_target=$state_target.SHA256
+    state_digest=$(sha256_file "$state_archive")
+
+    if [ "$state_archive" = "$state_target" ]; then
+        state_reused=true
+        state_for_bundle=$state_archive
+    else
+        refuse_existing_target "$state_target"
+        state_stage=$staging/$state_name
+        cp "$state_archive" "$state_stage"
+        chmod 0600 "$state_stage"
+        state_for_bundle=$state_stage
+    fi
+
+    state_sha_stage=$staging/$state_name.SHA256
+    printf '%s  %s\n' "$state_digest" "$state_name" >"$state_sha_stage"
+    chmod 0644 "$state_sha_stage"
+    if target_exists "$state_sha_target"; then
+        [ "$state_reused" = true ] && cmp -s "$state_sha_target" "$state_sha_stage" || \
+            die "refusing to overwrite existing transfer artifact: $state_sha_target"
+        state_sha_reused=true
+        state_sha_for_bundle=$state_sha_target
+    else
+        state_sha_for_bundle=$state_sha_stage
+    fi
+
+    if [ "$complete" = true ]; then
+        refuse_existing_target "$complete_target"
+        refuse_existing_target "$complete_sha_target"
+        zip -q -j "$complete_stage" \
+            "$app_stage" "$app_sha_stage" "$state_for_bundle" "$state_sha_for_bundle"
+        chmod 0600 "$complete_stage"
+        printf '%s  %s\n' "$(sha256_file "$complete_stage")" "$complete_name" \
+            >"$complete_sha_stage"
+        chmod 0644 "$complete_sha_stage"
+    fi
+fi
+
+# Preflight every final target before publishing any artifact. Each rename is
+# same-filesystem and no-clobber; cleanup removes this invocation's already-
+# published files if a later publication unexpectedly fails.
+refuse_existing_target "$app_target"
+refuse_existing_target "$app_sha_target"
+[ -z "$state_target" ] || [ "$state_reused" = true ] || refuse_existing_target "$state_target"
+[ -z "$state_sha_target" ] || [ "$state_sha_reused" = true ] || refuse_existing_target "$state_sha_target"
+[ "$complete" = false ] || refuse_existing_target "$complete_target"
+[ "$complete" = false ] || refuse_existing_target "$complete_sha_target"
+
+publish_no_clobber "$app_stage" "$app_target"
+app_published=true
+publish_no_clobber "$app_sha_stage" "$app_sha_target"
+app_sha_published=true
+if [ -n "$state_target" ] && [ "$state_reused" = false ]; then
+    publish_no_clobber "$state_stage" "$state_target"
+    state_published=true
+fi
+if [ -n "$state_sha_target" ] && [ "$state_sha_reused" = false ]; then
+    publish_no_clobber "$state_sha_stage" "$state_sha_target"
+    state_sha_published=true
+fi
+if [ "$complete" = true ]; then
+    publish_no_clobber "$complete_stage" "$complete_target"
+    complete_published=true
+    publish_no_clobber "$complete_sha_stage" "$complete_sha_target"
+    complete_sha_published=true
+fi
+
+success=true
+info "application bundle created: $app_target"
+if [ -n "$state_target" ]; then
+    if [ "$state_reused" = true ]; then
+        info "state artifact already present in transfer directory: $state_target"
+    else
+        info "state artifact copied separately: $state_target"
+    fi
+fi
+if [ "$complete" = true ]; then
+    warn "complete ZIP contains private user state; transfer and store it securely"
+    info "complete transfer bundle created: $complete_target"
+    info "complete transfer checksum created: $complete_sha_target"
+fi

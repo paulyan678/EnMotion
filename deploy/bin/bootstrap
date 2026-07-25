@@ -1,0 +1,131 @@
+#!/bin/sh
+set -eu
+
+mode=${ENMOTION_DEPLOY_MODE:-mac}
+env_file=${ENMOTION_ENV_FILE:-}
+skip_admin=false
+skip_build=false
+
+usage() {
+    printf '%s\n' \
+        'Usage: deploy/bin/bootstrap [--mode mac|production] [--env-file PATH]' \
+        '                            [--skip-admin] [--skip-build]' \
+        '' \
+        'Admin credentials are read from ENMOTION_BOOTSTRAP_ADMIN_USERNAME and' \
+        'ENMOTION_BOOTSTRAP_ADMIN_PASSWORD, or prompted on an interactive terminal.'
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; mode=$2; shift 2 ;;
+        --env-file) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; env_file=$2; shift 2 ;;
+        --skip-admin) skip_admin=true; shift ;;
+        --skip-build) skip_build=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+
+export ENMOTION_DEPLOY_MODE=$mode
+[ -z "$env_file" ] || export ENMOTION_ENV_FILE=$env_file
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/_lib.sh"
+
+require_command docker
+check_compose_version
+lock_dir=$DEPLOY_DIR/.lifecycle.lock
+acquire_lock "$lock_dir" bootstrap
+terminal_echo_disabled=false
+cleanup() {
+    exit_code=$?
+    trap - EXIT INT TERM
+    if [ "$terminal_echo_disabled" = true ]; then
+        stty echo 2>/dev/null || true
+    fi
+    release_lock "$lock_dir"
+    exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+
+if [ "$DEPLOY_MODE" = production ] && [ -L "$ENV_FILE" ]; then
+    die "$ENV_FILE must not be a symbolic link in production"
+fi
+
+if [ ! -f "$ENV_FILE" ]; then
+    umask 077
+    cp "$DEPLOY_DIR/.env.server.example" "$ENV_FILE"
+    chmod 0600 "$ENV_FILE"
+    info "created private configuration: $ENV_FILE"
+fi
+
+# Check production file ownership boundaries before reading placeholders or
+# replacing generated values in an existing configuration.
+validate_env_file_security
+
+if [ "$(env_value POSTGRES_PASSWORD)" = __GENERATE__ ]; then
+    set_env_value POSTGRES_PASSWORD "$(random_hex 32)"
+fi
+if [ "$(env_value ENMOTION_SESSION_SECRET)" = __GENERATE__ ]; then
+    set_env_value ENMOTION_SESSION_SECRET "$(random_hex 48)"
+fi
+
+validate_env
+compose config --quiet
+
+if [ "$skip_build" = false ]; then
+    info "building Linux images natively for $(uname -m)"
+    compose build --pull
+fi
+
+info "starting PostgreSQL and Redis"
+compose up -d --wait database redis
+
+info "checking database migration compatibility"
+compose --profile tools run --rm migrate check-database-compatibility
+
+info "applying database migrations"
+compose --profile tools run --rm migrate
+compose --profile tools run --rm migrate check-database-compatibility --require-head
+
+if [ "$skip_admin" = false ]; then
+    admin_username=${ENMOTION_BOOTSTRAP_ADMIN_USERNAME:-}
+    admin_password=${ENMOTION_BOOTSTRAP_ADMIN_PASSWORD:-}
+
+    if [ -z "$admin_username" ] || [ -z "$admin_password" ]; then
+        if [ -t 0 ]; then
+            [ -n "$admin_username" ] || {
+                printf 'Initial admin username: '
+                IFS= read -r admin_username
+            }
+            if [ -z "$admin_password" ]; then
+                printf 'Initial admin password (12+ characters): '
+                stty -echo
+                terminal_echo_disabled=true
+                IFS= read -r admin_password
+                stty echo
+                terminal_echo_disabled=false
+                printf '\n'
+            fi
+        else
+            die "set bootstrap admin environment variables or pass --skip-admin"
+        fi
+    fi
+
+    [ ${#admin_password} -ge 12 ] || die "initial admin password must be at least 12 characters"
+    export ENMOTION_BOOTSTRAP_ADMIN_USERNAME=$admin_username
+    export ENMOTION_BOOTSTRAP_ADMIN_PASSWORD=$admin_password
+    compose --profile tools run --rm --no-deps \
+        -e ENMOTION_BOOTSTRAP_ADMIN_USERNAME \
+        -e ENMOTION_BOOTSTRAP_ADMIN_PASSWORD \
+        migrate bootstrap-admin
+    unset ENMOTION_BOOTSTRAP_ADMIN_PASSWORD
+fi
+
+info "starting the complete $DEPLOY_MODE stack"
+compose up -d --remove-orphans --wait
+
+if [ "$DEPLOY_MODE" = mac ]; then
+    port=$(env_value ENMOTION_HTTP_PORT)
+    info "EnMotion is ready at http://127.0.0.1:${port:-8080}"
+else
+    info "EnMotion is ready at https://$(env_value ENMOTION_DOMAIN)"
+fi

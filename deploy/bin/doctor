@@ -1,0 +1,80 @@
+#!/bin/sh
+set -eu
+
+mode=${ENMOTION_DEPLOY_MODE:-mac}
+env_file=${ENMOTION_ENV_FILE:-}
+static_only=false
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode) [ "$#" -ge 2 ] || exit 2; mode=$2; shift 2 ;;
+        --env-file) [ "$#" -ge 2 ] || exit 2; env_file=$2; shift 2 ;;
+        --static) static_only=true; shift ;;
+        -h|--help)
+            printf 'Usage: deploy/bin/doctor [--mode mac|production] [--env-file PATH] [--static]\n'
+            exit 0
+            ;;
+        *) exit 2 ;;
+    esac
+done
+
+export ENMOTION_DEPLOY_MODE=$mode
+[ -z "$env_file" ] || export ENMOTION_ENV_FILE=$env_file
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/_lib.sh"
+
+for required in \
+    "$BASE_COMPOSE" \
+    "$OVERRIDE_COMPOSE" \
+    "$DEPLOY_DIR/docker/backend.Dockerfile" \
+    "$DEPLOY_DIR/docker/frontend.Dockerfile" \
+    "$DEPLOY_DIR/docker/edge/Caddyfile" \
+    "$DEPLOY_DIR/manifests/deployment.json" \
+    "$DEPLOY_DIR/VERSION" \
+    "$DEPLOY_DIR/SCHEMA_VERSION"
+do
+    [ -r "$required" ] || die "required deployment file is missing: $required"
+done
+
+validate_env
+
+permissions=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || printf unknown)
+case "$permissions" in
+    600|400) ;;
+    *) warn "$ENV_FILE permissions are $permissions; use chmod 600" ;;
+esac
+
+if command -v git >/dev/null 2>&1 && git -C "$APP_ROOT" ls-files --error-unmatch deploy/.env.server >/dev/null 2>&1; then
+    die "deploy/.env.server is tracked by git"
+fi
+
+info "static deployment contract is valid (app $(app_version), state schema $(schema_version))"
+[ "$static_only" = false ] || exit 0
+
+require_command docker
+check_compose_version
+compose config --quiet
+compose ps
+
+for service in database redis api worker frontend edge; do
+    container_id=$(compose ps -q "$service")
+    [ -n "$container_id" ] || die "$service container is not running"
+    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")
+    [ "$health" = healthy ] || die "$service is not healthy (state: $health)"
+done
+
+if [ "$DEPLOY_MODE" = mac ]; then
+    health_url=http://127.0.0.1:$(env_value ENMOTION_HTTP_PORT)/healthz
+else
+    health_url=https://$(env_value ENMOTION_DOMAIN)/healthz
+fi
+
+if command -v curl >/dev/null 2>&1; then
+    curl --fail --silent --show-error --max-time 10 "$health_url" >/dev/null
+elif command -v wget >/dev/null 2>&1; then
+    wget -q --timeout=10 -O /dev/null "$health_url"
+else
+    die "curl or wget is required for the external health check"
+fi
+
+free_kb=$(df -Pk "$APP_ROOT" | awk 'NR == 2 {print $4}')
+info "all services and API dependencies are healthy; host has ${free_kb:-unknown} KiB free"

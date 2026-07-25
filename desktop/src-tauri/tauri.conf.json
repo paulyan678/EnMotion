@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EnMotion",
+  "version": "../../package.json",
+  "identifier": "com.enmotion.desktop",
+  "build": {
+    "frontendDist": "../bootstrap"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "capabilities": [
+        "main"
+      ],
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: blob: https:; media-src 'self' blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "category": "GraphicsAndDesign",
+    "copyright": "版权所有 © 2026 EnMotion",
+    "shortDescription": "企业专用的本地 AI 创作工作区",
+    "longDescription": "EnMotion 是供企业内部使用、以本地数据为核心的 AI 图片与视频创作工作区。",
+    "licenseFile": "../../LICENSE",
+    "icon": [
+      "icons/icon.png",
+      "../../icon.icns",
+      "../../icon.ico"
+    ],
+    "externalBin": [
+      "binaries/enmotion-sidecar"
+    ],
+    "resources": {
+      "../web/static/": "web/static/"
+    },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_ENMOTION_UPDATER_PUBLIC_KEY",
+      "endpoints": [
+        "https://updates.enmotion.example.invalid/v1/desktop/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

@@ -1,0 +1,81 @@
+family: newapi-chat
+display_name: "New API Chat"
+provider: newapi
+routing_prefixes:
+  - deepseek-v4-
+  - qwen3.7-
+supported_backends:
+  - newapi
+default_backend: newapi
+credential_sources:
+  newapi:
+    - NEWAPI_DEEPSEEK_V4_FLASH_API_KEY
+    - NEWAPI_QWEN_37_MAX_API_KEY
+    - NEWAPI_DEEPSEEK_V4_PRO_API_KEY
+supported_modalities:
+  - chat
+docs:
+  official_snapshot_ids:
+    - newapi/chat-completions/2026-07-18
+transport:
+  image_input_mode:
+    newapi: unsupported
+  audio_input_mode:
+    newapi: unsupported
+  reference_video_input_mode:
+    newapi: unsupported
+models:
+  - id: deepseek-v4-flash
+    display_name: DeepSeek V4 Flash
+    description: Fast DeepSeek V4 chat model through New API
+    status: active
+    release_stage: stable
+    capabilities: [chat]
+    credential_sources:
+      newapi: [NEWAPI_DEEPSEEK_V4_FLASH_API_KEY]
+    docs:
+      context_hub_doc_ids: [newapi/chat-completions]
+    runtime:
+      newapi:
+        gateway: newapi
+    ui:
+      selection_group: chat
+      visible_in: [project_settings, series_settings, global_settings]
+      order: 100
+      recommended: true
+
+  - id: qwen3.7-max
+    display_name: Qwen 3.7 Max
+    description: Qwen 3.7 Max chat model through New API
+    status: active
+    release_stage: stable
+    capabilities: [chat]
+    credential_sources:
+      newapi: [NEWAPI_QWEN_37_MAX_API_KEY]
+    docs:
+      context_hub_doc_ids: [newapi/chat-completions]
+    runtime:
+      newapi:
+        gateway: newapi
+    ui:
+      selection_group: chat
+      visible_in: [project_settings, series_settings, global_settings]
+      order: 90
+
+  - id: deepseek-v4-pro
+    display_name: DeepSeek V4 Pro
+    description: High-capability DeepSeek V4 chat model through New API
+    status: active
+    release_stage: stable
+    capabilities: [chat]
+    credential_sources:
+      newapi: [NEWAPI_DEEPSEEK_V4_PRO_API_KEY]
+    docs:
+      context_hub_doc_ids: [newapi/chat-completions]
+    runtime:
+      newapi:
+        gateway: newapi
+    ui:
+      selection_group: chat
+      visible_in: [project_settings, series_settings, global_settings]
+      order: 80

@@ -1,0 +1,88 @@
+{
+	# The admin API is loopback-only and used solely for the container health
+	# check. It is neither exposed nor attached to the host network.
+	admin 127.0.0.1:2019
+	http_port 8080
+	https_port 8443
+	auto_https disable_redirects
+
+	# TLS terminates on container port 8443, which Docker publishes as public
+	# port 443. Caddy would otherwise advertise HTTP/3 on :8443 in Alt-Svc;
+	# capable browsers then try an unreachable public port and can stall while
+	# loading the application bundle. Keep the edge on HTTP/1.1 and HTTP/2
+	# unless the container and public TLS ports are identical.
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$ENMOTION_REDIRECT_ADDRESS:http://localhost:65535} {
+	redir {$ENMOTION_REDIRECT_TARGET:https://localhost}{uri} permanent
+}
+
+{$ENMOTION_SITE_ADDRESS:http://:8080} {
+	# Safari 26 can advertise zstd yet stop parsing this static export before
+	# its script tags when Caddy selects that encoding. Gzip is understood by
+	# every supported browser and avoids leaving the server-rendered auth
+	# loading screen visible without ever starting React.
+	encode gzip
+
+	header {
+		-Server
+		# Clear the invalid :8443 HTTP/3 alternative cached by browsers from
+		# deployments that predate the h1/h2-only server configuration above.
+		Alt-Svc "clear"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+	}
+
+	# HSTS applies only when Caddy itself served the request over TLS. Mac mode
+	# remains plain loopback HTTP and is never pinned to HTTPS.
+	@tls protocol https
+	header @tls Strict-Transport-Security "max-age=31536000"
+
+	request_body {
+		max_size {$ENMOTION_MAX_REQUEST_BODY_BYTES:16777216}
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# The API dependency probe performs a PostgreSQL query and Redis ping. It
+	# remains available only on the private container network for Docker's API
+	# health check; public callers get the cheap edge liveness probe instead.
+	handle /ready {
+		respond "Not found" 404
+	}
+
+	handle /api/ready {
+		respond "Not found" 404
+	}
+
+	# /api is provided as a conventional alias for automation and future
+	# clients. The existing browser application uses the legacy top-level
+	# routes below, so both forms terminate at the same authenticated API.
+	handle_path /api/* {
+		reverse_proxy api:17177
+	}
+
+	@backend path /auth /auth/* /admin /admin/* /users /users/* /workspaces /workspaces/* /jobs /jobs/* /projects /projects/* /series /series/* /library /library/* /asset-sources /asset-sources/* /playground /playground/* /tasks /tasks/* /art_direction /art_direction/* /video /video/* /config /config/* /health /health/* /system /system/* /diagnose /diagnose/* /debug /debug/* /redoc /redoc/* /docs /docs/* /openapi.json /prompt_defaults /prompt_defaults/* /bgm /bgm/* /upload /upload/* /voices /voices/* /files /files/* /provider-media /provider-media/*
+	@providerMedia path /provider-media/*
+	log_skip @providerMedia
+
+	handle @backend {
+		reverse_proxy api:17177
+	}
+
+	handle {
+		reverse_proxy frontend:8080
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

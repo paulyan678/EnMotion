@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.local/
+.venv/
+!app/static/
+!app/static/**
+__pycache__/
+.pytest_cache/
+.coverage
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+backups/

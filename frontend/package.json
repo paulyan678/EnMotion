@@ -1,0 +1,59 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10.8.2",
+  "engines": {
+    "node": ">=20.9 <21"
+  },
+  "scripts": {
+    "dev": "node ./scripts/run-next-dev.mjs",
+    "build": "next build",
+    "check:export": "node ./scripts/check-static-export.mjs",
+    "start": "node ./scripts/serve-export.mjs",
+    "lint": "node ./scripts/lint.mjs",
+    "typecheck": "node ./scripts/typecheck.mjs",
+    "test": "node ./scripts/run-vitest.mjs",
+    "test:ui": "node ./scripts/run-vitest.mjs --config vitest.ui.config.mts",
+    "test:all": "npm run test && npm run test:ui",
+    "check:colors": "node ./scripts/check-playground-colors.mjs",
+    "perf:asset-library": "node ./scripts/performance/browser-asset-library.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@react-three/drei": "10.7.7",
+    "@react-three/fiber": "9.6.1",
+    "axios": "^1.13.2",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.24",
+    "html2canvas": "^1.4.1",
+    "lucide-react": "^0.554.0",
+    "next": "16.2.11",
+    "next-intl": "^4.9.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "^3.4.0",
+    "three": "^0.181.2",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^20",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.2.11",
+    "happy-dom": "^20.8.9",
+    "jsdom": "^27.0.1",
+    "playwright": "1.61.1",
+    "postcss": "8.5.19",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "postcss": "$postcss",
+    "sharp": "0.35.3"
+  }
+}

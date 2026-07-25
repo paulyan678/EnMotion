@@ -1,0 +1,23 @@
+{
+  "bundleFormatVersion": 1,
+  "applicationVersionFile": "deploy/VERSION",
+  "stateSchemaVersionFile": "deploy/SCHEMA_VERSION",
+  "databaseMigrationEngine": "Alembic",
+  "databaseMigrationLocation": "src/apps/server/migrations",
+  "databaseMigrationCommand": "python -m src.apps.server.cli migrate",
+  "adminBootstrapCommand": "python -m src.apps.server.cli bootstrap-admin",
+  "apiApplication": "src.apps.comic_gen.api:app",
+  "workerCommandEnvironment": "ENMOTION_WORKER_COMMAND",
+  "minimumDockerComposeVersion": "2.24.0",
+  "supportedContainerPlatforms": [
+    "linux/arm64",
+    "linux/amd64"
+  ],
+  "stateArtifacts": [
+    "database.dump",
+    "media.tar.gz",
+    "app-data.tar.gz",
+    "manifest.json",
+    "SHA256SUMS"
+  ]
+}

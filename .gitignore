@@ -1,0 +1,142 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller sidecar build output
+*.manifest
+*.spec
+
+# PyArmor
+obfuscated/
+.pyarmor/
+dist_*/
+
+# Environment
+.env
+.env.local
+.venv
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+*.log
+*.db
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build outputs
+bin/ffmpeg
+bin/ffmpeg.exe
+*.app
+*.exe
+*.dmg
+*.pkg
+
+# OS
+Thumbs.db
+
+# Node.js
+node_modules/
+
+# Frontend (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.vercel
+desktop/src-tauri/target/
+
+# Superseded visual QA captures (final Chinese evidence remains tracked)
+design-audit-evidence/control-panel/0[1-6]-*.jpg
+design-audit-evidence/control-panel/07a-chinese-viewport.jpg
+design-qa-evidence/
+
+# Unreferenced duplicate design-reference assets
+docs/design/tasty-sam/assets/
+docs/design/tasty-sam/theming/assets/char-detective.png
+docs/design/tasty-sam/theming/assets/scene-skyline.png
+docs/design/tasty-sam/theming/assets/shot-*.png
+
+# Logs
+*.log
+logs/
+sidecar-ready*.json
+
+# Secrets (extra safety)
+*secret*
+*credential*
+*.pem
+*.key
+!*.pub.key
+
+# Project outputs
+static/output/
+output/
+/static/
+artifacts/performance/
+artifacts/
+data/
+control_plane/data/
+
+# Internal development tools (not for public repo)
+.agent/
+.agents/
+.claude/
+.codex/
+.superset/
+GITHUB_RELEASE_CHECKLIST.md
+CLAUDE.md
+AGENTS.md
+demand/
+
+# Local docs scratchpads
+docs/api-reference/
+docs/plans/
+!docs/api-reference/
+docs/api-reference/*
+!docs/api-reference/*.md
+!docs/plans/
+docs/plans/*
+!docs/plans/*.md
+
+# Build/packaging configs
+*.spec
+
+.omx/
+.gstack/
+docs/agents/
+frontend/docs/

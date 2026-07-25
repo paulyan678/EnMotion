@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EnMotion 管理中心</title>
+    <link rel="stylesheet" href="/admin/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">企业管理控制台</p>
+          <h1>EnMotion 管理中心</h1>
+        </div>
+        <div class="header-actions">
+          <span id="current-user" class="muted"></span>
+          <button id="logout" class="secondary hidden" type="button">退出登录</button>
+        </div>
+      </header>
+
+      <section id="notice" class="notice hidden" role="status"></section>
+
+      <section id="login-panel" class="panel narrow">
+        <h2>管理员登录</h2>
+        <p class="muted">请使用管理员账号登录。系统不开放公开注册。</p>
+        <form id="login-form" class="form-grid">
+          <label>
+            用户名
+            <input name="username" autocomplete="username" required>
+          </label>
+          <label>
+            密码
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">登录</button>
+        </form>
+      </section>
+
+      <section id="dashboard" class="hidden">
+        <div class="toolbar">
+          <nav class="tabs" aria-label="管理功能">
+            <button class="tab active" data-panel="users-panel" type="button">账号管理</button>
+            <button class="tab" data-panel="rates-panel" type="button">计费规则</button>
+            <button class="tab" data-panel="ledger-panel" type="button">额度明细</button>
+            <button class="tab" data-panel="audit-panel" type="button">审计记录</button>
+          </nav>
+          <button id="refresh" class="secondary" type="button">刷新</button>
+        </div>
+
+        <section id="users-panel" class="dashboard-panel">
+          <div class="grid two">
+            <article class="panel">
+              <h2>创建账号</h2>
+              <form id="create-user-form" class="form-grid">
+                <label>用户名 <input name="username" required minlength="3"></label>
+                <label>
+                  角色
+                  <select name="role">
+                    <option value="user">普通用户</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                </label>
+                <label>密码 <input name="password" type="password" required minlength="12"></label>
+                <label>初始额度 <input name="initial_credits" type="number" min="0" value="0"></label>
+                <button type="submit">创建账号</button>
+              </form>
+            </article>
+            <article class="panel metric-card">
+              <p class="eyebrow">账号总数</p>
+              <strong id="account-count">0</strong>
+              <span class="muted">包含已启用和已停用账号</span>
+            </article>
+          </div>
+
+          <article class="panel table-panel">
+            <div class="panel-heading">
+              <h2>账号列表</h2>
+              <p class="muted">所有额度调整都会记录为不可篡改的明细。</p>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>用户</th><th>角色</th><th>状态</th><th>可用额度</th>
+                    <th>预留额度</th><th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="users-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="rates-panel" class="dashboard-panel hidden">
+          <div class="grid two">
+            <article class="panel">
+              <h2>添加计费规则</h2>
+              <form id="rate-form" class="form-grid">
+                <label>
+                  操作类型
+                  <select name="operation">
+                    <option value="chat.completions">文本对话</option>
+                    <option value="images.generations">图像生成</option>
+                    <option value="images.edits">图像编辑</option>
+                    <option value="video.generations">视频生成</option>
+                  </select>
+                </label>
+                <label>
+                  AI 模型
+                  <select name="model" required aria-describedby="model-help"></select>
+                  <small id="model-help">可选模型会随操作类型自动匹配。</small>
+                </label>
+                <label>消耗额度 <input name="unit_cost" type="number" min="0" required></label>
+                <label>优先级 <input name="priority" type="number" value="0"></label>
+                <label class="full">筛选条件 JSON <textarea name="selectors" rows="3">{}</textarea></label>
+                <button type="submit">添加计费规则</button>
+              </form>
+            </article>
+            <article class="panel">
+              <h2>计费说明</h2>
+              <p class="muted">
+                服务器会在筛选条件与请求相符的启用规则中选择优先级最高的一项。
+                请求提交前会先预留相应额度。
+              </p>
+            </article>
+          </div>
+          <article class="panel table-panel">
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>操作类型</th><th>AI 模型</th><th>消耗额度</th><th>筛选条件</th><th>状态</th></tr></thead>
+                <tbody id="rates-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="ledger-panel" class="dashboard-panel hidden">
+          <article class="panel table-panel">
+            <div class="panel-heading">
+              <h2>待核对记录</h2>
+              <p class="muted">请先向服务提供商核实，再确认扣款或退还额度。</p>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>时间</th><th>用户编号</th><th>操作类型</th><th>预留额度</th><th>错误信息</th><th>操作</th></tr></thead>
+                <tbody id="pending-body"></tbody>
+              </table>
+            </div>
+          </article>
+          <article class="panel table-panel">
+            <h2>最近额度明细</h2>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>时间</th><th>用户编号</th><th>类型</th><th>可用额度变动</th><th>预留额度变动</th><th>原因</th></tr></thead>
+                <tbody id="ledger-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section id="audit-panel" class="dashboard-panel hidden">
+          <article class="panel table-panel">
+            <h2>管理操作审计</h2>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>时间</th><th>操作</th><th>操作者</th><th>对象</th><th>详情</th></tr></thead>
+                <tbody id="audit-body"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="action-dialog">
+      <form id="action-form" method="dialog" class="form-grid">
+        <h2 id="action-title">账号操作</h2>
+        <input name="user_id" type="hidden">
+        <input name="action" type="hidden">
+        <input name="idempotency_key" type="hidden">
+        <label id="amount-label">调整数额 <input name="amount" type="number"></label>
+        <label id="reason-label">原因 <input name="reason" minlength="3" maxlength="240"></label>
+        <label id="password-label">新密码 <input name="password" type="password" minlength="12"></label>
+        <div class="dialog-actions">
+          <button value="cancel" class="secondary">取消</button>
+          <button value="confirm">确认</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/admin/app.js" defer></script>
+  </body>
+</html>

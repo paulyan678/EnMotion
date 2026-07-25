@@ -1,0 +1,359 @@
+#!/bin/sh
+set -eu
+
+mode=${ENMOTION_DEPLOY_MODE:-mac}
+env_file=${ENMOTION_ENV_FILE:-}
+passphrase_file=
+confirmed=false
+recovery_mode=false
+allow_external_state=false
+archive=
+
+usage() {
+    printf '%s\n' \
+        'Usage: deploy/bin/restore [--mode mac|production] [--env-file PATH]' \
+        '                          [--passphrase-file PATH] [--recovery]' \
+        '                          [--allow-external-state] --yes STATE_ARCHIVE' \
+        '' \
+        'Restore replaces the destination database, media volume, and app-data volume.' \
+        '--recovery skips the automatic pre-restore rollback backup when the live' \
+        'database schema is too damaged to back up; --yes is still required.' \
+        '--allow-external-state acknowledges that referenced object-storage data is' \
+        'not present in an otherwise valid state archive.'
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mode) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; mode=$2; shift 2 ;;
+        --env-file) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; env_file=$2; shift 2 ;;
+        --passphrase-file) [ "$#" -ge 2 ] || { usage >&2; exit 2; }; passphrase_file=$2; shift 2 ;;
+        --recovery) recovery_mode=true; shift ;;
+        --allow-external-state) allow_external_state=true; shift ;;
+        --yes) confirmed=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*) usage >&2; exit 2 ;;
+        *) [ -z "$archive" ] || { usage >&2; exit 2; }; archive=$1; shift ;;
+    esac
+done
+
+[ -n "$archive" ] || { usage >&2; exit 2; }
+[ "$confirmed" = true ] || { printf 'ERROR: restore is destructive; rerun with --yes\n' >&2; exit 2; }
+
+export ENMOTION_DEPLOY_MODE=$mode
+[ -z "$env_file" ] || export ENMOTION_ENV_FILE=$env_file
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/_lib.sh"
+
+require_command docker
+require_command tar
+validate_env
+[ -f "$archive" ] || die "state archive not found: $archive"
+archive=$(CDPATH= cd -- "$(dirname -- "$archive")" && pwd)/$(basename -- "$archive")
+if [ "$DEPLOY_MODE" = production ]; then
+    case "$archive" in
+        *.enc) ;;
+        *) die "production restore requires an encrypted .enc state archive" ;;
+    esac
+fi
+if [ -n "$passphrase_file" ]; then
+    require_private_file "$passphrase_file" "restore passphrase file"
+fi
+
+restore_root=$(mktemp -d "${TMPDIR:-/tmp}/enmotion-restore.XXXXXX")
+lock_dir=$DEPLOY_DIR/.lifecycle.lock
+resume_services=
+services_stopped=false
+destructive_started=false
+restore_state_ready=false
+rollback_archive=
+rollback_partial=
+
+cleanup() {
+    exit_code=$?
+    trap - EXIT INT TERM
+    if [ "$services_stopped" = true ]; then
+        if [ "$destructive_started" = true ] && [ "$restore_state_ready" = false ]; then
+            warn "restore failed after replacement began; public services remain stopped"
+            if [ -n "$rollback_archive" ]; then
+                warn "restore the automatic rollback archive before restarting: $rollback_archive"
+            else
+                warn "recovery mode created no automatic rollback archive; repair the destination or retry a verified state archive before restarting"
+            fi
+        elif [ -n "$resume_services" ]; then
+            # shellcheck disable=SC2086
+            compose up -d $resume_services >/dev/null 2>&1 || \
+                warn "restore could not restart every application service"
+        fi
+    fi
+    case "$rollback_partial" in
+        "$APP_ROOT"/backups/.enmotion-pre-restore.partial.*) rm -f -- "$rollback_partial" ;;
+    esac
+    case "$restore_root" in
+        "${TMPDIR:-/tmp}"/enmotion-restore.*) rm -rf -- "$restore_root" ;;
+    esac
+    release_lock "$lock_dir"
+    exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+acquire_lock "$lock_dir" restore
+
+case "$archive" in
+    *.enc)
+        require_command openssl
+        [ -n "$passphrase_file" ] || die "encrypted backup requires --passphrase-file"
+        openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -pass "file:$passphrase_file" \
+            -in "$archive" -out "$restore_root/state.tar.gz"
+        state_archive=$restore_root/state.tar.gz
+        ;;
+    *) state_archive=$archive ;;
+esac
+
+tar -tzf "$state_archive" >"$restore_root/archive-list.txt"
+tar -tvzf "$state_archive" >"$restore_root/archive-verbose.txt"
+if awk '$0 ~ /(^|\/)\.\.($|\/)/ || $0 ~ /^\// { bad = 1 } END { exit bad }' "$restore_root/archive-list.txt"; then
+    :
+else
+    die "state archive contains an unsafe path"
+fi
+awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { bad = 1 }
+     END { exit bad }' "$restore_root/archive-verbose.txt" || \
+    die "state archive contains a link or unsupported entry type"
+
+for required in database.dump media.tar.gz app-data.tar.gz manifest.json SHA256SUMS; do
+    [ "$(grep -cx "$required" "$restore_root/archive-list.txt")" -eq 1 ] || \
+        die "state archive must contain exactly one $required"
+done
+
+tar -xzf "$state_archive" -C "$restore_root" \
+    database.dump media.tar.gz app-data.tar.gz manifest.json SHA256SUMS
+
+tar -tzf "$restore_root/media.tar.gz" >"$restore_root/media-list.txt"
+tar -tvzf "$restore_root/media.tar.gz" >"$restore_root/media-verbose.txt"
+awk '$0 != "output" && $0 !~ /^output\// { bad = 1 }
+     $0 ~ /(^|\/)\.\.($|\/)/ { bad = 1 }
+     END { exit bad }' "$restore_root/media-list.txt" || \
+    die "media archive contains an unsafe path"
+awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { bad = 1 }
+     END { exit bad }' "$restore_root/media-verbose.txt" || \
+    die "media archive contains a link or unsupported entry type"
+
+tar -tzf "$restore_root/app-data.tar.gz" >"$restore_root/app-data-list.txt"
+tar -tvzf "$restore_root/app-data.tar.gz" >"$restore_root/app-data-verbose.txt"
+awk '$0 != "data" && $0 !~ /^data\// { bad = 1 }
+     $0 ~ /(^|\/)\.\.($|\/)/ { bad = 1 }
+     END { exit bad }' "$restore_root/app-data-list.txt" || \
+    die "application-data archive contains an unsafe path"
+awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { bad = 1 }
+     END { exit bad }' "$restore_root/app-data-verbose.txt" || \
+    die "application-data archive contains a link or unsupported entry type"
+
+awk '
+    NF != 2 { bad = 1; next }
+    length($1) != 64 || $1 !~ /^[0-9A-Fa-f]+$/ { bad = 1 }
+    $2 != "database.dump" && $2 != "media.tar.gz" &&
+        $2 != "app-data.tar.gz" && $2 != "manifest.json" { bad = 1; next }
+    { seen[$2]++; total++ }
+    END {
+        if (bad || total != 4 || seen["database.dump"] != 1 ||
+            seen["media.tar.gz"] != 1 || seen["app-data.tar.gz"] != 1 ||
+            seen["manifest.json"] != 1) exit 1
+    }
+' "$restore_root/SHA256SUMS" || die "checksum manifest must name every required artifact exactly once"
+
+while read -r expected artifact; do
+    case "$artifact" in
+        database.dump|media.tar.gz|app-data.tar.gz|manifest.json) ;;
+        *) die "checksum manifest names an unexpected file: $artifact" ;;
+    esac
+    actual=$(sha256_file "$restore_root/$artifact")
+    [ "$actual" = "$expected" ] || die "checksum mismatch for $artifact"
+done <"$restore_root/SHA256SUMS"
+
+backup_format=$(sed -n 's/.*"bundleFormatVersion":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$restore_root/manifest.json")
+[ "$backup_format" = 1 ] || die "unsupported or missing state bundle format: ${backup_format:-unknown}"
+backup_schema=$(sed -n 's/.*"stateSchemaVersion":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$restore_root/manifest.json")
+[ -n "$backup_schema" ] || die "state manifest has no schema version"
+[ "$backup_schema" -le "$(schema_version)" ] || \
+    die "backup state schema $backup_schema is newer than supported schema $(schema_version)"
+backup_application=$(sed -n 's/.*"applicationVersion":[[:space:]]*"\([^"]*\)".*/\1/p' "$restore_root/manifest.json")
+backup_revision=$(sed -n 's/.*"databaseRevision":[[:space:]]*"\([^"]*\)".*/\1/p' "$restore_root/manifest.json")
+[ -n "$backup_application" ] || die "state manifest has no application version"
+[ -n "$backup_revision" ] || die "state manifest has no Alembic revision"
+
+manifest_boolean() {
+    manifest_field=$1
+    manifest_file=$2
+    manifest_occurrences=$(awk -v token="\"$manifest_field\"" '
+        {
+            remainder = $0
+            while ((position = index(remainder, token)) > 0) {
+                count++
+                remainder = substr(remainder, position + length(token))
+            }
+        }
+        END { print count + 0 }
+    ' "$manifest_file")
+    [ "$manifest_occurrences" -eq 1 ] || \
+        die "state manifest must contain exactly one boolean $manifest_field field"
+    awk -v key="$manifest_field" '
+        index($0, "\"" key "\"") {
+            value = $0
+            sub("^.*\"" key "\"[[:space:]]*:[[:space:]]*", "", value)
+            if (value ~ /^true([[:space:]]*[,}]|[[:space:]]*$)/) {
+                print "true"
+                next
+            }
+            if (value ~ /^false([[:space:]]*[,}]|[[:space:]]*$)/) {
+                print "false"
+                next
+            }
+            print "invalid"
+        }
+    ' "$manifest_file"
+}
+
+backup_uses_external_storage=$(manifest_boolean usesExternalObjectStorage "$restore_root/manifest.json")
+backup_includes_external_storage=$(manifest_boolean externalObjectStorageIncluded "$restore_root/manifest.json")
+case "$backup_uses_external_storage:$backup_includes_external_storage" in
+    true:true|true:false|false:true|false:false) ;;
+    *) die "state manifest has an invalid external-object-storage declaration" ;;
+esac
+if [ "$backup_uses_external_storage" = true ] && \
+        [ "$backup_includes_external_storage" = false ] && \
+        [ "$allow_external_state" = false ]; then
+    die "state archive references external object-storage data that it does not contain; verify that external state separately, then rerun with --allow-external-state"
+fi
+
+info "checking backup application and Alembic compatibility"
+compose --profile tools run --rm --no-deps migrate \
+    check-backup-compatibility \
+    --application-version "$backup_application" \
+    --bundled-application-version "$(app_version)" \
+    --database-revision "$backup_revision"
+
+resume_services=$(compose ps --status running --services 2>/dev/null | \
+    awk '$0 == "edge" || $0 == "api" || $0 == "worker" { print }' | tr '\n' ' ')
+
+info "stopping write-producing services"
+compose stop edge worker api >/dev/null
+services_stopped=true
+compose up -d --wait database redis >/dev/null
+
+info "validating PostgreSQL dump before replacing the live database"
+compose exec -T database sh -ec 'exec pg_restore --list' \
+    <"$restore_root/database.dump" >/dev/null
+
+if [ "$recovery_mode" = true ]; then
+    warn "recovery mode: skipping the automatic pre-restore rollback backup and live-schema validation"
+    warn "the current destination state cannot be recovered by this command after replacement begins"
+else
+    info "capturing an automatic pre-restore rollback backup"
+    rollback_staging=$restore_root/rollback
+    mkdir -p "$rollback_staging" "$APP_ROOT/backups"
+    rollback_root=$(CDPATH= cd -- "$APP_ROOT/backups" && pwd)
+    compose exec -T database sh -ec \
+        'exec pg_dump --format=custom --no-owner --no-acl --username="$POSTGRES_USER" "$POSTGRES_DB"' \
+        >"$rollback_staging/database.dump"
+    compose run --rm --no-deps --entrypoint tar api \
+        -czf - -C /app output >"$rollback_staging/media.tar.gz"
+    compose run --rm --no-deps --entrypoint tar api \
+        -czf - -C / data >"$rollback_staging/app-data.tar.gz"
+
+    current_revisions=$(compose exec -T database sh -ec \
+        'psql --no-align --tuples-only --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "select version_num from alembic_version"' \
+        2>/dev/null | awk 'NF { print }')
+    [ "$(printf '%s\n' "$current_revisions" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] || \
+        die "live database must contain exactly one Alembic revision before restore"
+    current_revision=$(printf '%s\n' "$current_revisions" | tr -cd 'A-Za-z0-9_.-')
+    compose --profile tools run --rm migrate \
+        check-database-compatibility --expected-revision "$current_revision"
+
+    uses_external_oss=$(external_object_storage_in_use)
+    created_at=$(utc_timestamp)
+    revision=$(git_revision | tr -cd 'A-Za-z0-9_.-')
+    architecture=$(uname -m | tr -cd 'A-Za-z0-9_.-')
+    printf '%s\n' \
+        '{' \
+        '  "bundleFormatVersion": 1,' \
+        "  \"applicationVersion\": \"$(app_version)\"," \
+        "  \"stateSchemaVersion\": $(schema_version)," \
+        "  \"databaseRevision\": \"$current_revision\"," \
+        "  \"sourceGitRevision\": \"$revision\"," \
+        "  \"createdAt\": \"$created_at\"," \
+        "  \"sourceArchitecture\": \"$architecture\"," \
+        '  "containsEnvironmentFile": false,' \
+        '  "containsCredentialBearingAppData": true,' \
+        "  \"usesExternalObjectStorage\": $uses_external_oss," \
+        '  "externalObjectStorageIncluded": false,' \
+        '  "automaticPreRestoreRollback": true' \
+        '}' >"$rollback_staging/manifest.json"
+    for artifact in database.dump media.tar.gz app-data.tar.gz manifest.json; do
+        printf '%s  %s\n' "$(sha256_file "$rollback_staging/$artifact")" "$artifact" \
+            >>"$rollback_staging/SHA256SUMS"
+    done
+
+    rollback_timestamp=$(file_timestamp)
+    rollback_plain=$restore_root/enmotion-pre-restore-$rollback_timestamp.tar.gz
+    tar -czf "$rollback_plain" -C "$rollback_staging" \
+        database.dump media.tar.gz app-data.tar.gz manifest.json SHA256SUMS
+    if [ -n "$passphrase_file" ]; then
+        rollback_archive=$rollback_root/enmotion-pre-restore-$rollback_timestamp.tar.gz.enc
+        rollback_partial=$(mktemp "$rollback_root/.enmotion-pre-restore.partial.XXXXXX.enc")
+        openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -pass "file:$passphrase_file" \
+            -in "$rollback_plain" -out "$rollback_partial"
+    else
+        rollback_archive=$rollback_root/enmotion-pre-restore-$rollback_timestamp.tar.gz
+        rollback_partial=$(mktemp "$rollback_root/.enmotion-pre-restore.partial.XXXXXX.tar.gz")
+        cp "$rollback_plain" "$rollback_partial"
+        warn "automatic rollback backup is not encrypted; protect it as sensitive data"
+    fi
+    chmod 0600 "$rollback_partial"
+    [ ! -e "$rollback_archive" ] && [ ! -L "$rollback_archive" ] || \
+        die "rollback archive already exists: $rollback_archive"
+    if ! mv -n -- "$rollback_partial" "$rollback_archive"; then
+        die "could not publish rollback archive: $rollback_archive"
+    fi
+    if [ -e "$rollback_partial" ] || [ -L "$rollback_partial" ]; then
+        die "refusing to overwrite existing rollback archive: $rollback_archive"
+    fi
+    info "automatic rollback backup created: $rollback_archive"
+fi
+
+info "replacing PostgreSQL database"
+destructive_started=true
+compose exec -T database sh -ec \
+    'dropdb --if-exists --force --username="$POSTGRES_USER" "$POSTGRES_DB"; createdb --username="$POSTGRES_USER" "$POSTGRES_DB"'
+compose exec -T database sh -ec \
+    'exec pg_restore --no-owner --no-acl --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
+    <"$restore_root/database.dump"
+
+info "replacing private media volume"
+compose run --rm --no-deps --entrypoint sh api -ec \
+    'find /app/output -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; exec tar -xzf - -C /app' \
+    <"$restore_root/media.tar.gz"
+
+info "replacing private application-data volume"
+compose run --rm --no-deps --entrypoint sh api -ec \
+    'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; exec tar -xzf - -C /' \
+    <"$restore_root/app-data.tar.gz"
+
+info "migrating restored data to the bundled schema"
+compose --profile tools run --rm migrate \
+    check-database-compatibility --expected-revision "$backup_revision"
+compose --profile tools run --rm migrate
+compose --profile tools run --rm migrate check-database-compatibility --require-head
+restore_state_ready=true
+
+if [ -n "$resume_services" ]; then
+    # shellcheck disable=SC2086
+    compose up -d --wait $resume_services >/dev/null
+fi
+services_stopped=false
+
+info "restore completed and checksums verified"
+if [ -n "$rollback_archive" ]; then
+    info "pre-restore rollback backup retained at: $rollback_archive"
+else
+    warn "restore completed in recovery mode without creating a pre-restore rollback backup"
+fi

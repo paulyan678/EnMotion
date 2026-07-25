@@ -1,0 +1,59 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+
+	# Runtime proxy errors are written separately from access logs. Remove the
+	# request URI and headers there as well because release capability tokens
+	# are bearer secrets embedded in the path.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+				request>headers delete
+			}
+		}
+	}
+}
+
+{$ENMOTION_DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 40MB
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Forwarded-Proto https
+		header_up X-Real-IP {remote_host}
+		flush_interval -1
+	}
+
+	# Capability tokens are bearer secrets embedded in the path.
+	log_skip /api/v1/releases/session/*
+
+	log {
+		output file /var/log/caddy/enmotion-access.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format filter {
+			wrap json
+				fields {
+					request>headers>Authorization delete
+					request>headers>Cookie delete
+					request>headers>Idempotency-Key delete
+					request>headers>X-CSRF-Token delete
+				}
+		}
+	}
+}

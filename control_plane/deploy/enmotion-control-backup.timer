@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly EnMotion control-plane backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target
