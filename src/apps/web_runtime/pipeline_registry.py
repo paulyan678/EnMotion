@@ -216,9 +216,10 @@ class PipelineProxy:
         if not workspace_isolation_enabled():
             return getattr(self._local(), name)
 
-        if callable(getattr(ComicGenPipeline, name, None)):
+        local_template = getattr(ComicGenPipeline, name, None)
+        if callable(local_template):
 
-            @wraps(local_value)
+            @wraps(local_template)
             def tenant_call(*args: Any, **kwargs: Any) -> Any:
                 tenant = get_tenant(required=True)
                 assert tenant is not None
