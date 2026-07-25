@@ -41,6 +41,7 @@
         <div class="toolbar">
           <nav class="tabs" aria-label="管理功能">
             <button class="tab active" data-panel="users-panel" type="button">账号管理</button>
+            <button class="tab" data-panel="provider-panel" type="button">API 配置</button>
             <button class="tab" data-panel="rates-panel" type="button">计费规则</button>
             <button class="tab" data-panel="ledger-panel" type="button">额度明细</button>
             <button class="tab" data-panel="audit-panel" type="button">审计记录</button>
@@ -89,6 +90,52 @@
                 <tbody id="users-body"></tbody>
               </table>
             </div>
+          </article>
+        </section>
+
+        <section id="provider-panel" class="dashboard-panel hidden">
+          <article class="panel">
+            <div class="panel-heading">
+              <div>
+                <h2>共享 API 配置</h2>
+                <p class="muted">
+                  所有用户请求统一使用这里配置的企业 API 密钥。密钥只保存在服务器，
+                  不会发送到员工电脑或重新显示在此页面。
+                </p>
+              </div>
+              <span id="provider-source" class="status off">正在读取</span>
+            </div>
+            <form id="provider-config-form" class="form-grid provider-form">
+              <label class="full">
+                服务商基础地址
+                <input
+                  name="base_url"
+                  type="url"
+                  inputmode="url"
+                  autocomplete="off"
+                  required
+                  maxlength="2048"
+                  placeholder="https://provider.example.com/v1"
+                >
+                <small>必须使用 HTTPS；本地测试环境除外。地址中不能包含账号、密钥或查询参数。</small>
+              </label>
+
+              <div class="full provider-summary" aria-live="polite">
+                <span>配置版本：<strong id="provider-version">0</strong></span>
+                <span>已配置模型：<strong id="provider-configured-count">0</strong></span>
+              </div>
+
+              <fieldset class="full provider-models">
+                <legend>模型 API 密钥</legend>
+                <p class="muted">
+                  留空表示保留当前密钥；输入新值表示替换；勾选移除后保存会停用该模型。
+                </p>
+                <div id="provider-credential-fields"></div>
+              </fieldset>
+
+              <p id="provider-write-warning" class="full notice error hidden"></p>
+              <button id="provider-save" type="submit">保存共享 API 配置</button>
+            </form>
           </article>
         </section>
 

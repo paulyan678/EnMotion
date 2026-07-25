@@ -82,9 +82,7 @@ class LoginSession(Base):
 
 class RateCard(Base):
     __tablename__ = "rate_cards"
-    __table_args__ = (
-        Index("ix_rate_cards_lookup", "operation", "model", "active", "priority"),
-    )
+    __table_args__ = (Index("ix_rate_cards_lookup", "operation", "model", "active", "priority"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -149,6 +147,27 @@ class ProviderTask(Base):
     )
     upstream_task_id: Mapped[str] = mapped_column(String(200), nullable=False)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
+    provider_config_version: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class ProviderConfiguration(Base):
+    __tablename__ = "provider_configurations"
+    __table_args__ = (
+        UniqueConstraint("version", name="uq_provider_configurations_version"),
+        Index("ix_provider_configurations_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    credentials_nonce: Mapped[str] = mapped_column(String(32), nullable=False)
+    credentials_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
@@ -156,15 +175,11 @@ class ProviderTask(Base):
 
 class ReleaseGrant(Base):
     __tablename__ = "release_grants"
-    __table_args__ = (
-        Index("ix_release_grants_user_expires", "user_id", "expires_at"),
-    )
+    __table_args__ = (Index("ix_release_grants_user_expires", "user_id", "expires_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     target: Mapped[str] = mapped_column(String(16), nullable=False)
     arch: Mapped[str] = mapped_column(String(16), nullable=False)
     platform: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -176,12 +191,8 @@ class ReleaseGrant(Base):
         DateTime(timezone=True), nullable=False, default=utcnow
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    manifest_consumed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    download_consumed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    manifest_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    download_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CreditLedger(Base):
@@ -195,9 +206,7 @@ class CreditLedger(Base):
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
-    actor_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     usage_request_id: Mapped[str | None] = mapped_column(
         ForeignKey("usage_requests.id", ondelete="RESTRICT")
     )
@@ -218,9 +227,7 @@ class AuditEvent(Base):
     __table_args__ = (Index("ix_audit_created", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    actor_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     target_type: Mapped[str] = mapped_column(String(80), nullable=False)
     target_id: Mapped[str | None] = mapped_column(String(160))

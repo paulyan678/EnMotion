@@ -2,9 +2,7 @@
 
 import {
   ArrowDownToLine,
-  CircleAlert,
   LoaderCircle,
-  RefreshCw,
   RotateCw,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -13,10 +11,14 @@ import { updateProgressPercent } from "@/lib/updater";
 
 export default function UpdatePill() {
   const t = useTranslations("ui.update");
-  const { supported, state, checkForUpdates, startUpdate, installAndRestart } = useUpdater();
+  const { supported, state, startUpdate, installAndRestart } = useUpdater();
   const percent = updateProgressPercent(state.progress);
 
-  if (!supported || state.status === "idle" || state.status === "checking") return null;
+  if (
+    !supported
+    || !["available", "downloading", "ready", "installing"].includes(state.status)
+    || (state.status === "available" && !state.availableVersion)
+  ) return null;
 
   if (state.status === "downloading") {
     return (
@@ -53,23 +55,13 @@ export default function UpdatePill() {
     );
   }
 
-  const action = state.status === "available"
-    ? startUpdate
-    : state.status === "ready"
-      ? installAndRestart
-      : checkForUpdates;
+  const action = state.status === "available" ? startUpdate : installAndRestart;
   const label = state.status === "available"
     ? t("downloadVersion", { version: state.availableVersion ?? "" })
-    : state.status === "ready"
-      ? t("restartToUpdate")
-      : t("retry");
+    : t("restartToUpdate");
   const Icon = state.status === "available"
     ? ArrowDownToLine
-    : state.status === "ready"
-      ? RotateCw
-      : state.status === "error"
-        ? CircleAlert
-        : RefreshCw;
+    : RotateCw;
 
   return (
     <button

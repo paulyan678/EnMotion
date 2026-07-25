@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ADMIN_SCRIPT = Path(__file__).parents[1] / "app" / "static" / "admin" / "app.js"
 PROJECT_ROOT = Path(__file__).parents[1]
 
@@ -34,15 +33,12 @@ def test_admin_bootstraps_csrf_and_formats_structured_api_errors() -> None:
 
 def test_credit_adjustment_retries_keep_one_idempotency_key() -> None:
     script = ADMIN_SCRIPT.read_text(encoding="utf-8")
-    markup = (
-        Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html"
-    ).read_text(encoding="utf-8")
+    markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert 'name="idempotency_key" type="hidden"' in markup
-    assert (
-        'dialog.querySelector("[name=idempotency_key]").value = crypto.randomUUID();'
-        in script
-    )
+    assert 'dialog.querySelector("[name=idempotency_key]").value = crypto.randomUUID();' in script
     assert "idempotency_key: values.idempotency_key" in script
     action_handler = script.split(
         '$("#action-form").addEventListener("submit"',
@@ -50,17 +46,14 @@ def test_credit_adjustment_retries_keep_one_idempotency_key() -> None:
     )[1]
     assert "let mutationSucceeded = false;" in action_handler
     assert "if (!mutationSucceeded) return;" in action_handler
-    assert (
-        "账号已更新，但刷新列表失败"
-        in action_handler
-    )
+    assert "账号已更新，但刷新列表失败" in action_handler
 
 
 def test_rate_card_models_are_fixed_and_operation_aware() -> None:
     script = ADMIN_SCRIPT.read_text(encoding="utf-8")
-    markup = (
-        Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html"
-    ).read_text(encoding="utf-8")
+    markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert "const MODEL_CATALOG" in script
     for model in (
@@ -77,11 +70,28 @@ def test_rate_card_models_are_fixed_and_operation_aware() -> None:
     assert "syncRateModels" in script
 
 
+def test_provider_configuration_ui_never_requests_existing_secret_values() -> None:
+    script = ADMIN_SCRIPT.read_text(encoding="utf-8")
+    markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "API 配置" in markup
+    assert "共享 API 配置" in markup
+    assert 'type="password"' in markup or 'type="password"' in script
+    assert "留空表示保留当前密钥" in markup
+    assert "/admin/provider-config" in script
+    assert "data-provider-remove" in script
+    assert "config.models.map" in script
+    assert "credential_value" not in markup
+    assert "credential_value" not in script
+
+
 def test_pending_usage_has_an_explicit_reconciliation_workflow() -> None:
     script = ADMIN_SCRIPT.read_text(encoding="utf-8")
-    markup = (
-        Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html"
-    ).read_text(encoding="utf-8")
+    markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert "pending-body" in markup
     assert "/admin/usage?usage_status=pending_reconciliation" in script
@@ -91,15 +101,16 @@ def test_pending_usage_has_an_explicit_reconciliation_workflow() -> None:
 
 def test_admin_interface_is_simplified_chinese_except_model_names() -> None:
     script = ADMIN_SCRIPT.read_text(encoding="utf-8")
-    markup = (
-        Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html"
-    ).read_text(encoding="utf-8")
+    markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
 
     assert '<html lang="zh-CN">' in markup
     assert "<title>EnMotion 管理中心</title>" in markup
     for text in (
         "管理员登录",
         "账号管理",
+        "API 配置",
         "计费规则",
         "额度明细",
         "审计记录",
@@ -111,6 +122,7 @@ def test_admin_interface_is_simplified_chinese_except_model_names() -> None:
 
     for text in (
         "账号已创建",
+        "共享 API 配置已更新",
         "计费规则已添加",
         "登录会话已撤销",
         "已确认用量扣款",
@@ -178,16 +190,14 @@ def test_admin_localizes_api_and_browser_validation_messages() -> None:
 
 
 def test_production_configs_do_not_log_release_capabilities_or_csrf() -> None:
-    service = (PROJECT_ROOT / "deploy" / "enmotion-control.service").read_text(
+    service = (PROJECT_ROOT / "deploy" / "enmotion-control.service").read_text(encoding="utf-8")
+    caddy = (PROJECT_ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    caddy_override = (PROJECT_ROOT / "deploy" / "enmotion-caddy.override.conf").read_text(
         encoding="utf-8"
     )
-    caddy = (PROJECT_ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
-    caddy_override = (
-        PROJECT_ROOT / "deploy" / "enmotion-caddy.override.conf"
-    ).read_text(encoding="utf-8")
-    caddy_environment = (
-        PROJECT_ROOT / "deploy" / "enmotion-caddy.env.example"
-    ).read_text(encoding="utf-8")
+    caddy_environment = (PROJECT_ROOT / "deploy" / "enmotion-caddy.env.example").read_text(
+        encoding="utf-8"
+    )
     package_config = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "--no-access-log" in service

@@ -238,6 +238,47 @@ class AuditPublic(BaseModel):
     created_at: datetime
 
 
+class ProviderModelStatus(BaseModel):
+    model: str
+    capability: Literal["chat", "image", "video"]
+    configured: bool
+
+
+class ProviderConfigPublic(BaseModel):
+    version: int = Field(ge=0)
+    source: Literal["environment", "managed"]
+    base_url: str
+    writable: bool
+    updated_at: datetime | None
+    models: list[ProviderModelStatus]
+
+
+class ProviderConfigUpdate(BaseModel):
+    base_url: str | None = Field(default=None, min_length=8, max_length=2048)
+    credentials: dict[str, str | None] = Field(default_factory=dict)
+
+    @field_validator("credentials")
+    @classmethod
+    def validate_credentials(
+        cls,
+        value: dict[str, str | None],
+    ) -> dict[str, str | None]:
+        unknown = set(value) - set(MODEL_CAPABILITIES)
+        if unknown:
+            raise ValueError("unsupported provider model")
+        if len(value) > len(MODEL_CAPABILITIES):
+            raise ValueError("too many provider credentials")
+        for credential in value.values():
+            if credential is not None and (
+                not credential.strip()
+                or len(credential) > 16_384
+                or "\r" in credential
+                or "\n" in credential
+            ):
+                raise ValueError("provider credential is empty or invalid")
+        return value
+
+
 class ReleaseSessionRequest(BaseModel):
     target: Literal["darwin", "windows"]
     arch: Literal["aarch64", "x86_64"]

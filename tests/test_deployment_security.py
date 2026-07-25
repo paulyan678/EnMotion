@@ -165,6 +165,17 @@ def test_loopback_and_opt_in_remote_requests_retain_diagnostics(monkeypatch, tmp
     assert remote.get("/diagnose/log_tail").status_code == 200
 
 
+def test_hybrid_health_does_not_require_an_authenticated_workspace(monkeypatch):
+    monkeypatch.setenv("ENMOTION_SERVER_MODE", "false")
+    monkeypatch.setenv("ENMOTION_HYBRID_MODE", "true")
+
+    client = TestClient(comic_api.app, client=("127.0.0.1", 50000))
+    health = client.get("/health")
+
+    assert health.status_code == 200
+    assert health.json()["studio_projects"] is None
+
+
 def test_static_media_allowlist_does_not_expose_persisted_project_data(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     output = tmp_path / "output"

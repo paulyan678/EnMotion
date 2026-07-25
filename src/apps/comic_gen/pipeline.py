@@ -5188,20 +5188,43 @@ class ComicGenPipeline:
             logger.info("[DUB] Source video has negligible audio, skipping separation")
             return None
 
-        # Step 2: Run Demucs separation (two-stems: vocals + no_vocals).
-        # Startup does not touch the network unless explicitly opted in; the
-        # first request initializes the model here and waits for that one load.
-        if not self._ensure_demucs_model_ready():
-            return None
-
         try:
-            import demucs.separate
-            demucs.separate.main([
-                "--two-stems", "vocals",
-                "-n", "htdemucs",
-                "--out", work_dir,
-                extracted_audio,
-            ])
+            worker_path = os.getenv("ENMOTION_DEMUCS_WORKER", "").strip()
+            if worker_path:
+                worker = os.path.abspath(os.path.expanduser(worker_path))
+                if not os.path.isfile(worker):
+                    raise FileNotFoundError("configured Demucs worker is unavailable")
+                completed = subprocess.run(
+                    [
+                        worker,
+                        "--input",
+                        extracted_audio,
+                        "--output",
+                        work_dir,
+                    ],
+                    capture_output=True,
+                    timeout=10 * 60,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    raise RuntimeError(
+                        f"Demucs worker exited with status {completed.returncode}"
+                    )
+            else:
+                # Development/server mode keeps the existing in-process path.
+                # Packaged desktop builds use the separate worker so Torch is
+                # never extracted during ordinary application launch.
+                if not self._ensure_demucs_model_ready():
+                    return None
+
+                import demucs.separate
+
+                demucs.separate.main([
+                    "--two-stems", "vocals",
+                    "-n", "htdemucs",
+                    "--out", work_dir,
+                    extracted_audio,
+                ])
         except Exception as e:
             logger.warning(f"[DUB] Demucs separation failed: {e}, falling back to simple replacement")
             return None

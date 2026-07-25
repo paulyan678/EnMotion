@@ -83,4 +83,46 @@ describe("desktop updater UI", () => {
     fireEvent.click(restartButtons[0]);
     await waitFor(() => expect(installAndRestart).toHaveBeenCalledOnce());
   });
+
+  it("keeps top-bar retry hidden while retaining diagnostics in settings", async () => {
+    let listener: ((state: UpdaterState) => void) | undefined;
+    window.enmotionUpdater = {
+      getState: vi.fn(async (): Promise<UpdaterState> => ({
+        status: "idle",
+        currentVersion: "1.0.0",
+      })),
+      checkForUpdates: vi.fn(),
+      startUpdate: vi.fn(),
+      installAndRestart: vi.fn(),
+      confirmUiReady: vi.fn(),
+      subscribe: vi.fn(async (next) => {
+        listener = next;
+        return () => undefined;
+      }),
+    };
+
+    renderWithIntl(
+      <UpdaterProvider>
+        <UpdatePill />
+        <UpdateSettingsCard />
+      </UpdaterProvider>,
+      { locale: "en" },
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Check for updates" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry update" })).not.toBeInTheDocument();
+
+    act(() => {
+      listener?.({
+        status: "error",
+        currentVersion: "1.0.0",
+        error: "network unavailable",
+      });
+    });
+
+    expect(await screen.findByRole("button", { name: "Retry update" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Retry update" })).toHaveLength(1);
+  });
 });

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import base64
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -56,7 +57,9 @@ def provider_transport(provider_calls: list[httpx.Request]) -> httpx.MockTranspo
         if request.url.path.endswith("/video/generations/task-owned-123"):
             return httpx.Response(200, json={"id": "task-owned-123", "status": "succeeded"})
         if request.url.path.endswith("/videos/task-owned-123/content"):
-            return httpx.Response(200, content=b"video-content", headers={"content-type": "video/mp4"})
+            return httpx.Response(
+                200, content=b"video-content", headers={"content-type": "video/mp4"}
+            )
         if request.headers.get("content-type", "").startswith("multipart/form-data"):
             return httpx.Response(200, json={"data": [{"url": "https://media.test/image.png"}]})
         body = json.loads(request.content) if request.content else {}
@@ -126,6 +129,7 @@ def app_env(
             "gpt-image-2": "image-server-secret",
             "doubao-seedance-2-0-fast-260128": "video-server-secret",
         },
+        provider_config_master_key=base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
         release_manifest_path=str(manifest),
         release_allowed_hosts=("private-downloads.test", "github.com", "downloads.test"),
         release_source_credentials={

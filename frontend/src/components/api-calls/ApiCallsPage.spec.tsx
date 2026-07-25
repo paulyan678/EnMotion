@@ -284,6 +284,8 @@ describe("API Calls dashboard", () => {
 
     const title = await screen.findByRole("heading", { name: "接口调用" });
     expect(title.previousElementSibling).toBeNull();
+    expect(title).toHaveAttribute("data-global-page-title");
+    expect(title).toHaveClass("text-[1.625rem]", "md:text-[2.125rem]");
     expect(screen.queryByText("接口活动 · 实时监控")).not.toBeInTheDocument();
     expect(await screen.findByText("这里还没有接口调用")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();

@@ -257,16 +257,21 @@ jobs:
           set -euo pipefail
           python3 desktop/scripts/stage_frontend.py
           python3 desktop/scripts/build_sidecar.py --target "${{ matrix.target }}"
-          codesign --force --timestamp --options runtime \
-            --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
-            "desktop/src-tauri/binaries/enmotion-sidecar-${{ matrix.target }}"
-          codesign --verify --strict --verbose=2 \
-            "desktop/src-tauri/binaries/enmotion-sidecar-${{ matrix.target }}"
+          core="desktop/src-tauri/binaries/enmotion-sidecar-runtime/enmotion-sidecar"
+          worker="desktop/src-tauri/binaries/enmotion-demucs-worker-${{ matrix.target }}"
+          for binary in "$core" "$worker"; do
+            codesign --force --timestamp --options runtime \
+              --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+              "$binary"
+            codesign --verify --strict --verbose=2 \
+              "$binary"
+          done
           smoke_dir="$RUNNER_TEMP/enmotion-sidecar-smoke"
           mkdir -p "$smoke_dir"
           (
             cd "$smoke_dir"
-            "$GITHUB_WORKSPACE/desktop/src-tauri/binaries/enmotion-sidecar-${{ matrix.target }}" \
+            ENMOTION_DEMUCS_WORKER="$GITHUB_WORKSPACE/$worker" \
+              "$GITHUB_WORKSPACE/$core" \
               --verify-bundle
           )
           cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml \
@@ -446,8 +451,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Frontend staging failed" }
           python desktop/scripts/build_sidecar.py --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw "Sidecar build failed" }
-          & desktop/scripts/sign-windows.ps1 desktop/src-tauri/binaries/enmotion-sidecar-x86_64-pc-windows-msvc.exe
-          $sidecar = (Resolve-Path "desktop/src-tauri/binaries/enmotion-sidecar-x86_64-pc-windows-msvc.exe").Path
+          $sidecar = (Resolve-Path "desktop/src-tauri/binaries/enmotion-sidecar-runtime/enmotion-sidecar.exe").Path
+          $worker = (Resolve-Path "desktop/src-tauri/binaries/enmotion-demucs-worker-x86_64-pc-windows-msvc.exe").Path
+          & desktop/scripts/sign-windows.ps1 $sidecar
+          & desktop/scripts/sign-windows.ps1 $worker
+          $env:ENMOTION_DEMUCS_WORKER = $worker
           $smokeDirectory = Join-Path $env:RUNNER_TEMP "enmotion-sidecar-smoke"
           New-Item -ItemType Directory -Force $smokeDirectory | Out-Null
           Push-Location $smokeDirectory
@@ -495,10 +503,11 @@ jobs:
             throw "Signed EnMotion application executable was not found"
           }
           $targets = @(
-            "desktop/src-tauri/binaries/enmotion-sidecar-x86_64-pc-windows-msvc.exe",
+            "desktop/src-tauri/binaries/enmotion-sidecar-runtime/enmotion-sidecar.exe",
+            "desktop/src-tauri/binaries/enmotion-demucs-worker-x86_64-pc-windows-msvc.exe",
             $application
           ) + @(Get-ChildItem $bundleRoot -Recurse -File -Include *.exe | ForEach-Object FullName)
-          if ($targets.Count -lt 3) { throw "Expected signed sidecar, application, and installer were not found" }
+          if ($targets.Count -lt 4) { throw "Expected signed sidecars, application, and installer were not found" }
           foreach ($target in $targets) {
             $signature = Get-AuthenticodeSignature -FilePath $target
             if ($signature.Status -ne "Valid") { throw "Invalid Authenticode signature: $target" }

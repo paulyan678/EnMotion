@@ -8,6 +8,7 @@ import BreadcrumbBar from "@/components/layout/BreadcrumbBar";
 import { useTopBarNavigation } from "@/components/layout/TopBarNavigationContext";
 import UserManagementDialog from "@/components/auth/UserManagementDialog";
 import UpdatePill from "@/components/update/UpdatePill";
+import { useUpdater } from "@/components/update/UpdaterProvider";
 import AccountControl from "@/components/auth/AccountControl";
 import ModalPortal from "@/components/common/ModalPortal";
 
@@ -15,6 +16,7 @@ export default function ServerAccountBar() {
   const t = useTranslations("ui.auth");
   const { serverMode, status, user, logout, changePassword } = useAuth();
   const { navigation } = useTopBarNavigation();
+  const { supported: updaterSupported, checkForUpdates } = useUpdater();
   const [menuOpen, setMenuOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
@@ -23,6 +25,17 @@ export default function ServerAccountBar() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const updateCheckedRef = useRef(false);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      updateCheckedRef.current = false;
+      return;
+    }
+    if (!updaterSupported || updateCheckedRef.current) return;
+    updateCheckedRef.current = true;
+    void checkForUpdates();
+  }, [checkForUpdates, status, updaterSupported]);
 
   useEffect(() => {
     if (!menuOpen) return;

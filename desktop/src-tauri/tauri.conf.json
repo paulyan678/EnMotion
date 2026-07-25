@@ -29,10 +29,11 @@
       "../../icon.ico"
     ],
     "externalBin": [
-      "binaries/enmotion-sidecar"
+      "binaries/enmotion-demucs-worker"
     ],
     "resources": {
-      "../web/static/": "web/static/"
+      "../web/static/": "web/static/",
+      "binaries/enmotion-sidecar-runtime/": "sidecar/"
     },
     "createUpdaterArtifacts": false
   },

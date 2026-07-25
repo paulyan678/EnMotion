@@ -16,6 +16,7 @@ import CreateProjectDialog from "@/components/project/CreateProjectDialog";
 import EnvConfigDialog from "@/components/project/EnvConfigDialog";
 import CreativeCanvas from "@/components/canvas/CreativeCanvas";
 import AppShell from "@/components/layout/AppShell";
+import GlobalPageTitle from "@/components/layout/GlobalPageTitle";
 import type { GlobalTab } from "@/components/layout/GlobalSidebar";
 import dynamic from "next/dynamic";
 import { api } from "@/lib/api";
@@ -624,9 +625,9 @@ export default function Home() {
         {/* Page header — Fraunces title + actions */}
         <header className="px-4 md:px-7 pt-5 md:pt-6 pb-3 flex flex-col md:flex-row md:items-end gap-3 md:gap-5">
           <div className="flex-1 min-w-0">
-            <h1 className="text-[1.625rem] md:text-[2.125rem] font-display atelier-display font-semibold text-foreground leading-tight tracking-tight">
+            <GlobalPageTitle>
               {t("title")}
-            </h1>
+            </GlobalPageTitle>
           </div>
           <div className="flex items-center flex-wrap gap-2.5 md:pb-1">
             <button

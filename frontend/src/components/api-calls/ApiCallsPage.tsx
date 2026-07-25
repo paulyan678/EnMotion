@@ -38,6 +38,7 @@ import {
 } from "@/lib/api";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
+import GlobalPageTitle from "@/components/layout/GlobalPageTitle";
 
 type StatusFilter = "all" | ApiCallStatus;
 
@@ -345,11 +346,11 @@ export default function ApiCallsPage() {
   const filters: StatusFilter[] = ["all", "running", "queued", "completed", "failed", "canceled"];
 
   return (
-    <section className="min-h-full px-4 py-6 sm:px-7 lg:px-10 lg:py-9">
-      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5">
+    <section className="min-h-full px-7 py-5">
+      <div className="flex w-full flex-col gap-5">
         <header className="flex flex-col gap-4 border-b border-glass-border pb-5 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <h1 className="font-display atelier-display text-4xl text-foreground sm:text-5xl">{t("title")}</h1>
+            <GlobalPageTitle>{t("title")}</GlobalPageTitle>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-text-secondary">{t("subtitle")}</p>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted">

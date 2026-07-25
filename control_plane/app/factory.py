@@ -19,7 +19,7 @@ from .models import User
 from .routers import account, admin, auth, gateway, releases
 from .security import ConcurrentKeyLimiter, SlidingWindowLimiter, hash_password
 from .services.ledger import recover_interrupted_reservations
-
+from .services.provider_config import ProviderConfigService
 
 logger = logging.getLogger("enmotion.control_plane")
 
@@ -30,11 +30,15 @@ def create_app(
     provider_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     db = Database(settings.database_url)
+    provider_config = ProviderConfigService(settings, db)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if settings.auto_create_schema:
             db.create_schema()
+        # Fail closed before serving billable requests if an existing managed
+        # configuration cannot be decrypted with the installed master key.
+        provider_config.current()
         with db.session() as session:
             recovered = recover_interrupted_reservations(session)
         if recovered:
@@ -77,9 +81,8 @@ def create_app(
     )
     app.state.settings = settings
     app.state.db = db
-    app.state.login_account_limiter = SlidingWindowLimiter(
-        settings.login_attempts_per_minute
-    )
+    app.state.provider_config = provider_config
+    app.state.login_account_limiter = SlidingWindowLimiter(settings.login_attempts_per_minute)
     app.state.login_ip_limiter = SlidingWindowLimiter(
         max(30, settings.login_attempts_per_minute * 3)
     )
@@ -111,9 +114,9 @@ def create_app(
             "base-uri 'none'; form-action 'self'"
         )
         response.headers["Cache-Control"] = (
-            "no-store" if request.url.path.startswith("/api/") else response.headers.get(
-                "Cache-Control", "no-cache"
-            )
+            "no-store"
+            if request.url.path.startswith("/api/")
+            else response.headers.get("Cache-Control", "no-cache")
         )
         return response
 
@@ -152,7 +155,14 @@ def create_app(
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE, "database schema is not ready"
             ) from exc
-        return {"status": "ready", "users": int(users or 0)}
+        provider_status = provider_config.public_status()
+        configured_models = sum(1 for item in provider_status["models"] if item["configured"])
+        return {
+            "status": "ready",
+            "users": int(users or 0),
+            "provider_config_source": str(provider_status["source"]),
+            "configured_models": configured_models,
+        }
 
     static_root = Path(__file__).resolve().parent / "static" / "admin"
     app.mount("/admin", StaticFiles(directory=static_root, html=True), name="admin")

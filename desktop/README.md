@@ -87,6 +87,10 @@ if it is absent, and release SBOMs record the exact FFmpeg version. Before
 distributing installers, confirm that the selected FFmpeg build and its enabled
 codecs satisfy the applicable LGPL/GPL notice and source-offer obligations.
 
+The launch-critical Python sidecar is packaged as a pre-expanded runtime so the
+desktop app does not unpack it again on every launch. Demucs and PyTorch remain
+in a separate one-file worker that starts only when audio separation is used.
+
 ## Release configuration
 
 The tracked Tauri config contains deliberately unusable updater placeholders.

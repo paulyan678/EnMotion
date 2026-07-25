@@ -10,6 +10,7 @@ const state = {
   csrf: readCookie("enmotion_admin_csrf") || sessionStorage.getItem("enmotion-admin-csrf") || "",
   authGeneration: 0,
   users: [],
+  providerConfig: null,
 };
 let refreshPromise = null;
 const $ = (selector) => document.querySelector(selector);
@@ -28,6 +29,15 @@ const MODEL_CATALOG = Object.freeze({
     ["doubao-seedance-2-0-mini-260615", "Seedance 2.0 Mini"],
   ],
 });
+const PROVIDER_MODELS = Object.freeze([
+  ["deepseek-v4-flash", "DeepSeek V4 Flash", "文本"],
+  ["qwen3.7-max", "Qwen 3.7 Max", "文本"],
+  ["deepseek-v4-pro", "DeepSeek V4 Pro", "文本"],
+  ["gpt-image-2", "GPT Image 2", "图像"],
+  ["doubao-seedance-2-0-260128", "Seedance 2.0", "视频"],
+  ["doubao-seedance-2-0-fast-260128", "Seedance 2.0 Fast", "视频"],
+  ["doubao-seedance-2-0-mini-260615", "Seedance 2.0 Mini", "视频"],
+]);
 const ROLE_LABELS = Object.freeze({
   admin: "管理员",
   user: "普通用户",
@@ -66,6 +76,7 @@ const AUDIT_ACTION_LABELS = Object.freeze({
   "admin.credit_adjustment_replayed": "重复提交额度调整",
   "admin.rate_card_created": "创建计费规则",
   "admin.rate_card_updated": "更新计费规则",
+  "admin.provider_config_updated": "更新共享 API 配置",
   "admin.usage_settled": "确认用量扣款",
   "admin.usage_settlement_replayed": "重复确认用量扣款",
   "admin.usage_refunded": "退还用量额度",
@@ -84,6 +95,7 @@ const AUDIT_TARGET_LABELS = Object.freeze({
   rate_card: "计费规则",
   usage_request: "用量请求",
   release_grant: "更新下载授权",
+  provider_configuration: "共享 API 配置",
 });
 const AUDIT_DETAIL_KEY_LABELS = Object.freeze({
   username: "用户名",
@@ -97,6 +109,9 @@ const AUDIT_DETAIL_KEY_LABELS = Object.freeze({
   unit_cost: "消耗额度",
   selectors: "筛选条件",
   changed_fields: "更改字段",
+  changed_models: "更改模型",
+  version: "配置版本",
+  base_url: "服务商基础地址",
   charged_units: "扣除额度",
   reserved_units: "预留额度",
   target: "发布目标",
@@ -166,6 +181,14 @@ const API_DETAIL_TRANSLATIONS = Object.freeze({
   "password must not exceed 256 characters": "密码不能超过 256 个字符",
   "password must not be only whitespace": "密码不能只包含空格",
   "unsupported provider model": "不支持所选 AI 模型",
+  "provider credential is empty or invalid": "API 密钥为空或格式无效",
+  "provider configuration did not change": "没有需要保存的 API 配置更改",
+  "provider base URL must use HTTPS": "服务商基础地址必须使用 HTTPS",
+  "provider base URL must include a hostname": "服务商基础地址必须包含主机名",
+  "provider base URL must not contain credentials, parameters, a query, or a fragment":
+    "服务商基础地址不能包含账号、密钥、参数、查询内容或片段",
+  "set ENMOTION_PROVIDER_CONFIG_MASTER_KEY before saving provider credentials":
+    "服务器尚未设置 API 配置加密主密钥，请先联系运维人员完成安全配置",
 });
 const FIELD_LABELS = Object.freeze({
   username: "用户名",
@@ -182,6 +205,8 @@ const FIELD_LABELS = Object.freeze({
   delta: "调整数额",
   reason: "原因",
   active: "是否启用",
+  base_url: "服务商基础地址",
+  credentials: "API 密钥",
 });
 
 function showNotice(message, error = false) {
@@ -372,6 +397,64 @@ function syncRateModels() {
   if (options.some((option) => option.value === prior)) modelSelect.value = prior;
 }
 
+function renderProviderConfig(config) {
+  state.providerConfig = config;
+  const configuredByModel = Object.fromEntries(
+    config.models.map((item) => [item.model, item.configured]),
+  );
+  const configuredCount = config.models.filter((item) => item.configured).length;
+  $("#provider-version").textContent = String(config.version);
+  $("#provider-configured-count").textContent = String(configuredCount);
+  const source = $("#provider-source");
+  source.textContent = config.source === "managed" ? "服务器受管理配置" : "环境变量配置";
+  source.classList.toggle("off", configuredCount === 0);
+  $("#provider-config-form [name=base_url]").value = config.base_url;
+
+  $("#provider-credential-fields").innerHTML = PROVIDER_MODELS.map(
+    ([model, label, capability]) => {
+      const configured = Boolean(configuredByModel[model]);
+      return `
+        <div class="provider-credential-row" data-provider-model="${model}">
+          <div class="provider-model-label">
+            <strong>${escapeText(label)} · ${escapeText(capability)}</strong>
+            <code>${escapeText(model)}</code>
+            <span class="status ${configured ? "" : "off"}">${configured ? "已配置" : "未配置"}</span>
+          </div>
+          <label>
+            ${configured ? "替换 API 密钥" : "设置 API 密钥"}
+            <input
+              data-provider-credential
+              type="password"
+              autocomplete="new-password"
+              spellcheck="false"
+              maxlength="16384"
+              placeholder="${configured ? "留空以保留当前密钥" : "输入企业 API 密钥"}"
+            >
+          </label>
+          <label class="provider-remove">
+            <input data-provider-remove type="checkbox" ${configured ? "" : "disabled"}>
+            移除当前密钥
+          </label>
+        </div>
+      `;
+    },
+  ).join("");
+
+  const warning = $("#provider-write-warning");
+  warning.textContent = config.writable
+    ? ""
+    : "服务器尚未配置独立的加密主密钥。当前环境变量配置仍会继续工作，但无法在此页面保存更改。";
+  warning.classList.toggle("hidden", config.writable);
+  $("#provider-config-form").querySelectorAll("input, button").forEach((field) => {
+    if (field.matches("[data-provider-remove][disabled]")) return;
+    field.disabled = !config.writable;
+  });
+}
+
+async function loadProviderConfig() {
+  renderProviderConfig(await api("/admin/provider-config"));
+}
+
 async function loadUsers() {
   state.users = await api("/admin/users");
   $("#account-count").textContent = state.users.length;
@@ -435,7 +518,14 @@ async function loadAudit() {
 }
 
 async function loadAll() {
-  await Promise.all([loadUsers(), loadRates(), loadLedger(), loadPendingUsage(), loadAudit()]);
+  await Promise.all([
+    loadUsers(),
+    loadProviderConfig(),
+    loadRates(),
+    loadLedger(),
+    loadPendingUsage(),
+    loadAudit(),
+  ]);
 }
 
 async function showDashboard(session) {
@@ -486,6 +576,36 @@ $("#create-user-form").addEventListener("submit", async (event) => {
     form.reset();
     await loadUsers();
     showNotice("账号已创建");
+  } catch (error) { showNotice(error.message, true); }
+  finally { endFormSubmit(form); }
+});
+
+$("#provider-config-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!beginFormSubmit(form)) return;
+  try {
+    const baseUrl = form.querySelector("[name=base_url]").value.trim().replace(/\/+$/, "");
+    const credentials = {};
+    form.querySelectorAll("[data-provider-model]").forEach((row) => {
+      const model = row.dataset.providerModel;
+      const replacement = row.querySelector("[data-provider-credential]").value.trim();
+      const remove = row.querySelector("[data-provider-remove]").checked;
+      if (remove) credentials[model] = null;
+      else if (replacement) credentials[model] = replacement;
+    });
+    const payload = { credentials };
+    if (baseUrl !== state.providerConfig?.base_url) payload.base_url = baseUrl;
+    if (!payload.base_url && Object.keys(credentials).length === 0) {
+      throw new Error("没有需要保存的 API 配置更改");
+    }
+    const updated = await api("/admin/provider-config", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    renderProviderConfig(updated);
+    await loadAudit();
+    showNotice("共享 API 配置已更新，新请求将立即使用新配置");
   } catch (error) { showNotice(error.message, true); }
   finally { endFormSubmit(form); }
 });

@@ -12,6 +12,7 @@ import ResultGallery from './ResultGallery';
 import { usePlaygroundStore, type PlaygroundMode, type PlaygroundGeneration, type QueuedRequest } from './usePlaygroundStore';
 import { getEffectivePlaygroundParameters } from './playgroundModels';
 import { playgroundApi, type PlaygroundGenerationResponse } from '@/lib/api';
+import GlobalPageTitle from '@/components/layout/GlobalPageTitle';
 
 /** Modes that require media input (image or video source).
  *  t2i also shows optional media input — when provided, it auto-becomes i2i. */
@@ -239,9 +240,9 @@ export default function PlaygroundPage() {
       <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-7 py-5">
         <div className="flex flex-col gap-1">
           <div className="flex items-baseline gap-[10px]">
-            <h1 className="font-display text-[1.625rem] md:text-[2.125rem] font-semibold tracking-tight text-foreground atelier-display">
+            <GlobalPageTitle>
               {t('header.title')}
-            </h1>
+            </GlobalPageTitle>
             <span className="font-mono text-[0.6875rem] uppercase tracking-[0.1em] text-text-muted">
               {t('header.resultsCount', { count: resultCount })}
             </span>

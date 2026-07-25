@@ -23,11 +23,7 @@ def settings(**overrides) -> Settings:
             "supported SQLite",
         ),
         (
-            {
-                "provider_base_url": (
-                    "https://user:secret@provider.test/v1?redirect=attacker"
-                )
-            },
+            {"provider_base_url": ("https://user:secret@provider.test/v1?redirect=attacker")},
             "must not contain credentials",
         ),
         (
@@ -37,6 +33,14 @@ def settings(**overrides) -> Settings:
         (
             {"provider_read_timeout_seconds": float("nan")},
             "between 0 and 3600",
+        ),
+        (
+            {"provider_config_master_key": "dG9vLXNob3J0"},
+            "exactly 32 bytes",
+        ),
+        (
+            {"provider_config_master_key": "A" * 42 + "!"},
+            "URL-safe base64",
         ),
     ],
 )

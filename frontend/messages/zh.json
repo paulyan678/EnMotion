@@ -593,7 +593,7 @@
     }
   },
   "workspace": {
-    "title": "我的工作区",
+    "title": "工作区",
     "empty": "还没有项目",
     "emptyHint": "选择一种方式开始创作",
     "createSeries": "创建系列",

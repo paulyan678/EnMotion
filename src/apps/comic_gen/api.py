@@ -359,7 +359,7 @@ def _register_workspace_read_model_startup(application: FastAPI) -> None:
     )
 
 
-if workspace_isolation_enabled():
+if server_mode_enabled():
     _register_workspace_read_model_startup(app)
 
 if not workspace_isolation_enabled():
@@ -447,7 +447,7 @@ else:
 # Unmanaged desktop mode delegates to a singleton. Server and hybrid modes
 # resolve an isolated local pipeline from the authenticated workspace context.
 pipeline = PipelineProxy(
-    ComicGenPipeline({"recover_orphan_tasks": not server_mode_enabled()}),
+    lambda: ComicGenPipeline({"recover_orphan_tasks": not server_mode_enabled()}),
     _workspace_pipelines,
 )
 
@@ -972,7 +972,9 @@ def health_check(request: Request):
                 # Health is public in server mode and therefore has no tenant
                 # context. Never reach through the fail-closed pipeline proxy.
                 "studio_projects": (
-                    None if server_mode_enabled() else len(getattr(pipeline, "scripts", {}))
+                    None
+                    if workspace_isolation_enabled()
+                    else len(getattr(pipeline, "scripts", {}))
                 ),
             }
         )

@@ -83,12 +83,47 @@ authority.
 - `GET /api/v1/admin/ledger`
 - `GET`, `POST /api/v1/admin/rate-cards`
 - `PATCH /api/v1/admin/rate-cards/{id}`
+- `GET /api/v1/admin/provider-config`
+- `PATCH /api/v1/admin/provider-config`
 - `POST /api/v1/admin/usage/{id}/settle`
 - `POST /api/v1/admin/usage/{id}/refund`
 - `GET /api/v1/admin/audit`
 
 Credit adjustment keys must be unique and are safely replayable. Passwords and
 provider secrets never appear in audit details.
+
+`GET /api/v1/admin/provider-config` returns only configuration metadata:
+
+```json
+{
+  "version": 3,
+  "source": "managed",
+  "base_url": "https://provider.example.com/v1",
+  "writable": true,
+  "updated_at": "2026-07-25T03:00:00Z",
+  "models": [
+    {"model": "deepseek-v4-flash", "capability": "chat", "configured": true}
+  ]
+}
+```
+
+It never returns a credential value, suffix, ciphertext, or nonce. To rotate or
+remove selected credentials, send only the intended changes:
+
+```json
+{
+  "base_url": "https://provider.example.com/v1",
+  "credentials": {
+    "deepseek-v4-flash": "new-secret-value",
+    "qwen3.7-max": null
+  }
+}
+```
+
+An omitted model retains its current credential; `null` explicitly removes it.
+Cookie-authenticated mutations require the normal CSRF header. Each save creates
+an encrypted immutable version and audits only the changed field names and
+model IDs.
 
 ## Provider gateway
 

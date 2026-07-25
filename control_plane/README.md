@@ -27,6 +27,9 @@ export ENMOTION_DATABASE_URL="sqlite:///$(pwd)/development.db"
 export ENMOTION_SESSION_HMAC_SECRET="replace-with-at-least-32-random-characters"
 export ENMOTION_PROVIDER_BASE_URL="https://provider.example.com/v1"
 export ENMOTION_PROVIDER_CREDENTIALS_JSON='{}'
+export ENMOTION_PROVIDER_CONFIG_MASTER_KEY="$(
+  python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
+)"
 .venv/bin/alembic upgrade head
 .venv/bin/python -m app.cli bootstrap-admin --username admin
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
@@ -45,6 +48,12 @@ Run verification with:
 
 `ENMOTION_AUTO_CREATE_SCHEMA=true` exists only for disposable tests. Production
 must run `alembic upgrade head`.
+
+The administrator page includes an **API 配置** tab. It manages one
+organization-wide provider base URL and model credential set used by every
+employee. Existing secrets are never returned to the browser: blank fields keep
+the current value, a new value rotates it, and the explicit removal checkbox
+disables that model.
 
 ## Credit rules
 
@@ -77,9 +86,17 @@ The only billable upstream routes are:
 Video status and content routes are read-only and ownership-bound. All billable
 requests require an `Idempotency-Key`. The service accepts only the seven model
 IDs in `app/config.py`, validates each operation/model capability, discards
-client authorization, and injects the matching secret from
-`ENMOTION_PROVIDER_CREDENTIALS_JSON`. It never accepts an upstream URL from a
-client.
+client authorization, and injects the matching server-side secret. Environment
+values from `ENMOTION_PROVIDER_CREDENTIALS_JSON` are the initial/fallback
+configuration. After an administrator saves the API configuration, an AES-GCM
+encrypted, versioned database record becomes authoritative immediately without
+a restart. It never accepts an upstream URL from a client.
+
+`ENMOTION_PROVIDER_CONFIG_MASTER_KEY` must be a dedicated URL-safe base64
+encoding of exactly 32 random bytes. Keep it in `/etc/enmotion-control.env` with
+mode `0600`; never reuse the session HMAC secret. Provider task records retain
+the configuration version used at submission so later status/content requests
+continue with the matching credential after rotation.
 
 Provider responses and verified release files are streamed. Release archives
 are first staged in private temporary storage and checked against manifest
@@ -110,7 +127,8 @@ The production layout assumed by `deploy/` is:
 3. Create the state/backup directories owned by that account.
 4. Copy `.env.example` to `/etc/enmotion-control.env`, replace every placeholder,
    make it `0600`, and configure the public HTTPS origin, exact model
-   credentials, and release-host allowlist. Public EnMotion GitHub Release
+   credentials, provider configuration master key, and release-host allowlist.
+   Public EnMotion GitHub Release
    assets do not require a GitHub credential.
    Install `releases.json` atomically as `root:enmotion-control` with mode `0640`
    so the unprivileged service can read it without being able to modify it.
@@ -128,8 +146,11 @@ Keep one Uvicorn worker. Add 1–2 GB swap on the 1 GB VPS, expose only SSH/80/4
 use key-only SSH, and build desktop/static artifacts off-server.
 
 The backup job uses SQLite's online backup API and verifies the resulting
-database. Production refuses plaintext backups unless explicitly overridden.
-Copy encrypted backups off the VPS and periodically perform a restore drill.
+database. Managed provider credentials remain encrypted inside that database.
+Production refuses plaintext backups unless explicitly overridden. Back up the
+provider configuration master key separately in the organization secret store;
+the database backup alone cannot decrypt the credentials. Copy encrypted
+backups off the VPS and periodically perform a restore drill.
 
 Before each update:
 

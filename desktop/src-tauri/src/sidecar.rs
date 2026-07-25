@@ -23,6 +23,7 @@ use tauri_plugin_shell::{
 };
 
 const RUNTIME_CONFIG_ENV: &str = "ENMOTION_DESKTOP_RUNTIME_CONFIG";
+const DEMUCS_WORKER_ENV: &str = "ENMOTION_DEMUCS_WORKER";
 const NONCE_HEADER: &str = "X-EnMotion-Desktop-Nonce";
 const HYBRID_SESSION_COOKIE: &str = "enmotion_session";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -104,10 +105,8 @@ impl SidecarRuntime {
 fn terminate_sidecar(child: CommandChild) {
     #[cfg(unix)]
     {
-        // A PyInstaller one-file executable has a bootloader parent and a
-        // Python child. A hard kill stops only the parent and leaves the local
-        // API orphaned. SIGTERM lets the bootloader forward shutdown to its
-        // child before we use the hard-kill fallback.
+        // Give the packaged Python runtime a graceful shutdown opportunity
+        // before using the hard-kill fallback.
         let pid = child.pid() as libc::pid_t;
         if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
             std::thread::sleep(Duration::from_millis(750));
@@ -152,7 +151,10 @@ pub fn create_main_window<R: Runtime>(
         .inner_size(1360.0, 860.0)
         .min_inner_size(1040.0, 700.0)
         .center()
-        .visible(false)
+        // The bundled bootstrap is intentionally safe to show before the
+        // loopback service is ready. Keeping this window hidden made the
+        // PyInstaller startup time look like an application hang.
+        .visible(true)
         .devtools(cfg!(debug_assertions))
         .on_navigation(move |url| {
             let bundled_page = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
@@ -174,6 +176,13 @@ pub fn create_main_window<R: Runtime>(
 }
 
 pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let startup_started = Instant::now();
+    report_startup_phase(
+        &app,
+        "runtime-contract",
+        "正在准备安全的本地工作区…",
+        startup_started,
+    );
     let port = reserve_loopback_port()?;
     let nonce = random_nonce();
     let static_dir = resolve_static_dir(&app)?;
@@ -208,14 +217,22 @@ pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         serde_json::to_vec(&contract)
             .map_err(|error| format!("cannot serialize sidecar runtime contract: {error}"))?,
     );
+    let sidecar_executable = resolve_core_sidecar(&app)?;
+    let demucs_worker = resolve_demucs_worker()?;
 
+    report_startup_phase(
+        &app,
+        "sidecar-spawn",
+        "正在启动本地创作服务…",
+        startup_started,
+    );
     let (mut events, child) = app
         .shell()
-        .sidecar("enmotion-sidecar")
-        .map_err(|error| format!("cannot resolve packaged EnMotion sidecar: {error}"))?
+        .command(sidecar_executable)
         .arg("--desktop-runtime")
         .current_dir(&data_dir)
         .env(RUNTIME_CONFIG_ENV, encoded)
+        .env(DEMUCS_WORKER_ENV, demucs_worker)
         .spawn()
         .map_err(|error| format!("cannot start EnMotion sidecar: {error}"))?;
     let pid = child.pid();
@@ -237,6 +254,12 @@ pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     });
 
     wait_until_ready(&endpoint, app.package_info().version.to_string()).await?;
+    report_startup_phase(
+        &app,
+        "sidecar-ready",
+        "本地服务已就绪，正在打开工作区…",
+        startup_started,
+    );
     let bootstrap_url = format!(
         "{}/_desktop/bootstrap/{}",
         endpoint.origin(),
@@ -253,7 +276,31 @@ pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     window
         .show()
         .map_err(|error| format!("cannot show EnMotion window: {error}"))?;
+    eprintln!(
+        "[startup] phase=application-navigated elapsed_ms={}",
+        startup_started.elapsed().as_millis()
+    );
     Ok(())
+}
+
+fn report_startup_phase<R: Runtime>(
+    app: &AppHandle<R>,
+    phase: &str,
+    message: &str,
+    started: Instant,
+) {
+    eprintln!(
+        "[startup] phase={phase} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Ok(serialized) = serde_json::to_string(message) {
+        let _ = window.eval(format!(
+            "window.enmotionDesktopBootStatus?.({serialized})"
+        ));
+    }
 }
 
 pub fn commit_update<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -376,6 +423,46 @@ fn resolve_static_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String>
         return Err(format!(
             "packaged frontend is missing: {}",
             path.join("index.html").display()
+        ));
+    }
+    Ok(path)
+}
+
+fn resolve_core_sidecar<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let name = if cfg!(target_os = "windows") {
+        "sidecar/enmotion-sidecar.exe"
+    } else {
+        "sidecar/enmotion-sidecar"
+    };
+    let path = app
+        .path()
+        .resolve(name, BaseDirectory::Resource)
+        .map_err(|error| format!("cannot resolve packaged EnMotion runtime: {error}"))?;
+    if !path.is_file() {
+        return Err(format!(
+            "packaged EnMotion runtime is missing: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn resolve_demucs_worker() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("cannot resolve EnMotion executable: {error}"))?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| "cannot resolve EnMotion executable directory".to_string())?;
+    let name = if cfg!(target_os = "windows") {
+        "enmotion-demucs-worker.exe"
+    } else {
+        "enmotion-demucs-worker"
+    };
+    let path = directory.join(name);
+    if !path.is_file() {
+        return Err(format!(
+            "packaged Demucs worker is missing: {}",
+            path.display()
         ));
     }
     Ok(path)

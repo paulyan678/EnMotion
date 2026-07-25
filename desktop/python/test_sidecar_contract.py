@@ -5,10 +5,10 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import sidecar
-from starlette.requests import Request
 
 
 def encode(payload: dict[str, object]) -> str:
@@ -17,8 +17,10 @@ def encode(payload: dict[str, object]) -> str:
 
 
 class RuntimeContractTests(unittest.TestCase):
-    def test_fastapi_request_annotation_resolves_at_module_scope(self) -> None:
-        self.assertIs(sidecar.Request, Request)
+    def test_starlette_is_not_imported_on_the_frozen_module_critical_path(self) -> None:
+        source = Path(sidecar.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("from starlette.requests import Request", source.splitlines())
+        self.assertIn('globals()["Request"] = StarletteRequest', source)
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -46,6 +48,28 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(parsed.host, "127.0.0.1")
         self.assertEqual(parsed.port, 24567)
         self.assertEqual(parsed.output_dir.name, "enmotion-output")
+
+    def test_explicit_demucs_worker_is_resolved_without_importing_torch(self) -> None:
+        worker = Path(self.temporary.name) / "enmotion-demucs-worker"
+        worker.touch()
+        with patch.dict(
+            "os.environ",
+            {"ENMOTION_DEMUCS_WORKER": str(worker)},
+            clear=False,
+        ):
+            self.assertEqual(sidecar.resolve_packaged_demucs_worker(), worker.resolve())
+
+    def test_target_suffixed_demucs_worker_is_found_during_release_checks(self) -> None:
+        core = Path(self.temporary.name) / "enmotion-sidecar-aarch64-apple-darwin"
+        worker = Path(self.temporary.name) / "enmotion-demucs-worker-aarch64-apple-darwin"
+        core.touch()
+        worker.touch()
+        with (
+            patch.dict("os.environ", {"ENMOTION_DEMUCS_WORKER": ""}, clear=False),
+            patch.object(sidecar.sys, "frozen", True, create=True),
+            patch.object(sidecar.sys, "executable", str(core)),
+        ):
+            self.assertEqual(sidecar.resolve_packaged_demucs_worker(), worker.resolve())
 
     def test_runtime_contract_rejects_non_loopback_binding(self) -> None:
         self.payload["host"] = "0.0.0.0"
@@ -83,9 +107,7 @@ class RuntimeContractTests(unittest.TestCase):
         config = sidecar.parse_runtime_config(encode(self.payload))
         first = sidecar.readiness_proof(config)
         self.payload["currentVersion"] = "1.0.1"
-        second = sidecar.readiness_proof(
-            sidecar.parse_runtime_config(encode(self.payload))
-        )
+        second = sidecar.readiness_proof(sidecar.parse_runtime_config(encode(self.payload)))
         self.assertEqual(len(first), 64)
         self.assertNotEqual(first, second)
 
@@ -119,10 +141,7 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_update_manifest_capability_must_stay_on_control_plane(self) -> None:
         token = "A" * 48
-        expected = (
-            "https://accounts.enmotion.example"
-            f"/api/v1/releases/session/{token}/manifest"
-        )
+        expected = "https://accounts.enmotion.example" f"/api/v1/releases/session/{token}/manifest"
         self.assertEqual(
             sidecar.validated_update_manifest_url(
                 expected,
@@ -209,9 +228,7 @@ class RuntimeContractTests(unittest.TestCase):
         media.write_bytes(b"generated-media")
         workspace = config.output_dir / "workspaces" / "employee-1" / "output"
         workspace.mkdir(parents=True)
-        (workspace / "projects.json").write_text(
-            '{"workspace": true}', encoding="utf-8"
-        )
+        (workspace / "projects.json").write_text('{"workspace": true}', encoding="utf-8")
         (workspace / "playground_history.json").write_text(
             '[{"id":"generation-1"}]', encoding="utf-8"
         )
@@ -222,12 +239,8 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(first["transactionId"], second["transactionId"])
         backup = Path(first["backupDirectory"])
         self.assertTrue((backup / "projects.json").is_file())
-        self.assertTrue(
-            (backup / "workspaces/employee-1/projects.json").is_file()
-        )
-        self.assertTrue(
-            (backup / "workspaces/employee-1/playground_history.json").is_file()
-        )
+        self.assertTrue((backup / "workspaces/employee-1/projects.json").is_file())
+        self.assertTrue((backup / "workspaces/employee-1/playground_history.json").is_file())
         self.assertFalse((backup / "keep.mp4").exists())
         self.assertEqual(media.read_bytes(), b"generated-media")
 

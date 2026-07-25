@@ -89,6 +89,7 @@ describe('i18n configuration', () => {
         expect(messages).toBeDefined();
         expect(messages.common.save).toBe('保存');
         expect(messages.nav.workspace).toBe('工作区');
+        expect(messages.workspace.title).toBe('工作区');
         expect(messages.settings.title).toBe('设置');
         expect(messages.models.seriesGenSettings).toBe('系列生成设置');
     });
@@ -98,6 +99,7 @@ describe('i18n configuration', () => {
         expect(messages).toBeDefined();
         expect(messages.common.save).toBe('Save');
         expect(messages.nav.workspace).toBe('Workspace');
+        expect(messages.workspace.title).toBe('Workspace');
         expect(messages.settings.title).toBe('Settings');
         expect(messages.models.seriesGenSettings).toBe('Series Generation Settings');
     });

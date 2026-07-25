@@ -87,6 +87,27 @@ def test_proxy_fails_closed_without_tenant_in_server_mode(tmp_path, monkeypatch)
         proxy.current()
 
 
+def test_hybrid_proxy_does_not_build_unused_global_pipeline(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENMOTION_SERVER_MODE", "false")
+    monkeypatch.setenv("ENMOTION_HYBRID_MODE", "true")
+    constructed = []
+
+    def local_factory():
+        constructed.append(True)
+        return ComicGenPipeline({"output_root": str(tmp_path / "local")})
+
+    proxy = PipelineProxy(
+        local_factory,
+        WorkspacePipelineRegistry(str(tmp_path / "workspaces")),
+    )
+    tenant = bind_tenant("user-a", "workspace-a")
+    try:
+        assert proxy.current().output_root.endswith("workspace-a/output")
+    finally:
+        reset_tenant(tenant)
+    assert constructed == []
+
+
 def test_playground_history_and_templates_are_workspace_private(tmp_path):
     pipeline_registry = WorkspacePipelineRegistry(str(tmp_path / "workspaces"))
     registry = WorkspacePlaygroundRegistry(pipeline_registry)

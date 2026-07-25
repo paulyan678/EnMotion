@@ -24,6 +24,8 @@ from ..schemas import (
     CreditAdjustmentRequest,
     LedgerPublic,
     MessageResponse,
+    ProviderConfigPublic,
+    ProviderConfigUpdate,
     RateCardCreate,
     RateCardPublic,
     RateCardUpdate,
@@ -50,7 +52,7 @@ from ..services.ledger import (
     refund_usage,
     settle_usage,
 )
-
+from ..services.provider_config import ProviderConfigUnavailable
 
 router = APIRouter(prefix="/admin", tags=["administration"])
 
@@ -60,6 +62,48 @@ _OPERATION_CAPABILITY = {
     "images.edits": "image",
     "video.generations": "video",
 }
+
+
+@router.get("/provider-config", response_model=ProviderConfigPublic)
+def get_provider_config(
+    _principal: AdminPrincipal,
+    request: Request,
+) -> ProviderConfigPublic:
+    try:
+        return ProviderConfigPublic.model_validate(
+            request.app.state.provider_config.public_status()
+        )
+    except ProviderConfigUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+        ) from exc
+
+
+@router.patch("/provider-config", response_model=ProviderConfigPublic)
+def update_provider_config(
+    payload: ProviderConfigUpdate,
+    principal: AdminPrincipal,
+    request: Request,
+) -> ProviderConfigPublic:
+    try:
+        result = request.app.state.provider_config.update(
+            base_url=payload.base_url,
+            credential_changes=payload.credentials,
+            actor_user_id=principal.user_id,
+            ip_address=client_ip(request),
+        )
+        return ProviderConfigPublic.model_validate(result)
+    except ProviderConfigUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+        ) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            str(exc),
+        ) from exc
 
 
 @router.get("/users", response_model=list[UserPublic])
@@ -96,9 +140,7 @@ def create_user(
     try:
         with request.app.state.db.session() as session:
             begin_immediate(session)
-            if session.scalar(
-                select(User).where(User.normalized_username == normalized)
-            ):
+            if session.scalar(select(User).where(User.normalized_username == normalized)):
                 raise HTTPException(status.HTTP_409_CONFLICT, "username already exists")
             user = User(
                 username=payload.username.strip(),
@@ -322,9 +364,7 @@ def ledger_history(
     if user_id:
         statement = statement.where(CreditLedger.user_id == user_id)
     with request.app.state.db.session() as session:
-        return [
-            LedgerPublic.model_validate(entry) for entry in session.scalars(statement).all()
-        ]
+        return [LedgerPublic.model_validate(entry) for entry in session.scalars(statement).all()]
 
 
 @router.get("/usage", response_model=list[AdminUsagePublic])
@@ -353,8 +393,7 @@ def usage_history(
         statement = statement.where(UsageRequest.status == usage_status)
     with request.app.state.db.session() as session:
         return [
-            AdminUsagePublic.model_validate(usage)
-            for usage in session.scalars(statement).all()
+            AdminUsagePublic.model_validate(usage) for usage in session.scalars(statement).all()
         ]
 
 
@@ -476,9 +515,7 @@ def reconcile_settle(
                 session,
                 actor_user_id=principal.user_id,
                 action=(
-                    "admin.usage_settlement_replayed"
-                    if outcome.replay
-                    else "admin.usage_settled"
+                    "admin.usage_settlement_replayed" if outcome.replay else "admin.usage_settled"
                 ),
                 target_type="usage_request",
                 target_id=usage.id,
@@ -514,9 +551,7 @@ def reconcile_refund(
                 session,
                 actor_user_id=principal.user_id,
                 action=(
-                    "admin.usage_refund_replayed"
-                    if outcome.replay
-                    else "admin.usage_refunded"
+                    "admin.usage_refund_replayed" if outcome.replay else "admin.usage_refunded"
                 ),
                 target_type="usage_request",
                 target_id=usage.id,

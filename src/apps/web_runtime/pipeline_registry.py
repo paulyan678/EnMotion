@@ -7,7 +7,7 @@ import threading
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 from ..comic_gen.pipeline import ComicGenPipeline
 from ..hybrid.config import workspace_isolation_enabled
@@ -178,27 +178,45 @@ class PipelineProxy:
 
     def __init__(
         self,
-        local_pipeline: ComicGenPipeline,
+        local_pipeline: ComicGenPipeline | Callable[[], ComicGenPipeline],
         registry: Optional[WorkspacePipelineRegistry] = None,
     ):
-        object.__setattr__(self, "_local_pipeline", local_pipeline)
+        if callable(local_pipeline) and not isinstance(local_pipeline, ComicGenPipeline):
+            object.__setattr__(self, "_local_pipeline", None)
+            object.__setattr__(self, "_local_factory", local_pipeline)
+        else:
+            object.__setattr__(self, "_local_pipeline", local_pipeline)
+            object.__setattr__(self, "_local_factory", None)
+        object.__setattr__(self, "_local_lock", threading.Lock())
         object.__setattr__(self, "_registry", registry or WorkspacePipelineRegistry())
+
+    def _local(self) -> ComicGenPipeline:
+        current = object.__getattribute__(self, "_local_pipeline")
+        if current is not None:
+            return current
+        with object.__getattribute__(self, "_local_lock"):
+            current = object.__getattribute__(self, "_local_pipeline")
+            if current is None:
+                factory = object.__getattribute__(self, "_local_factory")
+                if factory is None:
+                    raise RuntimeError("Local pipeline factory is unavailable")
+                current = factory()
+                object.__setattr__(self, "_local_pipeline", current)
+            return current
 
     def current(self) -> ComicGenPipeline:
         if not workspace_isolation_enabled():
-            return object.__getattribute__(self, "_local_pipeline")
+            return self._local()
         tenant = get_tenant(required=True)
         assert tenant is not None
         registry = object.__getattribute__(self, "_registry")
         return registry.get(tenant.workspace_id)
 
     def __getattr__(self, name: str) -> Any:
-        local = object.__getattribute__(self, "_local_pipeline")
-        local_value = getattr(local, name)
         if not workspace_isolation_enabled():
-            return local_value
+            return getattr(self._local(), name)
 
-        if callable(local_value):
+        if callable(getattr(ComicGenPipeline, name, None)):
 
             @wraps(local_value)
             def tenant_call(*args: Any, **kwargs: Any) -> Any:
@@ -221,7 +239,7 @@ class PipelineProxy:
             object.__setattr__(self, name, value)
             return
         if not workspace_isolation_enabled():
-            setattr(object.__getattribute__(self, "_local_pipeline"), name, value)
+            setattr(self._local(), name, value)
             return
         tenant = get_tenant(required=True)
         assert tenant is not None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import secrets
 import stat
@@ -10,7 +11,6 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import select
-
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / ".local"
@@ -29,6 +29,21 @@ def _private_write(path: Path, value: str) -> None:
         raise
 
 
+def _ensure_provider_config_master_key(path: Path) -> None:
+    current = path.read_text(encoding="utf-8")
+    if any(
+        line.startswith("ENMOTION_PROVIDER_CONFIG_MASTER_KEY=")
+        for line in current.splitlines()
+    ):
+        return
+
+    provider_config_key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+    prefix = "" if not current or current.endswith("\n") else "\n"
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(f"{prefix}ENMOTION_PROVIDER_CONFIG_MASTER_KEY={provider_config_key}\n")
+
+
 def main() -> int:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description="Create an isolated localhost control plane")
@@ -43,6 +58,7 @@ def main() -> int:
         _private_write(PASSWORD_FILE, secrets.token_urlsafe(24) + "\n")
     if not ENV_FILE.exists():
         secret = secrets.token_urlsafe(48)
+        provider_config_key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
         database_url = f"sqlite:///{DATABASE_FILE}"
         env = "\n".join(
             [
@@ -52,6 +68,7 @@ def main() -> int:
                 "ENMOTION_COOKIE_SECURE=false",
                 "ENMOTION_PROVIDER_BASE_URL=https://api.example.invalid/v1",
                 "ENMOTION_PROVIDER_CREDENTIALS_JSON={}",
+                f"ENMOTION_PROVIDER_CONFIG_MASTER_KEY={provider_config_key}",
                 f"ENMOTION_BOOTSTRAP_PASSWORD_FILE={PASSWORD_FILE}",
                 "",
             ]
@@ -61,6 +78,7 @@ def main() -> int:
         raise RuntimeError("local environment file permissions must be 0600")
     if stat.S_IMODE(PASSWORD_FILE.stat().st_mode) != 0o600:
         raise RuntimeError("local password file permissions must be 0600")
+    _ensure_provider_config_master_key(ENV_FILE)
 
     for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
         if line and not line.startswith("#"):
@@ -102,8 +120,10 @@ def main() -> int:
     print(f"Local control plane prepared at http://127.0.0.1:{args.port}/admin/")
     print(f"Administrator username: {args.username}")
     print(f"Administrator password file: {PASSWORD_FILE}")
-    print(f"Run with: .venv/bin/uvicorn app.main:app --env-file {ENV_FILE} "
-          f"--host 127.0.0.1 --port {args.port}")
+    print(
+        f"Run with: .venv/bin/uvicorn app.main:app --env-file {ENV_FILE} "
+        f"--host 127.0.0.1 --port {args.port}"
+    )
     return 0
 
 

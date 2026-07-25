@@ -8,6 +8,10 @@ command line. The sidecar removes the variable immediately after reading it.
 
 from __future__ import annotations
 
+import time
+
+STARTUP_STARTED = time.perf_counter()
+
 import argparse
 import base64
 import hashlib
@@ -24,10 +28,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlparse
 
-from starlette.requests import Request
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 RUNTIME_CONFIG_ENV = "ENMOTION_DESKTOP_RUNTIME_CONFIG"
 RUNTIME_SCHEMA_VERSION = 1
@@ -55,6 +60,13 @@ BASE_CSP = (
     "font-src 'self' data:; object-src 'none'; base-uri 'self'; "
     "frame-ancestors 'none'; form-action 'self'"
 )
+
+
+def report_startup_phase(phase: str) -> None:
+    """Emit bounded phase timings without request data or credentials."""
+
+    elapsed_ms = round((time.perf_counter() - STARTUP_STARTED) * 1000)
+    print(f"[startup] phase={phase} elapsed_ms={elapsed_ms}", file=sys.stderr, flush=True)
 
 
 @dataclass(frozen=True)
@@ -567,8 +579,27 @@ def commit_update_transaction(config: RuntimeConfig) -> dict[str, Any]:
     }
 
 
-def configure_core_application(config: RuntimeConfig) -> tuple[Any, Any]:
-    """Load the existing API with desktop-specific data and output roots."""
+def resolve_packaged_demucs_worker() -> Path | None:
+    """Locate the optional-audio worker beside the frozen core sidecar."""
+
+    configured = os.getenv("ENMOTION_DEMUCS_WORKER", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser().resolve()
+        return candidate if candidate.is_file() else None
+    if not getattr(sys, "frozen", False):
+        return None
+    executable = Path(sys.executable).resolve()
+    suffix = ".exe" if os.name == "nt" else ""
+    candidates = [executable.with_name(f"enmotion-demucs-worker{suffix}")]
+    core_prefix = "enmotion-sidecar"
+    if executable.name.startswith(f"{core_prefix}-"):
+        target_suffix = executable.name[len(core_prefix) :]
+        candidates.append(executable.with_name(f"enmotion-demucs-worker{target_suffix}"))
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def configure_runtime_environment(config: RuntimeConfig) -> None:
+    """Apply the desktop runtime contract before importing application modules."""
 
     config.data_dir.mkdir(parents=True, exist_ok=True)
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -584,11 +615,20 @@ def configure_core_application(config: RuntimeConfig) -> tuple[Any, Any]:
     os.environ["ENMOTION_CONTROL_PLANE_URL"] = config.control_plane_url
     os.environ["ENMOTION_SIDECAR_NONCE"] = local_api_nonce(config.nonce)
     os.environ.setdefault("ENMOTION_PRELOAD_DEMUCS", "0")
+    packaged_demucs_worker = resolve_packaged_demucs_worker()
+    if packaged_demucs_worker is not None:
+        os.environ["ENMOTION_DEMUCS_WORKER"] = str(packaged_demucs_worker)
     os.environ["API_PORT"] = str(config.port)
     os.chdir(config.data_dir)
+    report_startup_phase("runtime-configured")
+
+
+def configure_core_application(config: RuntimeConfig) -> tuple[Any, Any]:
+    """Load the existing API outside the desktop shell's critical launch path."""
 
     from src.apps.comic_gen.pipeline import ComicGenPipeline
 
+    report_startup_phase("pipeline-module-imported")
     original_initializer: Callable[..., None] = ComicGenPipeline.__init__
 
     def desktop_initializer(self: Any, pipeline_config: dict[str, Any] | None = None) -> None:
@@ -603,27 +643,107 @@ def configure_core_application(config: RuntimeConfig) -> tuple[Any, Any]:
     finally:
         ComicGenPipeline.__init__ = original_initializer
 
+    report_startup_phase("api-module-imported")
     core_app = api_module.app
-
-    from starlette.staticfiles import StaticFiles
-
-    core_app.mount(
-        "/static",
-        StaticFiles(directory=config.static_dir, html=True),
-        name="desktop_frontend",
-    )
+    report_startup_phase("core-application-configured")
     return core_app, api_module
+
+
+class DeferredCoreApplication:
+    """Load the generation API in parallel with the visible desktop shell."""
+
+    def __init__(self, loader: Callable[[], tuple[Any, Any]]) -> None:
+        self._loader = loader
+        self._ready = threading.Event()
+        self._start_lock = threading.Lock()
+        self._started = False
+        self._application: Any | None = None
+        self._api_module: Any | None = None
+        self._error: Exception | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self._ready.is_set() and self._error is None
+
+    def start(self) -> None:
+        with self._start_lock:
+            if self._started:
+                return
+            self._started = True
+            report_startup_phase("core-initialization-started")
+            threading.Thread(
+                target=self._load,
+                name="enmotion-core-loader",
+                daemon=True,
+            ).start()
+
+    def _load(self) -> None:
+        try:
+            self._application, self._api_module = self._loader()
+        except Exception as exc:
+            self._error = exc
+            print(
+                f"EnMotion core initialization failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            self._ready.set()
+        if self._error is None:
+            report_startup_phase("core-initialization-complete")
+
+    def wait_for_api_module(self, timeout: float = 120.0) -> Any:
+        self.start()
+        if not self._ready.wait(timeout):
+            raise RuntimeError("EnMotion creation service is still starting")
+        if self._error is not None:
+            raise RuntimeError("EnMotion creation service failed to start") from self._error
+        return self._api_module
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[..., Any],
+        send: Callable[..., Any],
+    ) -> None:
+        import asyncio
+
+        self.start()
+        await asyncio.to_thread(self._ready.wait)
+        if self._application is not None:
+            await self._application(scope, receive, send)
+            return
+        if scope.get("type") == "websocket":
+            await send({"type": "websocket.close", "code": 1011})
+            return
+        body = b'{"detail":"EnMotion creation service failed to start"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 503,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                    (b"retry-after", b"2"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 def create_application(config: RuntimeConfig) -> Any:
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import JSONResponse, Response
+    from fastapi.staticfiles import StaticFiles
+    from starlette.requests import Request as StarletteRequest
 
-    from src.apps.hybrid.client import ControlPlaneClient, ControlPlaneError
-    from src.apps.hybrid.config import HybridSettings
-    from src.apps.hybrid.session import HybridUser, session_vault
+    # FastAPI resolves postponed annotations against module globals when routes
+    # are registered. Keep Starlette off the frozen executable's import path
+    # until the shell is actually being constructed.
+    globals()["Request"] = StarletteRequest
 
-    core_app, api_module = configure_core_application(config)
+    configure_runtime_environment(config)
+    deferred_core = DeferredCoreApplication(lambda: configure_core_application(config))
     desktop_app = FastAPI(
         title="EnMotion Desktop Runtime",
         docs_url=None,
@@ -636,14 +756,42 @@ def create_application(config: RuntimeConfig) -> Any:
     update_barrier = UpdateBarrier()
     expected_host = f"{config.host}:{config.port}"
     static_csp = static_content_security_policies(config.static_dir)
-    hybrid_settings = HybridSettings.from_env()
-    control_plane = ControlPlaneClient(hybrid_settings)
+    report_startup_phase("static-content-validated")
+    hybrid_lock = threading.Lock()
+    hybrid_services: tuple[Any, Any, Any, Any, Any] | None = None
+
+    def get_hybrid_services() -> tuple[Any, Any, Any, Any, Any]:
+        nonlocal hybrid_services
+        if hybrid_services is not None:
+            return hybrid_services
+        with hybrid_lock:
+            if hybrid_services is None:
+                from src.apps.hybrid.client import ControlPlaneClient, ControlPlaneError
+                from src.apps.hybrid.config import HybridSettings
+                from src.apps.hybrid.session import HybridUser, session_vault
+
+                settings = HybridSettings.from_env()
+                hybrid_services = (
+                    settings,
+                    ControlPlaneClient(settings),
+                    ControlPlaneError,
+                    HybridUser,
+                    session_vault,
+                )
+        return hybrid_services
 
     def valid_nonce_header(request: Request) -> bool:
         value = request.headers.get(NONCE_HEADER, "")
         return hmac.compare_digest(value, config.nonce)
 
     def employee_remote(request: Request) -> Any:
+        (
+            hybrid_settings,
+            control_plane,
+            ControlPlaneError,
+            _HybridUser,
+            session_vault,
+        ) = get_hybrid_services()
         local = session_vault.get_local(request.cookies.get(hybrid_settings.session_cookie_name))
         if local is None:
             raise HTTPException(status_code=401, detail="Sign in to check for updates")
@@ -665,6 +813,13 @@ def create_application(config: RuntimeConfig) -> Any:
         """Require the control plane to confirm that this employee is active now."""
 
         local, remote = employee_remote(request)
+        (
+            _hybrid_settings,
+            control_plane,
+            ControlPlaneError,
+            HybridUser,
+            _session_vault,
+        ) = get_hybrid_services()
         try:
             payload = control_plane.get_json("/api/v1/auth/session", remote)
             confirmed = HybridUser.from_payload(payload)
@@ -753,6 +908,7 @@ def create_application(config: RuntimeConfig) -> Any:
     async def ready() -> dict[str, Any]:
         return {
             "ready": True,
+            "coreReady": deferred_core.ready,
             "contractVersion": RUNTIME_SCHEMA_VERSION,
             "version": config.current_version,
             "proof": readiness_proof(config),
@@ -790,6 +946,10 @@ def create_application(config: RuntimeConfig) -> Any:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
+            try:
+                api_module = deferred_core.wait_for_api_module()
+            except RuntimeError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             pipelines = active_desktop_pipelines(api_module)
             blockers = [
                 blocker for pipeline in pipelines for blocker in active_update_blockers(pipeline)
@@ -831,6 +991,13 @@ def create_application(config: RuntimeConfig) -> Any:
 
     @desktop_app.post("/_desktop/updater/session", include_in_schema=False)
     def updater_session(body: dict[str, Any], request: Request) -> Any:
+        (
+            _hybrid_settings,
+            control_plane,
+            ControlPlaneError,
+            _HybridUser,
+            _session_vault,
+        ) = get_hybrid_services()
         target = str(body.get("target", ""))
         arch = str(body.get("arch", ""))
         current_version = str(body.get("currentVersion", ""))
@@ -875,7 +1042,14 @@ def create_application(config: RuntimeConfig) -> Any:
             headers={"Cache-Control": "no-store"},
         )
 
-    desktop_app.mount("/", core_app)
+    desktop_app.mount(
+        "/static",
+        StaticFiles(directory=config.static_dir, html=True),
+        name="desktop_frontend",
+    )
+    desktop_app.mount("/", deferred_core)
+    report_startup_phase("desktop-application-created")
+    deferred_core.start()
     return desktop_app
 
 
@@ -883,6 +1057,7 @@ def run(config: RuntimeConfig) -> None:
     import uvicorn
 
     application = create_application(config)
+    report_startup_phase("uvicorn-starting")
     uvicorn.run(
         application,
         host=config.host,
@@ -910,7 +1085,6 @@ def verify_packaged_bundle() -> None:
         if not resource.is_file():
             raise RuntimeError(f"packaged resource is missing: {resource.name}")
 
-    import demucs.pretrained  # noqa: F401
     import keyring
     import openai  # noqa: F401
     import oss2  # noqa: F401
@@ -920,6 +1094,16 @@ def verify_packaged_bundle() -> None:
 
     if not getattr(api_module.app, "routes", None):
         raise RuntimeError("packaged EnMotion API has no routes")
+    worker = resolve_packaged_demucs_worker()
+    if worker is None:
+        raise RuntimeError("packaged Demucs worker is missing")
+    subprocess.run(
+        [str(worker), "--verify-bundle"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=120,
+    )
     credential_backend = keyring.get_keyring()
     expected_backend = {
         "Darwin": "keyring.backends.macOS",

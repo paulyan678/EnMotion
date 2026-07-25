@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the native PyInstaller sidecar expected by Tauri externalBin."""
+"""Build launch-critical and on-demand PyInstaller binaries for Tauri."""
 
 from __future__ import annotations
 
@@ -61,21 +61,75 @@ def build(target: str) -> Path:
         raise SystemExit("generated model catalog is missing")
     ffmpeg = ffmpeg_binary()
     extension = ".exe" if target.endswith("windows-msvc") else ""
-    final = DESKTOP_ROOT / "src-tauri" / "binaries" / f"enmotion-sidecar-{target}{extension}"
-    final.parent.mkdir(parents=True, exist_ok=True)
+    binaries = DESKTOP_ROOT / "src-tauri" / "binaries"
+    runtime = binaries / "enmotion-sidecar-runtime"
+    final_worker = binaries / f"enmotion-demucs-worker-{target}{extension}"
+    legacy_final = binaries / f"enmotion-sidecar-{target}{extension}"
+    binaries.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="enmotion-sidecar-") as temporary_name:
         temporary = Path(temporary_name)
-        work = temporary / "work"
+        work = temporary / "core-work"
+        worker_work = temporary / "worker-work"
         dist = temporary / "dist"
         separator = ";" if os.name == "nt" else ":"
-        command = [
+        signing_args: list[str] = []
+        if platform.system() == "Darwin":
+            signing_identity = os.environ.get("APPLE_SIGNING_IDENTITY", "").strip()
+            signing_required = os.environ.get("ENMOTION_REQUIRE_CODE_SIGNING", "").strip() == "1"
+            if signing_required and not signing_identity:
+                raise SystemExit("APPLE_SIGNING_IDENTITY is required for release sidecars")
+            if signing_identity:
+                signing_args = ["--codesign-identity", signing_identity]
+
+        worker_command = [
             sys.executable,
             "-m",
             "PyInstaller",
             "--clean",
             "--noconfirm",
             "--onefile",
+            "--name",
+            "enmotion-demucs-worker",
+            "--distpath",
+            str(dist),
+            "--workpath",
+            str(worker_work),
+            "--specpath",
+            str(temporary),
+            "--paths",
+            str(REPOSITORY_ROOT),
+            "--hidden-import",
+            "demucs.pretrained",
+            "--hidden-import",
+            "demucs.separate",
+            "--hidden-import",
+            "soundfile",
+            "--collect-all",
+            "demucs",
+            *signing_args,
+        ]
+        if os.name == "nt":
+            worker_command.extend(["--noconsole", "--exclude-module", "uvloop"])
+        worker_command.append(str(DESKTOP_ROOT / "python" / "demucs_worker.py"))
+        subprocess.run(worker_command, cwd=REPOSITORY_ROOT, check=True)
+        built_worker = dist / f"enmotion-demucs-worker{extension}"
+        if not built_worker.is_file():
+            raise SystemExit(f"PyInstaller did not create {built_worker}")
+        subprocess.run(
+            [str(built_worker), "--verify-bundle"],
+            cwd=temporary,
+            check=True,
+            timeout=120,
+        )
+
+        command = [
+            sys.executable,
+            "-m",
+            "PyInstaller",
+            "--clean",
+            "--noconfirm",
+            "--onedir",
             "--name",
             "enmotion-sidecar",
             "--distpath",
@@ -113,12 +167,6 @@ def build(target: str) -> Path:
             "--hidden-import",
             "oss2",
             "--hidden-import",
-            "demucs.pretrained",
-            "--hidden-import",
-            "demucs.separate",
-            "--hidden-import",
-            "soundfile",
-            "--hidden-import",
             "multipart",
             "--hidden-import",
             "keyring",
@@ -126,36 +174,56 @@ def build(target: str) -> Path:
             "uvicorn",
             "--collect-all",
             "keyring",
-            "--collect-all",
+            "--exclude-module",
             "demucs",
+            "--exclude-module",
+            "torch",
+            "--exclude-module",
+            "torchaudio",
+            "--exclude-module",
+            "torchcodec",
+            "--exclude-module",
+            "soundfile",
+            *signing_args,
         ]
         if os.name == "nt":
             command.extend(["--noconsole", "--exclude-module", "uvloop"])
-        if platform.system() == "Darwin":
-            signing_identity = os.environ.get("APPLE_SIGNING_IDENTITY", "").strip()
-            signing_required = os.environ.get("ENMOTION_REQUIRE_CODE_SIGNING", "").strip() == "1"
-            if signing_required and not signing_identity:
-                raise SystemExit("APPLE_SIGNING_IDENTITY is required for a release sidecar")
-            if signing_identity:
-                command.extend(["--codesign-identity", signing_identity])
         command.append(str(DESKTOP_ROOT / "python" / "sidecar.py"))
         subprocess.run(command, cwd=REPOSITORY_ROOT, check=True)
-        built = dist / f"enmotion-sidecar{extension}"
+        built_runtime = dist / "enmotion-sidecar"
+        built = built_runtime / f"enmotion-sidecar{extension}"
         if not built.is_file():
             raise SystemExit(f"PyInstaller did not create {built}")
+        verification_environment = os.environ.copy()
+        verification_environment["ENMOTION_DEMUCS_WORKER"] = str(built_worker)
         subprocess.run(
             [str(built), "--verify-bundle"],
             cwd=temporary,
+            env=verification_environment,
             check=True,
             timeout=120,
         )
-        temporary_final = final.with_suffix(final.suffix + ".partial")
-        shutil.copy2(built, temporary_final)
-        if final.exists():
-            final.unlink()
-        os.replace(temporary_final, final)
-        final.chmod(final.stat().st_mode | 0o100)
-    print(f"built EnMotion sidecar: {final}")
+
+        temporary_runtime = binaries / ".enmotion-sidecar-runtime.partial"
+        if temporary_runtime.exists():
+            shutil.rmtree(temporary_runtime)
+        shutil.copytree(built_runtime, temporary_runtime)
+        if runtime.exists():
+            shutil.rmtree(runtime)
+        os.replace(temporary_runtime, runtime)
+
+        temporary_worker = final_worker.with_suffix(final_worker.suffix + ".partial")
+        shutil.copy2(built_worker, temporary_worker)
+        if final_worker.exists():
+            final_worker.unlink()
+        os.replace(temporary_worker, final_worker)
+        final_worker.chmod(final_worker.stat().st_mode | 0o100)
+
+        if legacy_final.exists():
+            legacy_final.unlink()
+    final = runtime / f"enmotion-sidecar{extension}"
+    print(f"built EnMotion launch runtime: {runtime}")
+    print(f"built EnMotion on-demand Demucs worker: {final_worker}")
     return final
 
 

@@ -593,7 +593,7 @@
     }
   },
   "workspace": {
-    "title": "My Workspace",
+    "title": "Workspace",
     "empty": "No projects yet",
     "emptyHint": "Choose a way to start creating",
     "createSeries": "Create Series",

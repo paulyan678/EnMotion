@@ -4,10 +4,11 @@ import json
 import math
 import os
 import re
+import base64
+import binascii
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
-
 
 MODEL_CAPABILITIES: dict[str, str] = {
     "gpt-image-2": "image",
@@ -26,6 +27,46 @@ _HOSTNAME = re.compile(
 
 class ConfigurationError(RuntimeError):
     """Raised when production configuration is incomplete or unsafe."""
+
+
+def decode_provider_config_master_key(value: str) -> bytes:
+    """Decode one dedicated 256-bit AES key without accepting weak fallbacks."""
+
+    try:
+        padded = value + "=" * ((4 - len(value) % 4) % 4)
+        decoded = base64.b64decode(
+            padded.encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (UnicodeEncodeError, ValueError, binascii.Error) as exc:
+        raise ConfigurationError(
+            "ENMOTION_PROVIDER_CONFIG_MASTER_KEY must be URL-safe base64"
+        ) from exc
+    if len(decoded) != 32:
+        raise ConfigurationError("ENMOTION_PROVIDER_CONFIG_MASTER_KEY must encode exactly 32 bytes")
+    return decoded
+
+
+def validate_provider_base_url(value: str, *, allow_insecure: bool) -> str:
+    normalized = value.strip().rstrip("/")
+    provider = urlparse(normalized)
+    allowed_schemes = {"http", "https"} if allow_insecure else {"https"}
+    if provider.scheme not in allowed_schemes:
+        raise ConfigurationError("provider base URL must use HTTPS")
+    if not provider.hostname:
+        raise ConfigurationError("provider base URL must include a hostname")
+    if (
+        provider.username
+        or provider.password
+        or provider.params
+        or provider.query
+        or provider.fragment
+    ):
+        raise ConfigurationError(
+            "provider base URL must not contain credentials, parameters, a query, or a fragment"
+        )
+    return normalized
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -66,6 +107,7 @@ class Settings:
     session_hmac_secret: str
     provider_base_url: str = "https://api.example.invalid/v1"
     provider_credentials: dict[str, str] = field(default_factory=dict, repr=False)
+    provider_config_master_key: str = field(default="", repr=False)
     release_manifest_path: str = ""
     release_allowed_hosts: tuple[str, ...] = ()
     release_source_credentials: dict[str, str] = field(default_factory=dict, repr=False)
@@ -85,23 +127,20 @@ class Settings:
 
     def __post_init__(self) -> None:
         if not self.database_url.startswith("sqlite:///"):
-            raise ConfigurationError(
-                "ENMOTION_DATABASE_URL must use the supported SQLite database"
-            )
-        if (
-            self.environment == "production"
-            and self.database_url == "sqlite:///:memory:"
-        ):
+            raise ConfigurationError("ENMOTION_DATABASE_URL must use the supported SQLite database")
+        if self.environment == "production" and self.database_url == "sqlite:///:memory:":
             raise ConfigurationError("production requires file-backed SQLite")
         if len(self.session_hmac_secret) < 32:
-            raise ConfigurationError("ENMOTION_SESSION_HMAC_SECRET must contain at least 32 characters")
+            raise ConfigurationError(
+                "ENMOTION_SESSION_HMAC_SECRET must contain at least 32 characters"
+            )
         unknown = set(self.provider_credentials) - set(MODEL_CAPABILITIES)
         if unknown:
             raise ConfigurationError(
                 "Provider credentials contain unsupported model IDs: " + ", ".join(sorted(unknown))
             )
-        unknown_release_hosts = (
-            set(self.release_source_credentials) - set(self.release_allowed_hosts)
+        unknown_release_hosts = set(self.release_source_credentials) - set(
+            self.release_allowed_hosts
         )
         if unknown_release_hosts:
             raise ConfigurationError(
@@ -116,22 +155,12 @@ class Settings:
                 "Release allowlist entries must be exact lowercase hostnames: "
                 + ", ".join(sorted(invalid_release_hosts))
             )
-        provider = urlparse(self.provider_base_url)
-        if provider.scheme not in ({"http", "https"} if self.allow_insecure_upstreams else {"https"}):
-            raise ConfigurationError("ENMOTION_PROVIDER_BASE_URL must use HTTPS")
-        if not provider.hostname:
-            raise ConfigurationError("ENMOTION_PROVIDER_BASE_URL must include a hostname")
-        if (
-            provider.username
-            or provider.password
-            or provider.params
-            or provider.query
-            or provider.fragment
-        ):
-            raise ConfigurationError(
-                "ENMOTION_PROVIDER_BASE_URL must not contain credentials, parameters, "
-                "a query, or a fragment"
-            )
+        validate_provider_base_url(
+            self.provider_base_url,
+            allow_insecure=self.allow_insecure_upstreams,
+        )
+        if self.provider_config_master_key:
+            decode_provider_config_master_key(self.provider_config_master_key)
         if self.public_base_url:
             public = urlparse(self.public_base_url)
             allowed_public_schemes = (
@@ -191,6 +220,7 @@ class Settings:
                 "ENMOTION_PROVIDER_BASE_URL", "https://api.example.invalid/v1"
             ).rstrip("/"),
             provider_credentials=_parse_json_object("ENMOTION_PROVIDER_CREDENTIALS_JSON"),
+            provider_config_master_key=os.getenv("ENMOTION_PROVIDER_CONFIG_MASTER_KEY", "").strip(),
             release_manifest_path=os.getenv("ENMOTION_RELEASE_MANIFEST_PATH", "").strip(),
             release_allowed_hosts=allowed_hosts,
             release_source_credentials={
@@ -203,9 +233,7 @@ class Settings:
             cookie_secure=_env_bool("ENMOTION_COOKIE_SECURE", environment == "production"),
             access_ttl_seconds=_env_int("ENMOTION_ACCESS_TTL_SECONDS", 15 * 60),
             refresh_ttl_seconds=_env_int("ENMOTION_REFRESH_TTL_SECONDS", 7 * 24 * 60 * 60),
-            max_request_body_bytes=_env_int(
-                "ENMOTION_MAX_REQUEST_BODY_BYTES", 40 * 1024 * 1024
-            ),
+            max_request_body_bytes=_env_int("ENMOTION_MAX_REQUEST_BODY_BYTES", 40 * 1024 * 1024),
             provider_connect_timeout_seconds=float(
                 os.getenv("ENMOTION_PROVIDER_CONNECT_TIMEOUT_SECONDS", "10")
             ),

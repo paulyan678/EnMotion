@@ -98,12 +98,16 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
         "web content must not receive shell, filesystem, process, or raw updater permissions",
     )
     check(
-        base["bundle"]["externalBin"] == ["binaries/enmotion-sidecar"],
-        "Tauri must package only the declared EnMotion sidecar",
+        base["bundle"]["externalBin"] == ["binaries/enmotion-demucs-worker"],
+        "Tauri must package the on-demand Demucs worker as an external binary",
     )
     check(
-        base["bundle"]["resources"] == {"../web/static/": "web/static/"},
-        "frontend resource mapping is unexpected",
+        base["bundle"]["resources"]
+        == {
+            "../web/static/": "web/static/",
+            "binaries/enmotion-sidecar-runtime/": "sidecar/",
+        },
+        "frontend or launch-runtime resource mapping is unexpected",
     )
     check(
         not base["plugins"]["updater"].get("dangerousInsecureTransportProtocol", False),
@@ -153,6 +157,12 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
     check(
         "http://127.0.0.1" in sidecar_source,
         "sidecar must use a literal loopback origin",
+    )
+    check(
+        ".command(sidecar_executable)" in sidecar_source
+        and "resolve_core_sidecar" in sidecar_source
+        and "ENMOTION_DEMUCS_WORKER" in sidecar_source,
+        "desktop must launch the pre-expanded core runtime with its on-demand worker",
     )
     check(
         "create_update_session" in sidecar_source
@@ -278,7 +288,9 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
         )
         check(
             "release/enmotion.exe" in workflow_text
-            and "Expected signed sidecar, application, and installer" in workflow_text,
+            and "enmotion-sidecar-runtime/enmotion-sidecar.exe" in workflow_text
+            and "enmotion-demucs-worker-x86_64-pc-windows-msvc.exe" in workflow_text
+            and "Expected signed sidecars, application, and installer" in workflow_text,
             "Windows release must verify every executable signing boundary",
         )
         check(
@@ -347,8 +359,12 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
         )
         check(target in EXPECTED_TARGETS, "a supported --target is required for releases")
         extension = ".exe" if "windows" in target else ""
-        path = TAURI_ROOT / "binaries" / f"enmotion-sidecar-{target}{extension}"
-        check(path.is_file(), f"release sidecar is missing for {target}")
+        runtime = (
+            TAURI_ROOT / "binaries" / "enmotion-sidecar-runtime" / f"enmotion-sidecar{extension}"
+        )
+        worker = TAURI_ROOT / "binaries" / f"enmotion-demucs-worker-{target}{extension}"
+        check(runtime.is_file(), f"release core runtime is missing for {target}")
+        check(worker.is_file(), f"release Demucs worker is missing for {target}")
 
 
 def main() -> int:

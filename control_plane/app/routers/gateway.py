@@ -28,7 +28,10 @@ from ..services.ledger import (
     reserve_usage,
     settle_usage,
 )
-
+from ..services.provider_config import (
+    ProviderConfigSnapshot,
+    ProviderConfigUnavailable,
+)
 
 router = APIRouter(prefix="/gateway", tags=["provider gateway"])
 
@@ -121,9 +124,7 @@ async def _bounded_body(request: Request) -> bytes:
             if int(content_length) > limit:
                 raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "request too large")
         except ValueError as exc:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "invalid Content-Length"
-            ) from exc
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid Content-Length") from exc
     body = await request.body()
     if len(body) > limit:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "request too large")
@@ -171,11 +172,13 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
             and item["text"].strip()
         ]
         image_parts = [
-            item
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "image_url"
+            item for item in content if isinstance(item, dict) and item.get("type") == "image_url"
         ]
-        if len(text_parts) != 1 or len(image_parts) > 1 or len(text_parts) + len(image_parts) != len(content):
+        if (
+            len(text_parts) != 1
+            or len(image_parts) > 1
+            or len(text_parts) + len(image_parts) != len(content)
+        ):
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "video content must contain exactly one text item and at most one image_url",
@@ -218,7 +221,9 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
         if "seed" in metadata and (
             isinstance(metadata["seed"], bool) or not isinstance(metadata["seed"], int)
         ):
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "video seed must be an integer")
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "video seed must be an integer"
+            )
         if resolution == "1080p" and (
             image_parts or body.get("model") != "doubao-seedance-2-0-260128"
         ):
@@ -236,8 +241,7 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
         for message in messages:
             if (
                 not isinstance(message, dict)
-                or message.get("role")
-                not in {"system", "developer", "user", "assistant", "tool"}
+                or message.get("role") not in {"system", "developer", "user", "assistant", "tool"}
                 or not isinstance(message.get("content"), str)
             ):
                 raise HTTPException(
@@ -262,7 +266,11 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
     return body
 
 
-def _validate_model(request: Request, operation: str, model: Any) -> tuple[str, str]:
+def _validate_model(
+    request: Request,
+    operation: str,
+    model: Any,
+) -> tuple[str, str, ProviderConfigSnapshot]:
     if not isinstance(model, str) or model not in MODEL_CAPABILITIES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported provider model")
     if MODEL_CAPABILITIES[model] != _OPERATION_CAPABILITY[operation]:
@@ -270,21 +278,26 @@ def _validate_model(request: Request, operation: str, model: Any) -> tuple[str, 
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "provider model capability does not match this operation",
         )
-    credential = request.app.state.settings.provider_credentials.get(model)
+    try:
+        provider_config = request.app.state.provider_config.current()
+    except ProviderConfigUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "provider configuration is unavailable",
+        ) from exc
+    credential = provider_config.credentials.get(model)
     if not credential:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "the selected provider model is not configured",
         )
-    return model, credential
+    return model, credential, provider_config
 
 
 def _rate_context(body: dict[str, Any]) -> dict[str, object]:
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     content = metadata.get("content") if isinstance(metadata.get("content"), list) else []
-    has_image = any(
-        isinstance(item, dict) and item.get("type") == "image_url" for item in content
-    )
+    has_image = any(isinstance(item, dict) and item.get("type") == "image_url" for item in content)
     return {
         "size": body.get("size"),
         "quality": body.get("quality"),
@@ -411,8 +424,8 @@ async def _read_response_limited(response: httpx.Response, limit: int) -> bytes:
     return bytes(payload)
 
 
-def _provider_url(request: Request, path: str) -> str:
-    return f"{request.app.state.settings.provider_base_url.rstrip('/')}/{path.lstrip('/')}"
+def _provider_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 def _refund(
@@ -471,6 +484,7 @@ def _settle_video(
     task_id: str,
     user_id: str,
     model: str,
+    provider_config_version: int,
 ) -> None:
     with request.app.state.db.session() as session:
         outcome = settle_usage(
@@ -486,6 +500,7 @@ def _settle_video(
                 usage_request_id=usage.id,
                 upstream_task_id=task_id,
                 model=model,
+                provider_config_version=provider_config_version,
             )
         )
 
@@ -495,7 +510,7 @@ def _owned_task_credential(
     *,
     user_id: str,
     task_id: str,
-) -> str:
+) -> tuple[str, str]:
     with request.app.state.db.session() as session:
         task = session.scalar(
             select(ProviderTask)
@@ -504,13 +519,22 @@ def _owned_task_credential(
         )
         if task is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "provider task not found")
-        credential = request.app.state.settings.provider_credentials.get(task.model)
+        try:
+            provider_config = request.app.state.provider_config.get_version(
+                task.provider_config_version
+            )
+        except ProviderConfigUnavailable as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "provider configuration for this task is unavailable",
+            ) from exc
+        credential = provider_config.credentials.get(task.model)
         if not credential:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "provider model is not configured",
             )
-        return credential
+        return credential, provider_config.base_url
 
 
 async def _send_billable(
@@ -524,13 +548,14 @@ async def _send_billable(
     json_body: dict[str, Any] | None = None,
     data: list[tuple[str, str]] | None = None,
     files: list[tuple[str, tuple[str, Any, str]]] | None = None,
-    capture_video_task: tuple[str, str] | None = None,
+    capture_video_task: tuple[str, str, int] | None = None,
+    provider_base_url: str,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.provider_client
     try:
         upstream_request = client.build_request(
             method,
-            _provider_url(request, path),
+            _provider_url(provider_base_url, path),
             headers=headers,
             content=content,
             json=json_body,
@@ -546,9 +571,7 @@ async def _send_billable(
             reason="provider connection failed before acceptance",
             error_code="provider_connect_failed",
         )
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, "provider connection failed"
-        ) from exc
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "provider connection failed") from exc
     except httpx.RequestError as exc:
         await run_in_threadpool(
             _pending,
@@ -614,7 +637,7 @@ async def _send_billable(
         )
 
     if capture_video_task:
-        model, user_id = capture_video_task
+        model, user_id, provider_config_version = capture_video_task
         try:
             payload_bytes = await _read_response_limited(
                 upstream,
@@ -680,6 +703,7 @@ async def _send_billable(
                 task_id=task_id,
                 user_id=user_id,
                 model=model,
+                provider_config_version=provider_config_version,
             )
         except Exception as exc:
             try:
@@ -776,7 +800,11 @@ async def _json_gateway(
     capture_video_task: bool = False,
 ) -> Response:
     body = await _json_body(request, operation)
-    model, credential = _validate_model(request, operation, body.get("model"))
+    model, credential, provider_config = _validate_model(
+        request,
+        operation,
+        body.get("model"),
+    )
     key = _idempotency_key(request)
     outcome = await run_in_threadpool(
         _reserve,
@@ -798,22 +826,27 @@ async def _json_gateway(
         path=provider_path,
         headers=_upstream_headers(credential, provider_key, "application/json"),
         json_body=body,
-        capture_video_task=(model, principal.user_id) if capture_video_task else None,
+        capture_video_task=(
+            (
+                model,
+                principal.user_id,
+                provider_config.version,
+            )
+            if capture_video_task
+            else None
+        ),
+        provider_base_url=provider_config.base_url,
     )
 
 
 @router.post("/chat/completions")
 async def chat_completions(request: Request, principal: CurrentPrincipal) -> Response:
-    return await _json_gateway(
-        "chat.completions", "chat/completions", request, principal
-    )
+    return await _json_gateway("chat.completions", "chat/completions", request, principal)
 
 
 @router.post("/images/generations")
 async def image_generations(request: Request, principal: CurrentPrincipal) -> Response:
-    return await _json_gateway(
-        "images.generations", "images/generations", request, principal
-    )
+    return await _json_gateway("images.generations", "images/generations", request, principal)
 
 
 @router.post("/video/generations")
@@ -855,7 +888,11 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "multipart field mask must appear at most once",
             )
-        model, credential = _validate_model(request, "images.edits", form.get("model"))
+        model, credential, provider_config = _validate_model(
+            request,
+            "images.edits",
+            form.get("model"),
+        )
         if not isinstance(form.get("prompt"), str) or not str(form.get("prompt")).strip():
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "image prompt is required")
         if str(form.get("n", "1")) != "1":
@@ -903,9 +940,7 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
             )
         effective_size = str(form.get("size", "1024x1024"))
         effective_quality = str(form.get("quality", "high"))
-        canonical_fields = [
-            pair for pair in data if pair[0] not in {"n", "size", "quality"}
-        ]
+        canonical_fields = [pair for pair in data if pair[0] not in {"n", "size", "quality"}]
         canonical_fields.extend(
             [
                 ("n", "1"),
@@ -940,11 +975,10 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
                 "Authorization": f"Bearer {credential}",
                 "Idempotency-Key": provider_key,
                 "User-Agent": "EnMotion-Control-Plane/0.1",
-                "Content-Type": request.headers.get(
-                    "content-type", "multipart/form-data"
-                ),
+                "Content-Type": request.headers.get("content-type", "multipart/form-data"),
             },
             content=raw_body,
+            provider_base_url=provider_config.base_url,
         )
     finally:
         await form.close()
@@ -958,7 +992,7 @@ async def _task_proxy(
 ) -> Response:
     if not _TASK_ID.fullmatch(task_id):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid task id")
-    credential = await run_in_threadpool(
+    credential, provider_base_url = await run_in_threadpool(
         _owned_task_credential,
         request,
         user_id=principal.user_id,
@@ -968,7 +1002,7 @@ async def _task_proxy(
     try:
         upstream_request = client.build_request(
             "GET",
-            _provider_url(request, provider_path),
+            _provider_url(provider_base_url, provider_path),
             headers={
                 "Authorization": f"Bearer {credential}",
                 "User-Agent": "EnMotion-Control-Plane/0.1",
