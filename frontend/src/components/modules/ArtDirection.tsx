@@ -8,6 +8,7 @@ import { useProjectStore, type StyleConfig, type StylePreset, type StylePresetCa
 import { api } from "@/lib/api";
 import StepPageHeader from "@/components/shared/StepPageHeader";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
+import { getBundledAssetUrl } from "@/lib/bundledAssetUrl";
 import { toast } from "@/store/toastStore";
 
 export default function ArtDirection() {
@@ -954,7 +955,7 @@ function StylePresetCardV2({ style, isSelected, onClick }: {
             <div className="relative aspect-[4/3] bg-elevated overflow-hidden">
                 {style.thumbnail ? (
                     <img
-                        src={style.thumbnail}
+                        src={getBundledAssetUrl(style.thumbnail)}
                         alt={style.name_zh}
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                         style={{ objectPosition: style.object_position || "center" }}
@@ -1042,7 +1043,7 @@ function PresetDetailModal({ preset, isSelected, editing, positivePrompt, negati
                     <div className="bg-black/40 flex items-center justify-center p-4 overflow-hidden">
                         {preset.thumbnail ? (
                             <img
-                                src={preset.thumbnail}
+                                src={getBundledAssetUrl(preset.thumbnail)}
                                 alt={preset.name_zh}
                                 className="max-w-full max-h-full object-contain rounded-lg"
                             />
@@ -1158,7 +1159,7 @@ function PresetDetailModal({ preset, isSelected, editing, positivePrompt, negati
                                 >
                                     {p.thumbnail ? (
                                         <img
-                                            src={p.thumbnail}
+                                            src={getBundledAssetUrl(p.thumbnail)}
                                             alt={p.name_zh}
                                             className="w-full aspect-[16/9] object-cover"
                                             style={{ objectPosition: p.object_position || "center" }}
