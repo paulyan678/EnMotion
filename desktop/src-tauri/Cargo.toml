@@ -1,6 +1,6 @@
 [package]
 name = "enmotion-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "EnMotion private desktop shell"
 authors = ["EnMotion"]
 license = "MIT"

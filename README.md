@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/enmotion-lockup.svg" width="720" alt="EnMotion">
+</p>
+
 # EnMotion
 
 EnMotion is a company-managed AI comic and video production application for

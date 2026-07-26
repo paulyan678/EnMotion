@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">EnMotion app icon</title>
+  <desc id="desc">The EnMotion story-frame mark on a dark rounded-square application tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="120" y1="80" x2="904" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1A1820"/>
+      <stop offset="1" stop-color="#0C0B0E"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#tile)"/>
+  <rect x="65" y="65" width="894" height="894" rx="207" fill="none" stroke="#FFFFFF" stroke-opacity=".08" stroke-width="2"/>
+  <g transform="translate(118 118) scale(.77)">
+    <path
+      fill="#F2EDE4"
+      fill-rule="evenodd"
+      d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"
+    />
+    <path fill="#34D8C4" d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"/>
+    <path fill="#FFA94D" d="M672 472h60l-24 80h-60l24-80Z"/>
+  </g>
+</svg>

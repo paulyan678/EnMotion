@@ -9,60 +9,35 @@ interface EnMotionBrandingProps {
   showSlogan?: boolean;
 }
 
-// Logo 变体按主题映射（Tasty Sam 同形电路枫叶，透明底）。
-// atelier-dark 复用蓝色 logo-dark.png，再用 CSS filter 着色为 teal。
+// The official outlined lockups preserve identical typography across platforms.
 const LOGO_SRC: Record<ThemePreset, string> = {
-  "atelier-dark": "logo-dark.png",
-  "bridge-dark": "logo-dark.png",
-  "brand-dark": "logo-dark.png",
-  "atelier-light": "logo-light-teal.png",
-  "brand-light": "logo-light.png",
+  "atelier-dark": "enmotion-lockup-on-dark.svg",
+  "bridge-dark": "enmotion-lockup-on-dark.svg",
+  "brand-dark": "enmotion-lockup-on-dark.svg",
+  "atelier-light": "enmotion-lockup.svg",
+  "brand-light": "enmotion-lockup.svg",
 };
-// 仅 atelier-dark：把品牌蓝 PNG 着色为 teal，与主色一致。
-const ATELIER_DARK_FILTER = "hue-rotate(-64deg) saturate(1.35) brightness(1.08)";
 
 export default function EnMotionBranding({ size = "md", showSlogan = true }: EnMotionBrandingProps) {
   const t = useTranslations("ui.brand");
-  const logoSize = size === "sm" ? "w-9 h-9" : "w-14 h-14";
-  const titleSize = size === "sm" ? "text-lg" : "text-xl";
+  const logoSize = size === "sm" ? "w-[9.75rem]" : "w-[13.5rem]";
 
   const theme = useSettingsStore((s) => s.theme);
-  // SSR 与客户端首次渲染统一用默认主题，避免 logo src/filter 的 hydration
-  // mismatch；挂载后切到实际主题。
+  // Keep SSR and the first client render on the default theme to avoid a
+  // hydration mismatch, then switch to the user's selected theme.
   const mounted = useHydrated();
   const activeTheme: ThemePreset = mounted ? theme : "atelier-dark";
-  const logoSrc = LOGO_SRC[activeTheme] ?? "logo-dark.png";
-  const logoFilter = activeTheme === "atelier-dark" ? ATELIER_DARK_FILTER : undefined;
+  const logoSrc = LOGO_SRC[activeTheme] ?? "enmotion-lockup-on-dark.svg";
 
   return (
-    <div>
-      <div className="flex gap-3 items-center">
-        <div className="flex-shrink-0">
-          <img
-            src={logoSrc}
-            alt="EnMotion"
-            className={`${logoSize} object-contain`}
-            style={logoFilter ? { filter: logoFilter } : undefined}
-          />
-        </div>
-        <div className="flex flex-col justify-center">
-          <div className="flex items-baseline gap-0">
-            <span className={`font-mono ${titleSize} font-bold tracking-tight text-foreground`}>
-              {t("nameStart")}
-            </span>
-            <span className={`font-mono ${titleSize} font-black tracking-tight text-primary`}>
-              {t("nameEnd")}
-            </span>
-          </div>
-          {size !== "sm" && (
-            <span className="font-mono text-[0.6875rem] text-text-muted tracking-[0.2em] uppercase -mt-0.5">
-              {t("studio")}
-            </span>
-          )}
-        </div>
-      </div>
+    <div className="inline-flex flex-col">
+      <img
+        src={logoSrc}
+        alt={t("documentTitle")}
+        className={`${logoSize} h-auto object-contain object-left`}
+      />
       {showSlogan && (
-        <p className="font-mono atelier-display text-[0.5rem] text-text-muted tracking-[0.15em] text-center mt-2.5 uppercase">
+        <p className="mt-2 text-center font-mono atelier-display text-[0.5rem] uppercase tracking-[0.15em] text-text-muted">
           {t("slogan")}
         </p>
       )}
