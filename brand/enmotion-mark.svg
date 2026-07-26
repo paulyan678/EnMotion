@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">EnMotion story-frame mark</title>
+  <desc id="desc">A geometric letter E built from three story frames with a play triangle cut from its center.</desc>
+  <path
+    fill="#15131A"
+    fill-rule="evenodd"
+    d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"
+  />
+  <path fill="#34D8C4" d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"/>
+  <path fill="#FFA94D" d="M672 472h60l-24 80h-60l24-80Z"/>
+</svg>

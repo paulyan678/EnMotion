@@ -43,6 +43,8 @@ button.danger { color: var(--danger); }
 .masthead, .toolbar, .panel-heading, .header-actions, .dialog-actions {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
 }
+.brand-heading { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.brand-heading img { width: 4rem; height: 4rem; object-fit: contain; flex: 0 0 auto; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: clamp(1.8rem, 5vw, 2.8rem); letter-spacing: -.04em; }
 h2 { font-size: 1.05rem; }
@@ -138,6 +140,8 @@ dialog::backdrop { background: rgba(0, 0, 0, .72); }
 @media (max-width: 760px) {
   .grid.two, .form-grid { grid-template-columns: 1fr; }
   .masthead { align-items: flex-start; }
+  .brand-heading { align-items: flex-start; }
+  .brand-heading img { width: 3rem; height: 3rem; }
   .header-actions { flex-direction: column; align-items: flex-end; }
   .toolbar { align-items: flex-start; }
   .provider-credential-row { grid-template-columns: 1fr; align-items: stretch; }

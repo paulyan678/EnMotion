@@ -6,6 +6,19 @@ ADMIN_SCRIPT = Path(__file__).parents[1] / "app" / "static" / "admin" / "app.js"
 PROJECT_ROOT = Path(__file__).parents[1]
 
 
+def test_admin_uses_the_official_brand_assets() -> None:
+    static_root = PROJECT_ROOT / "app" / "static" / "admin"
+    markup = (static_root / "index.html").read_text(encoding="utf-8")
+
+    assert 'href="/admin/favicon.ico"' in markup
+    assert 'src="/admin/logo.svg"' in markup
+    assert 'class="brand-heading"' in markup
+    assert (static_root / "favicon.ico").stat().st_size > 0
+    logo = (static_root / "logo.svg").read_text(encoding="utf-8")
+    assert "#34D8C4" in logo
+    assert "<text" not in logo
+
+
 def test_async_submit_handlers_keep_a_stable_form_reference() -> None:
     """DOM SubmitEvent.currentTarget becomes null after the first await."""
 

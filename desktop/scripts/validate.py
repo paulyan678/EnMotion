@@ -71,6 +71,23 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
     )
     check(base["productName"] == "EnMotion", "desktop product name must be EnMotion")
     check(base["identifier"] == "com.enmotion.desktop", "desktop identifier is unexpected")
+    for asset in (
+        REPOSITORY_ROOT / "brand/enmotion-app-icon.svg",
+        REPOSITORY_ROOT / "brand/enmotion-lockup.svg",
+        REPOSITORY_ROOT / "brand/enmotion-lockup-on-dark.svg",
+        REPOSITORY_ROOT / "icon.icns",
+        REPOSITORY_ROOT / "icon.ico",
+        TAURI_ROOT / "icons/icon.png",
+    ):
+        check(asset.is_file() and asset.stat().st_size > 0, f"brand asset is missing: {asset}")
+    for lockup in (
+        REPOSITORY_ROOT / "brand/enmotion-lockup.svg",
+        REPOSITORY_ROOT / "brand/enmotion-lockup-on-dark.svg",
+    ):
+        check(
+            "<text" not in lockup.read_text(encoding="utf-8"),
+            f"official wordmark must be outlined: {lockup}",
+        )
     check(base["bundle"]["active"] is False, "base config must never emit every bundle")
     check(
         base["bundle"]["createUpdaterArtifacts"] is False,

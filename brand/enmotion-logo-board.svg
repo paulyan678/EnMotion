@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Official EnMotion logo system</title>
+  <desc id="desc">A presentation of the EnMotion story-frame logo on light and dark backgrounds with its palette and small-size tests.</desc>
+  <rect width="1800" height="1200" fill="#F6F1E9"/>
+  <text x="96" y="104" fill="#15131A" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="650" letter-spacing="4">ENMOTION — OFFICIAL LOGO SYSTEM</text>
+  <text x="96" y="156" fill="#665F57" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif" font-size="24">Story frames become motion.</text>
+
+  <rect x="88" y="214" width="1624" height="426" rx="36" fill="#FFFDF9" stroke="#241F1A" stroke-opacity=".1" stroke-width="2"/>
+  <g transform="translate(136 246) scale(.35)">
+    <path fill="#15131A" fill-rule="evenodd" d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"/>
+    <path fill="#34D8C4" d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"/>
+    <path fill="#FFA94D" d="M672 472h60l-24 80h-60l24-80Z"/>
+  </g>
+  <text x="494" y="464" fill="#15131A" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif" font-size="176" font-weight="650" letter-spacing="-9">En<tspan fill="#178F82" font-weight="760">Motion</tspan></text>
+  <text x="504" y="522" fill="#777067" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="20" letter-spacing="7">AI-NATIVE MOTION COMIC STUDIO</text>
+
+  <rect x="88" y="680" width="1008" height="412" rx="36" fill="#0C0B0E"/>
+  <g transform="translate(132 724) scale(.3)">
+    <path fill="#F2EDE4" fill-rule="evenodd" d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"/>
+    <path fill="#34D8C4" d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"/>
+    <path fill="#FFA94D" d="M672 472h60l-24 80h-60l24-80Z"/>
+  </g>
+  <text x="450" y="906" fill="#F2EDE4" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif" font-size="128" font-weight="650" letter-spacing="-7">En<tspan fill="#34D8C4" font-weight="760">Motion</tspan></text>
+  <text x="454" y="954" fill="#A8A2B0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17" letter-spacing="6">RENDER NOISE INTO NARRATIVE</text>
+
+  <rect x="1136" y="680" width="576" height="412" rx="36" fill="#FFFDF9" stroke="#241F1A" stroke-opacity=".1" stroke-width="2"/>
+  <text x="1192" y="746" fill="#665F57" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif" font-size="20" font-weight="650" letter-spacing="3">PALETTE</text>
+  <circle cx="1216" cy="818" r="24" fill="#15131A"/><text x="1258" y="826" fill="#15131A" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="18">INK  #15131A</text>
+  <circle cx="1216" cy="882" r="24" fill="#34D8C4"/><text x="1258" y="890" fill="#15131A" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="18">MOTION  #34D8C4</text>
+  <circle cx="1216" cy="946" r="24" fill="#FFA94D"/><text x="1258" y="954" fill="#15131A" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="18">KEYFRAME  #FFA94D</text>
+  <text x="1192" y="1020" fill="#665F57" font-family="Avenir Next, Inter, Helvetica Neue, Arial, sans-serif" font-size="18">Readable at</text>
+  <g transform="translate(1356 978) scale(.08)">
+    <path fill="#15131A" fill-rule="evenodd" d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"/>
+    <path fill="#34D8C4" d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"/>
+  </g>
+  <g transform="translate(1454 986) scale(.055)">
+    <path fill="#15131A" fill-rule="evenodd" d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"/>
+    <path fill="#34D8C4" d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"/>
+  </g>
+  <text x="1548" y="1020" fill="#665F57" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">64 / 44 px</text>
+</svg>
