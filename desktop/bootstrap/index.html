@@ -28,7 +28,7 @@
         display: grid;
         place-items: center;
         background:
-          radial-gradient(circle at 50% 35%, rgb(120 92 255 / 14%), transparent 38%),
+          radial-gradient(circle at 50% 35%, rgb(52 216 196 / 12%), transparent 38%),
           #101014;
       }
 
@@ -38,13 +38,16 @@
       }
 
       .mark {
-        width: 42px;
-        height: 42px;
+        width: 58px;
+        height: 58px;
         margin: 0 auto 18px;
-        border: 1px solid rgb(255 255 255 / 16%);
-        border-radius: 13px;
-        background: linear-gradient(145deg, #8f79ff, #5f46dd);
-        box-shadow: 0 18px 44px rgb(67 44 185 / 30%);
+        filter: drop-shadow(0 18px 34px rgb(52 216 196 / 20%));
+      }
+
+      .mark svg {
+        display: block;
+        width: 100%;
+        height: 100%;
       }
 
       h1 {
@@ -77,7 +80,7 @@
         height: 100%;
         content: "";
         border-radius: inherit;
-        background: #a998ff;
+        background: #34d8c4;
         animation: loading 1.1s ease-in-out infinite;
       }
 
@@ -107,7 +110,20 @@
   </head>
   <body>
     <main>
-      <div class="mark" aria-hidden="true"></div>
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 1024 1024">
+          <path
+            fill="#f2ede4"
+            fill-rule="evenodd"
+            d="M216 160h608l-48 160H472v96h272l-48 160H472v128h352l-48 160H216V160Zm120 190v324l256-162-256-162Z"
+          />
+          <path
+            fill="#34d8c4"
+            d="M584 160h240l-48 160H536l48-160Zm0 544h240l-48 160H536l48-160Z"
+          />
+          <path fill="#ffa94d" d="M672 472h60l-24 80h-60l24-80Z" />
+        </svg>
+      </div>
       <h1>EnMotion</h1>
       <p id="status">正在启动安全的本地工作区…</p>
       <div
