@@ -88,6 +88,16 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
             "<text" not in lockup.read_text(encoding="utf-8"),
             f"official wordmark must be outlined: {lockup}",
         )
+    bootstrap_source = (DESKTOP_ROOT / "bootstrap/index.html").read_text(encoding="utf-8")
+    bootstrap_source_lower = bootstrap_source.lower()
+    check(
+        all(color in bootstrap_source_lower for color in ("#34d8c4", "#ffa94d", "#f2ede4")),
+        "desktop bootstrap must use the official EnMotion mark palette",
+    )
+    check(
+        not any(color in bootstrap_source_lower for color in ("#8f79ff", "#5f46dd", "#a998ff")),
+        "desktop bootstrap must not use the retired purple placeholder",
+    )
     check(base["bundle"]["active"] is False, "base config must never emit every bundle")
     check(
         base["bundle"]["createUpdaterArtifacts"] is False,
