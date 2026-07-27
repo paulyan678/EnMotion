@@ -132,6 +132,12 @@ The production layout assumed by `deploy/` is:
    assets do not require a GitHub credential.
    Install `releases.json` atomically as `root:enmotion-control` with mode `0640`
    so the unprivileged service can read it without being able to modify it.
+   During a control-plane hostname migration, set
+   `ENMOTION_PUBLIC_BASE_URL` to the new canonical HTTPS origin and place only
+   the explicitly approved former origins in
+   `ENMOTION_PUBLIC_BASE_URL_ALIASES`. This keeps updater capability URLs
+   same-origin for both desktop generations without trusting arbitrary Host
+   headers. Remove aliases after every known installation has upgraded.
 5. Install `deploy/enmotion-control.service`, the backup unit/timer, Caddy 2.8 or
    newer, and `age`. Copy `deploy/Caddyfile` to the Caddy configuration. Copy
    `deploy/enmotion-caddy.env.example` to `/etc/enmotion-caddy.env`, set the real

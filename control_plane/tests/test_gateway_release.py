@@ -382,6 +382,37 @@ def test_release_capability_is_hashed_bound_same_origin_and_one_time(app_env):
         assert grant.download_consumed_at is not None
 
 
+def test_release_capability_uses_only_an_explicitly_approved_request_origin(app_env):
+    client, _app = app_env
+    employee = login(client, "employee", "Employee-password-123")["access_token"]
+    payload = {
+        "target": "darwin",
+        "arch": "aarch64",
+        "current_version": "1.0.0",
+        "channel": "stable",
+    }
+
+    legacy = client.post(
+        "https://legacy-control.test/api/v1/releases/session",
+        headers=bearer(employee),
+        json=payload,
+    )
+    assert legacy.status_code == 201, legacy.text
+    assert legacy.json()["manifest_url"].startswith(
+        "https://legacy-control.test/api/v1/releases/session/"
+    )
+
+    unapproved = client.post(
+        "https://attacker.test/api/v1/releases/session",
+        headers=bearer(employee),
+        json=payload,
+    )
+    assert unapproved.status_code == 201, unapproved.text
+    assert unapproved.json()["manifest_url"].startswith(
+        "https://control.test/api/v1/releases/session/"
+    )
+
+
 def test_release_capability_returns_no_update_and_rejects_inactive_owner(app_env):
     client, app = app_env
     employee = login(client, "employee", "Employee-password-123")["access_token"]

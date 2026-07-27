@@ -42,6 +42,14 @@ def settings(**overrides) -> Settings:
             {"provider_config_master_key": "A" * 42 + "!"},
             "URL-safe base64",
         ),
+        (
+            {"public_base_url_aliases": ("https://user:secret@legacy.test",)},
+            "ENMOTION_PUBLIC_BASE_URL_ALIASES",
+        ),
+        (
+            {"public_base_url_aliases": ("https://legacy.test/path",)},
+            "ENMOTION_PUBLIC_BASE_URL_ALIASES",
+        ),
     ],
 )
 def test_unsafe_production_configuration_is_rejected(
@@ -50,3 +58,20 @@ def test_unsafe_production_configuration_is_rejected(
 ) -> None:
     with pytest.raises(ConfigurationError, match=message):
         settings(**overrides)
+
+
+def test_public_base_url_aliases_are_parsed_as_normalized_origins(monkeypatch) -> None:
+    monkeypatch.setenv("ENMOTION_SESSION_HMAC_SECRET", "x" * 48)
+    monkeypatch.setenv("ENMOTION_PUBLIC_BASE_URL", "https://control.test/")
+    monkeypatch.setenv(
+        "ENMOTION_PUBLIC_BASE_URL_ALIASES",
+        " https://legacy-one.test/,https://legacy-two.test:9443 ",
+    )
+
+    configured = Settings.from_env()
+
+    assert configured.public_base_url == "https://control.test"
+    assert configured.public_base_url_aliases == (
+        "https://legacy-one.test",
+        "https://legacy-two.test:9443",
+    )
