@@ -69,6 +69,37 @@ def validate_provider_base_url(value: str, *, allow_insecure: bool) -> str:
     return normalized
 
 
+def validate_public_origin(
+    name: str,
+    value: str,
+    *,
+    allow_insecure: bool,
+) -> str:
+    normalized = value.strip().rstrip("/")
+    public = urlparse(normalized)
+    allowed_schemes = {"http", "https"} if allow_insecure else {"https"}
+    try:
+        port = public.port
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be a secure absolute origin") from exc
+    if (
+        public.scheme not in allowed_schemes
+        or not public.hostname
+        or public.username
+        or public.password
+        or public.path not in {"", "/"}
+        or public.params
+        or public.query
+        or public.fragment
+    ):
+        raise ConfigurationError(f"{name} must be a secure absolute origin")
+    default_port = 443 if public.scheme == "https" else 80
+    authority = public.hostname.lower()
+    if port is not None and port != default_port:
+        authority = f"{authority}:{port}"
+    return f"{public.scheme.lower()}://{authority}"
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -112,6 +143,7 @@ class Settings:
     release_allowed_hosts: tuple[str, ...] = ()
     release_source_credentials: dict[str, str] = field(default_factory=dict, repr=False)
     public_base_url: str = ""
+    public_base_url_aliases: tuple[str, ...] = ()
     cookie_secure: bool = True
     access_ttl_seconds: int = 15 * 60
     refresh_ttl_seconds: int = 7 * 24 * 60 * 60
@@ -161,24 +193,21 @@ class Settings:
         )
         if self.provider_config_master_key:
             decode_provider_config_master_key(self.provider_config_master_key)
+        public_origins = []
         if self.public_base_url:
-            public = urlparse(self.public_base_url)
-            allowed_public_schemes = (
-                {"http", "https"} if self.allow_insecure_upstreams else {"https"}
+            public_origins.append(("ENMOTION_PUBLIC_BASE_URL", self.public_base_url))
+        public_origins.extend(
+            ("ENMOTION_PUBLIC_BASE_URL_ALIASES", alias)
+            for alias in self.public_base_url_aliases
+        )
+        for name, origin in public_origins:
+            normalized = validate_public_origin(
+                name,
+                origin,
+                allow_insecure=self.allow_insecure_upstreams,
             )
-            if (
-                public.scheme not in allowed_public_schemes
-                or not public.hostname
-                or public.username
-                or public.password
-                or public.path not in {"", "/"}
-                or public.params
-                or public.query
-                or public.fragment
-            ):
-                raise ConfigurationError(
-                    "ENMOTION_PUBLIC_BASE_URL must be a secure absolute origin"
-                )
+            if normalized != origin:
+                raise ConfigurationError(f"{name} must use a normalized origin")
         if self.access_ttl_seconds < 60:
             raise ConfigurationError("access token lifetime must be at least 60 seconds")
         if self.refresh_ttl_seconds <= self.access_ttl_seconds:
@@ -213,6 +242,11 @@ class Settings:
             for item in os.getenv("ENMOTION_RELEASE_ALLOWED_HOSTS", "").split(",")
             if item.strip()
         )
+        public_aliases = tuple(
+            item.strip().rstrip("/")
+            for item in os.getenv("ENMOTION_PUBLIC_BASE_URL_ALIASES", "").split(",")
+            if item.strip()
+        )
         return cls(
             database_url=database_url,
             session_hmac_secret=secret,
@@ -230,6 +264,7 @@ class Settings:
                 ).items()
             },
             public_base_url=os.getenv("ENMOTION_PUBLIC_BASE_URL", "").strip().rstrip("/"),
+            public_base_url_aliases=public_aliases,
             cookie_secure=_env_bool("ENMOTION_COOKIE_SECURE", environment == "production"),
             access_ttl_seconds=_env_int("ENMOTION_ACCESS_TTL_SECONDS", 15 * 60),
             refresh_ttl_seconds=_env_int("ENMOTION_REFRESH_TTL_SECONDS", 7 * 24 * 60 * 60),

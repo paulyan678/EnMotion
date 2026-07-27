@@ -136,6 +136,7 @@ def app_env(
             "private-downloads.test": "release-source-secret",
         },
         public_base_url="https://control.test",
+        public_base_url_aliases=("https://legacy-control.test",),
         cookie_secure=False,
         allow_insecure_upstreams=True,
         environment="test",

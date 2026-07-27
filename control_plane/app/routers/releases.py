@@ -20,6 +20,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from ..audit import record_audit
+from ..config import ConfigurationError, validate_public_origin
 from ..database import begin_immediate
 from ..dependencies import CurrentPrincipal, client_ip
 from ..models import ReleaseGrant, User, utcnow
@@ -207,13 +208,23 @@ def _exact_release_entry(
 
 
 def _public_origin(request: Request) -> str:
-    origin = request.app.state.settings.public_base_url
-    if not origin:
+    settings = request.app.state.settings
+    canonical = settings.public_base_url
+    if not canonical:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "ENMOTION_PUBLIC_BASE_URL is required for desktop update sessions",
         )
-    return origin
+    allowed = {canonical, *settings.public_base_url_aliases}
+    try:
+        requested = validate_public_origin(
+            "request origin",
+            f"{request.url.scheme}://{request.url.netloc}",
+            allow_insecure=settings.allow_insecure_upstreams,
+        )
+    except ConfigurationError:
+        return canonical
+    return requested if requested in allowed else canonical
 
 
 def _grant_digest(request: Request, token: str) -> str:
