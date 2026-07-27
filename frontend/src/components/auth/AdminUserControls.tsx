@@ -12,6 +12,8 @@ import {
 import { useTranslations } from "next-intl";
 import { authApi, type ManagedUser } from "@/lib/authApi";
 
+const ADMIN_RESET_PASSWORD_MIN_LENGTH = 6;
+
 function isActive(user: ManagedUser): boolean {
   return user.active ?? user.is_active ?? true;
 }
@@ -75,7 +77,7 @@ export default function AdminUserControls({
   };
 
   const resetPassword = async () => {
-    if (newPassword.length < 12 || busy) return;
+    if (newPassword.length < ADMIN_RESET_PASSWORD_MIN_LENGTH || busy) return;
     setBusy("password");
     setMessage(null);
     try {
@@ -135,9 +137,10 @@ export default function AdminUserControls({
       <div className="mt-4 border-t border-glass-border pt-3">
         <label className="block text-xs font-medium text-text-secondary">
           {t("newTemporaryPassword")}
-          <input type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="glass-input mt-1.5 w-full" />
+          <input type="text" autoComplete="new-password" minLength={ADMIN_RESET_PASSWORD_MIN_LENGTH} maxLength={256} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className="glass-input mt-1.5 w-full" />
+          <span className="mt-1.5 block text-[0.6875rem] font-normal text-text-muted">{t("adminResetPasswordHint")}</span>
         </label>
-        <button type="button" onClick={() => void resetPassword()} disabled={newPassword.length < 12 || Boolean(busy)} className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border border-glass-border px-3 text-xs font-semibold text-text-secondary hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50">
+        <button type="button" onClick={() => void resetPassword()} disabled={newPassword.length < ADMIN_RESET_PASSWORD_MIN_LENGTH || Boolean(busy)} className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border border-glass-border px-3 text-xs font-semibold text-text-secondary hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50">
           {busy === "password" ? <LoaderCircle size={14} className="animate-spin" /> : <KeyRound size={14} />}
           {t("resetPassword")}
         </button>

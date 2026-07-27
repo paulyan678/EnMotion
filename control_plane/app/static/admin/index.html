@@ -232,7 +232,7 @@
         <input name="idempotency_key" type="hidden">
         <label id="amount-label">调整数额 <input name="amount" type="number"></label>
         <label id="reason-label">原因 <input name="reason" minlength="3" maxlength="240"></label>
-        <label id="password-label">新密码 <input name="password" type="password" minlength="12"></label>
+        <label id="password-label">新密码 <input name="password" type="text" minlength="6" maxlength="256" autocomplete="new-password" autocapitalize="none" autocorrect="off" spellcheck="false"></label>
         <div class="dialog-actions">
           <button value="cancel" class="secondary">取消</button>
           <button value="confirm">确认</button>

@@ -350,6 +350,7 @@
       "newTemporaryPassword": "新的临时密码",
       "resetPassword": "重置密码",
       "temporaryPasswordUpdated": "临时密码已更新。",
+      "adminResetPasswordHint": "至少 6 个字符；输入内容会直接显示，重置成功后立即清除。",
       "suspendAccount": "停用账户",
       "reactivateAccount": "重新启用",
       "accountStatusUpdated": "账户状态已更新。",

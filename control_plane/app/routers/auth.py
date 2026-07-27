@@ -26,6 +26,7 @@ from ..schemas import (
     UserPublic,
 )
 from ..security import (
+    ADMIN_RESET_PASSWORD_MIN_LENGTH,
     hash_password,
     normalize_username,
     password_work_slot,
@@ -124,7 +125,10 @@ def login(payload: LoginRequest, request: Request, response: Response) -> TokenR
         with password_work_slot(request.app.state.password_hash_slots):
             valid = verify_password(stored_hash, payload.password)
             replacement_hash = (
-                hash_password(payload.password)
+                hash_password(
+                    payload.password,
+                    minimum_length=ADMIN_RESET_PASSWORD_MIN_LENGTH,
+                )
                 if candidate_active and valid and password_needs_rehash(stored_hash)
                 else None
             )

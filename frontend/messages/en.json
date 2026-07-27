@@ -350,6 +350,7 @@
       "newTemporaryPassword": "New temporary password",
       "resetPassword": "Reset password",
       "temporaryPasswordUpdated": "Temporary password updated.",
+      "adminResetPasswordHint": "At least 6 characters. Visible while you type and cleared after a successful reset.",
       "suspendAccount": "Suspend account",
       "reactivateAccount": "Reactivate account",
       "accountStatusUpdated": "Account status updated.",
