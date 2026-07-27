@@ -120,6 +120,10 @@ def test_admin_interface_is_simplified_chinese_except_model_names() -> None:
 
     assert '<html lang="zh-CN">' in markup
     assert "<title>EnMotion 管理中心</title>" in markup
+    assert "企业管理控制台" not in markup
+    assert '<h1 aria-label="EnMotion 管理中心">' in markup
+    assert '<span class="brand-motion">Motion</span>' in markup
+    assert '<span class="brand-context">管理中心</span>' in markup
     for text in (
         "管理员登录",
         "账号管理",
