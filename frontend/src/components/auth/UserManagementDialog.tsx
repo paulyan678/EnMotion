@@ -138,7 +138,7 @@ export default function UserManagementDialog({ onClose }: { onClose: () => void 
                 {users.length === 0 && <li className="text-sm text-text-muted">{t("noActiveAccounts")}</li>}
               </ul>
             )}
-            {selectedUser && <AdminUserControls user={selectedUser} onUpdated={updateManagedUser} />}
+            {selectedUser && <AdminUserControls key={selectedUser.id} user={selectedUser} onUpdated={updateManagedUser} />}
           </div>
 
           <form onSubmit={submit} className="p-6">

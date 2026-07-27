@@ -202,6 +202,23 @@ def test_admin_localizes_api_and_browser_validation_messages() -> None:
     assert 'toLocaleString("zh-CN")' in script
 
 
+def test_admin_reset_password_is_visible_and_accepts_six_characters() -> None:
+    script = ADMIN_SCRIPT.read_text(encoding="utf-8")
+    markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '<label id="password-label">新密码 <input name="password" type="text" '
+        'minlength="6" maxlength="256"'
+    ) in markup
+    assert ('<label>密码 <input name="password" type="password" required minlength="12">') in markup
+    assert '"password must contain at least 6 characters": "密码至少需要 6 个字符"' in script
+    assert 'dialog.querySelector("[name=password]").value = "";' in script
+    assert '$("#action-dialog").addEventListener("close"' in script
+    assert '$("#action-form").reset();' in script
+
+
 def test_production_configs_do_not_log_release_capabilities_or_csrf() -> None:
     service = (PROJECT_ROOT / "deploy" / "enmotion-control.service").read_text(encoding="utf-8")
     caddy = (PROJECT_ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")

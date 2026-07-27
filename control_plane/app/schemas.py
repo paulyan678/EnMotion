@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .config import MODEL_CAPABILITIES
+from .security import ADMIN_RESET_PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD_MIN_LENGTH
 
 
 class UserPublic(BaseModel):
@@ -50,7 +51,10 @@ class LogoutRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=12, max_length=256)
+    new_password: str = Field(
+        min_length=DEFAULT_PASSWORD_MIN_LENGTH,
+        max_length=256,
+    )
 
 
 class TokenResponse(BaseModel):
@@ -108,7 +112,10 @@ class AdminUsagePublic(UsagePublic):
 
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(
+        min_length=DEFAULT_PASSWORD_MIN_LENGTH,
+        max_length=256,
+    )
     role: Literal["user", "admin"] = "user"
     initial_credits: int = Field(default=0, ge=0, le=2_000_000_000)
 
@@ -118,7 +125,10 @@ class UserStatusRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    new_password: str = Field(min_length=12, max_length=256)
+    new_password: str = Field(
+        min_length=ADMIN_RESET_PASSWORD_MIN_LENGTH,
+        max_length=256,
+    )
 
 
 class RevokeSessionsRequest(BaseModel):

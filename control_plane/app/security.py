@@ -15,6 +15,8 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 
 _USERNAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$")
+DEFAULT_PASSWORD_MIN_LENGTH = 12
+ADMIN_RESET_PASSWORD_MIN_LENGTH = 6
 _PASSWORD_HASHER = PasswordHasher(
     time_cost=2,
     memory_cost=19 * 1024,
@@ -33,17 +35,25 @@ def normalize_username(username: str) -> str:
     return normalized
 
 
-def validate_password(password: str) -> None:
-    if len(password) < 12:
-        raise ValueError("password must contain at least 12 characters")
+def validate_password(
+    password: str,
+    *,
+    minimum_length: int = DEFAULT_PASSWORD_MIN_LENGTH,
+) -> None:
+    if len(password) < minimum_length:
+        raise ValueError(f"password must contain at least {minimum_length} characters")
     if len(password) > 256:
         raise ValueError("password must not exceed 256 characters")
     if password.isspace():
         raise ValueError("password must not be only whitespace")
 
 
-def hash_password(password: str) -> str:
-    validate_password(password)
+def hash_password(
+    password: str,
+    *,
+    minimum_length: int = DEFAULT_PASSWORD_MIN_LENGTH,
+) -> str:
+    validate_password(password, minimum_length=minimum_length)
     return _PASSWORD_HASHER.hash(password)
 
 

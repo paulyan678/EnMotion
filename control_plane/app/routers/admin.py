@@ -38,6 +38,7 @@ from ..schemas import (
     UserStatusRequest,
 )
 from ..security import (
+    ADMIN_RESET_PASSWORD_MIN_LENGTH,
     PasswordWorkUnavailable,
     hash_password,
     normalize_username,
@@ -229,7 +230,10 @@ def reset_user_password(
 ) -> MessageResponse:
     try:
         with password_work_slot(request.app.state.password_hash_slots):
-            password_hash = hash_password(payload.new_password)
+            password_hash = hash_password(
+                payload.new_password,
+                minimum_length=ADMIN_RESET_PASSWORD_MIN_LENGTH,
+            )
     except PasswordWorkUnavailable as exc:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

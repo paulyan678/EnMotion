@@ -177,6 +177,7 @@ const API_DETAIL_TRANSLATIONS = Object.freeze({
   "reserved balance invariant failed": "预留额度校验失败，请联系技术人员",
   "username must be 3-64 characters using letters, numbers, '.', '_' or '-'":
     "用户名须为 3 至 64 个字符，仅可使用英文字母、数字、点、下划线或连字符",
+  "password must contain at least 6 characters": "密码至少需要 6 个字符",
   "password must contain at least 12 characters": "密码至少需要 12 个字符",
   "password must not exceed 256 characters": "密码不能超过 256 个字符",
   "password must not be only whitespace": "密码不能只包含空格",
@@ -658,6 +659,7 @@ document.addEventListener("click", async (event) => {
     dialog.querySelector("[name=user_id]").value = user.id;
     dialog.querySelector("[name=action]").value = action;
     dialog.querySelector("[name=idempotency_key]").value = crypto.randomUUID();
+    dialog.querySelector("[name=password]").value = "";
     $("#amount-label").classList.toggle("hidden", action !== "credit");
     $("#reason-label").classList.toggle("hidden", action !== "credit");
     $("#password-label").classList.toggle("hidden", action !== "password");
@@ -726,6 +728,10 @@ $("#action-form").addEventListener("submit", async (event) => {
   } catch (error) {
     showNotice(`账号已更新，但刷新列表失败：${error.message}`, true);
   }
+});
+
+$("#action-dialog").addEventListener("close", () => {
+  $("#action-form").reset();
 });
 
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {

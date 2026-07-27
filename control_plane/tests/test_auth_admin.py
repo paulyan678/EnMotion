@@ -202,6 +202,101 @@ def test_admin_lifecycle_and_idempotent_credit_adjustment(app_env, admin_token):
         )
 
 
+def test_admin_password_reset_accepts_six_characters_only_for_reset(
+    app_env,
+    admin_token,
+    monkeypatch,
+):
+    client, app = app_env
+    admin_headers = bearer(admin_token)
+    employee_tokens = login(client, "employee", "Employee-password-123")
+    with app.state.db.session() as session:
+        employee = session.scalar(select(User).where(User.normalized_username == "employee"))
+        assert employee is not None
+        employee_id = employee.id
+
+    create_with_short_password = client.post(
+        "/api/v1/admin/users",
+        headers=admin_headers,
+        json={
+            "username": "short-reset-only",
+            "password": "Abc123",
+            "role": "user",
+            "initial_credits": 0,
+        },
+    )
+    assert create_with_short_password.status_code == 422
+
+    self_change_with_short_password = client.post(
+        "/api/v1/auth/change-password",
+        headers=bearer(employee_tokens["access_token"]),
+        json={
+            "current_password": "Employee-password-123",
+            "new_password": "Abc123",
+        },
+    )
+    assert self_change_with_short_password.status_code == 422
+
+    too_short = client.post(
+        f"/api/v1/admin/users/{employee_id}/password",
+        headers=admin_headers,
+        json={"new_password": "Ab123"},
+    )
+    assert too_short.status_code == 422
+
+    whitespace_only = client.post(
+        f"/api/v1/admin/users/{employee_id}/password",
+        headers=admin_headers,
+        json={"new_password": "      "},
+    )
+    assert whitespace_only.status_code == 422
+    assert whitespace_only.json()["detail"] == "password must not be only whitespace"
+
+    reset = client.post(
+        f"/api/v1/admin/users/{employee_id}/password",
+        headers=admin_headers,
+        json={"new_password": "Abc123"},
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["message"] == "password reset; all sessions revoked"
+    assert (
+        client.get(
+            "/api/v1/account/me",
+            headers=bearer(employee_tokens["access_token"]),
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={
+                "username": "employee",
+                "password": "Employee-password-123",
+            },
+        ).status_code
+        == 401
+    )
+
+    monkeypatch.setattr(
+        "app.routers.auth.password_needs_rehash",
+        lambda _password_hash: True,
+    )
+    replacement_login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "employee", "password": "Abc123"},
+    )
+    assert replacement_login.status_code == 200, replacement_login.text
+
+    with app.state.db.session() as session:
+        reset_events = session.scalars(
+            select(AuditEvent)
+            .where(AuditEvent.target_id == employee_id)
+            .where(AuditEvent.action == "admin.password_reset")
+        ).all()
+        assert len(reset_events) == 1
+        assert reset_events[0].detail["sessions_revoked"] >= 1
+
+
 def test_change_password_revokes_all_sessions(app_env):
     client, _app = app_env
     tokens = login(client, "employee", "Employee-password-123")
