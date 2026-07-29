@@ -15,10 +15,10 @@ const MINIMUM_PYTHON = [3, 11];
 
 function assertNodeVersion() {
   const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major !== 20 || minor < 9) {
+  if (major !== 24 || minor < 11) {
     throw new Error(
-      `Node.js 20.9 or newer (but below 21) is required (found ${process.versions.node}). `
-      + 'Install a supported Node.js 20 release before running the development setup.',
+      `Node.js 24.11 or newer (but below 25) is required (found ${process.versions.node}). `
+      + 'Install a supported Node.js 24 LTS release before running the development setup.',
     );
   }
 }

@@ -13,6 +13,7 @@ from ..dependencies import (
     CurrentPrincipal,
     client_ip,
 )
+from ..http_status import UNPROCESSABLE_CONTENT
 from ..models import LoginSession, User, utcnow
 from ..schemas import (
     ChangePasswordRequest,
@@ -27,17 +28,16 @@ from ..schemas import (
 )
 from ..security import (
     ADMIN_RESET_PASSWORD_MIN_LENGTH,
+    PasswordWorkUnavailable,
     hash_password,
     normalize_username,
-    password_work_slot,
     password_needs_rehash,
-    PasswordWorkUnavailable,
+    password_work_slot,
     secure_equal,
     token_digest,
     verify_password,
 )
 from ..services.auth import issue_session, revoke_all_sessions, rotate_refresh_token
-
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -336,7 +336,7 @@ def change_password(
             headers={"Retry-After": "2"},
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(UNPROCESSABLE_CONTENT, str(exc)) from exc
     if not current_valid:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "current password is incorrect")
 

@@ -2,9 +2,9 @@
   "name": "enmotion",
   "version": "1.0.6",
   "private": true,
-  "packageManager": "npm@10.8.2",
+  "packageManager": "npm@11.16.0",
   "engines": {
-    "node": ">=20.9 <21"
+    "node": ">=24.11 <25"
   },
   "scripts": {
     "predev": "node scripts/dev-setup.js",

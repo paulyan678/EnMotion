@@ -8,6 +8,7 @@ from ..audit import record_audit
 from ..config import MODEL_CAPABILITIES
 from ..database import begin_immediate
 from ..dependencies import AdminPrincipal, client_ip
+from ..http_status import UNPROCESSABLE_CONTENT
 from ..models import (
     AuditEvent,
     CreditLedger,
@@ -102,7 +103,7 @@ def update_provider_config(
         ) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             str(exc),
         ) from exc
 
@@ -137,7 +138,7 @@ def create_user(
             headers={"Retry-After": "2"},
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(UNPROCESSABLE_CONTENT, str(exc)) from exc
     try:
         with request.app.state.db.session() as session:
             begin_immediate(session)
@@ -241,7 +242,7 @@ def reset_user_password(
             headers={"Retry-After": "2"},
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise HTTPException(UNPROCESSABLE_CONTENT, str(exc)) from exc
     with request.app.state.db.session() as session:
         begin_immediate(session)
         user = session.get(User, user_id)
@@ -387,7 +388,7 @@ def usage_history(
     }
     if usage_status is not None and usage_status not in allowed_statuses:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "unsupported usage status",
         )
     statement = select(UsageRequest).order_by(UsageRequest.created_at.desc()).limit(limit)
@@ -418,7 +419,7 @@ def list_rate_cards(
 def _validate_rate_capability(operation: str, model: str) -> None:
     if MODEL_CAPABILITIES[model] != _OPERATION_CAPABILITY[operation]:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "model capability does not match the operation",
         )
 

@@ -54,6 +54,8 @@ def is_https_origin(value: str) -> bool:
 
 def validate_configuration(release: bool, staged: bool, target: str | None) -> None:
     package = load_json(REPOSITORY_ROOT / "package.json")
+    frontend_package = load_json(REPOSITORY_ROOT / "frontend/package.json")
+    frontend_lock = load_json(REPOSITORY_ROOT / "frontend/package-lock.json")
     cargo = tomllib.loads((TAURI_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     base = load_json(TAURI_ROOT / "tauri.conf.json")
     macos = load_json(TAURI_ROOT / "tauri.macos.conf.json")
@@ -61,6 +63,43 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
     capability = load_json(TAURI_ROOT / "capabilities/main.json")
 
     check(package["version"] == cargo["package"]["version"], "root and Rust versions differ")
+    check(
+        package.get("packageManager") == "npm@11.16.0"
+        and frontend_package.get("packageManager") == package["packageManager"]
+        and package.get("engines", {}).get("node") == ">=24.11 <25"
+        and frontend_package.get("engines", {}).get("node") == package["engines"]["node"],
+        "Node.js and npm release toolchains must stay on the supported Node 24 LTS line",
+    )
+    expected_install_scripts = {
+        "@parcel/watcher@2.5.6": True,
+        "@swc/core@1.15.43": True,
+        "esbuild@0.28.1": True,
+        "fsevents@2.3.2": True,
+        "fsevents@2.3.3": True,
+        "unrs-resolver@1.12.2": True,
+    }
+    check(
+        frontend_package.get("allowScripts") == expected_install_scripts
+        and (REPOSITORY_ROOT / ".npmrc").read_text(encoding="utf-8").strip()
+        == "strict-allow-scripts=true"
+        and (REPOSITORY_ROOT / "frontend/.npmrc").read_text(encoding="utf-8").strip()
+        == "strict-allow-scripts=true",
+        "npm install scripts must remain explicitly reviewed, version-pinned, and strict",
+    )
+    check(
+        frontend_lock.get("packages", {})
+        .get("node_modules/minimatch/node_modules/brace-expansion", {})
+        .get("version")
+        == "1.1.17",
+        "frontend development tooling must retain the compatible patched brace-expansion backport",
+    )
+    check(
+        frontend_package.get("overrides", {})
+        .get("minimatch@3.1.5", {})
+        .get("brace-expansion")
+        == "1.1.17",
+        "frontend dependency resolution must pin the compatible patched brace-expansion backport",
+    )
     check(
         cargo["package"].get("rust-version") == "1.88",
         "Rust MSRV must match the locked dependency graph",
@@ -270,7 +309,28 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
     workflow = REPOSITORY_ROOT / ".github/workflows/release-desktop.yml"
     if workflow.is_file():
         workflow_text = workflow.read_text(encoding="utf-8")
+        ci_workflow_text = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        combined_workflows = ci_workflow_text + workflow_text
         check("ubuntu-" not in workflow_text.lower(), "desktop release must not use Linux")
+        check(
+            combined_workflows.count('NODE_VERSION: "24.18.0"') == 2,
+            "CI and release workflows must use the reviewed Node 24 LTS patch",
+        )
+        node24_action_pins = {
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1": 8,
+            "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020": 4,
+            "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 7,
+        }
+        check(
+            all(
+                combined_workflows.count(action) == expected_count
+                for action, expected_count in node24_action_pins.items()
+            )
+            and combined_workflows.count("package-manager-cache: false") == 2,
+            "CI and release actions must stay pinned to reviewed Node 24 commits",
+        )
         found_targets = set(
             re.findall(
                 r"(?:aarch64-apple-darwin|x86_64-apple-darwin|x86_64-pc-windows-msvc)",
@@ -329,6 +389,16 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
             and "enmotion-demucs-worker-x86_64-pc-windows-msvc.exe" in workflow_text
             and "Expected signed sidecars, application, and installer" in workflow_text,
             "Windows release must verify every executable signing boundary",
+        )
+        windows_signing_source = (DESKTOP_ROOT / "scripts/sign-windows.ps1").read_text(
+            encoding="utf-8"
+        )
+        check(
+            'WINDOWS_TIMESTAMP -eq "http://timestamp.digicert.com"' in workflow_text
+            and '$timestamp -eq "http://timestamp.digicert.com"' in windows_signing_source
+            and "official DigiCert RFC 3161 endpoint" in workflow_text
+            and "official DigiCert RFC 3161 endpoint" in windows_signing_source,
+            "Windows signing must permit only HTTPS or DigiCert's official HTTP timestamp service",
         )
         check(
             "-Filter *-setup.exe" in workflow_text

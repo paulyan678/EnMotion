@@ -16,6 +16,7 @@ from starlette.datastructures import UploadFile
 
 from ..config import MODEL_CAPABILITIES
 from ..dependencies import CurrentPrincipal
+from ..http_status import UNPROCESSABLE_CONTENT
 from ..models import ProviderTask
 from ..schemas import IdempotentReplayResponse, UsagePublic
 from ..security import token_digest
@@ -110,7 +111,7 @@ def _idempotency_key(request: Request) -> str:
     value = request.headers.get("idempotency-key", "").strip()
     if not _IDEMPOTENCY_KEY.fullmatch(value):
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "Idempotency-Key must be 8-128 safe ASCII characters",
         )
     return value
@@ -138,29 +139,29 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "request body must be JSON") from exc
     if not isinstance(body, dict):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "JSON body must be an object")
+        raise HTTPException(UNPROCESSABLE_CONTENT, "JSON body must be an object")
     unknown = set(body) - _ALLOWED_JSON_FIELDS[operation]
     if unknown:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "unsupported provider fields: " + ", ".join(sorted(unknown)),
         )
     if operation == "video.generations":
         metadata = body.get("metadata")
         if not isinstance(metadata, dict):
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "video metadata must be an object"
+                UNPROCESSABLE_CONTENT, "video metadata must be an object"
             )
         metadata_unknown = set(metadata) - _ALLOWED_VIDEO_METADATA
         if metadata_unknown:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "unsupported video metadata fields: " + ", ".join(sorted(metadata_unknown)),
             )
         content = metadata.get("content")
         if not isinstance(content, list) or not 1 <= len(content) <= 2:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "video metadata content must contain text and at most one image",
             )
         text_parts = [
@@ -180,7 +181,7 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
             or len(text_parts) + len(image_parts) != len(content)
         ):
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "video content must contain exactly one text item and at most one image_url",
             )
         if image_parts:
@@ -190,7 +191,7 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
                 url.startswith("data:image/") or url.startswith("https://")
             ):
                 raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    UNPROCESSABLE_CONTENT,
                     "video image_url must be an HTTPS URL or image data URL",
                 )
         duration = metadata.get("duration")
@@ -198,44 +199,44 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
         ratio = metadata.get("ratio")
         if isinstance(duration, bool) or not isinstance(duration, int) or not 4 <= duration <= 15:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "video duration must be an integer from 4 to 15",
             )
         if resolution not in {"720p", "1080p"}:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "video resolution must be 720p or 1080p",
             )
         if ratio not in {"16:9", "9:16", "1:1"}:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "video ratio must be 16:9, 9:16, or 1:1",
             )
         if not isinstance(metadata.get("generate_audio"), bool) or not isinstance(
             metadata.get("watermark"), bool
         ):
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "generate_audio and watermark must be booleans",
             )
         if "seed" in metadata and (
             isinstance(metadata["seed"], bool) or not isinstance(metadata["seed"], int)
         ):
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "video seed must be an integer"
+                UNPROCESSABLE_CONTENT, "video seed must be an integer"
             )
         if resolution == "1080p" and (
             image_parts or body.get("model") != "doubao-seedance-2-0-260128"
         ):
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "1080p is supported only by Seedance 2.0 text-to-video",
             )
     elif operation == "chat.completions":
         messages = body.get("messages")
         if not isinstance(messages, list) or not 1 <= len(messages) <= 256:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "messages must be a non-empty list with at most 256 entries",
             )
         for message in messages:
@@ -245,22 +246,22 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
                 or not isinstance(message.get("content"), str)
             ):
                 raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    UNPROCESSABLE_CONTENT,
                     "each message must contain an allowed role and string content",
                 )
     elif operation == "images.generations":
         if not isinstance(body.get("prompt"), str) or not body["prompt"].strip():
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "image prompt is required")
+            raise HTTPException(UNPROCESSABLE_CONTENT, "image prompt is required")
         if body.get("size", "1024x1024") not in _IMAGE_SIZES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported image size")
+            raise HTTPException(UNPROCESSABLE_CONTENT, "unsupported image size")
         if body.get("quality", "high") not in _IMAGE_QUALITIES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported image quality")
+            raise HTTPException(UNPROCESSABLE_CONTENT, "unsupported image quality")
         body.setdefault("n", 1)
         body.setdefault("size", "1024x1024")
         body.setdefault("quality", "high")
     if operation.startswith("images.") and body.get("n", 1) != 1:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "EnMotion currently permits exactly one image per billable request",
         )
     return body
@@ -272,10 +273,10 @@ def _validate_model(
     model: Any,
 ) -> tuple[str, str, ProviderConfigSnapshot]:
     if not isinstance(model, str) or model not in MODEL_CAPABILITIES:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported provider model")
+        raise HTTPException(UNPROCESSABLE_CONTENT, "unsupported provider model")
     if MODEL_CAPABILITIES[model] != _OPERATION_CAPABILITY[operation]:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "provider model capability does not match this operation",
         )
     try:
@@ -873,19 +874,19 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
         unknown = {key for key in form.keys() if key not in allowed_fields}
         if unknown:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "unsupported provider fields: " + ", ".join(sorted(unknown)),
             )
         scalar_fields = {"model", "prompt", "n", "size", "quality"}
         for field_name in scalar_fields:
             if len(form.getlist(field_name)) > 1:
                 raise HTTPException(
-                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    UNPROCESSABLE_CONTENT,
                     f"multipart field {field_name} must appear at most once",
                 )
         if len(form.getlist("mask")) > 1:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "multipart field mask must appear at most once",
             )
         model, credential, provider_config = _validate_model(
@@ -894,16 +895,16 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
             form.get("model"),
         )
         if not isinstance(form.get("prompt"), str) or not str(form.get("prompt")).strip():
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "image prompt is required")
+            raise HTTPException(UNPROCESSABLE_CONTENT, "image prompt is required")
         if str(form.get("n", "1")) != "1":
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "EnMotion currently permits exactly one image per billable request",
             )
         if str(form.get("size", "1024x1024")) not in _IMAGE_SIZES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported image size")
+            raise HTTPException(UNPROCESSABLE_CONTENT, "unsupported image size")
         if str(form.get("quality", "high")) not in _IMAGE_QUALITIES:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "unsupported image quality")
+            raise HTTPException(UNPROCESSABLE_CONTENT, "unsupported image quality")
         data: list[tuple[str, str]] = []
         uploaded_fields: list[str] = []
         fingerprints: list[dict[str, str | int]] = []
@@ -912,7 +913,7 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
             if isinstance(value, UploadFile):
                 if not (value.content_type or "").lower().startswith("image/"):
                     raise HTTPException(
-                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        UNPROCESSABLE_CONTENT,
                         "image edit uploads must use an image content type",
                     )
                 digest = hashlib.sha256()
@@ -935,7 +936,7 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
         image_count = uploaded_fields.count("image[]")
         if not 1 <= image_count <= 16:
             raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                UNPROCESSABLE_CONTENT,
                 "image edits require between 1 and 16 image[] uploads",
             )
         effective_size = str(form.get("size", "1024x1024"))
@@ -991,7 +992,7 @@ async def _task_proxy(
     provider_path: str,
 ) -> Response:
     if not _TASK_ID.fullmatch(task_id):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid task id")
+        raise HTTPException(UNPROCESSABLE_CONTENT, "invalid task id")
     credential, provider_base_url = await run_in_threadpool(
         _owned_task_credential,
         request,

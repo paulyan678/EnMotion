@@ -12,6 +12,10 @@ export default defineConfig({
             'src/components/**/*.spec.tsx',
         ],
         setupFiles: ['./vitest.setup.ts'],
+        sequence: {
+            // Unmount components before file-local hooks restore API spies and stores.
+            hooks: 'list',
+        },
     },
     resolve: {
         alias: {

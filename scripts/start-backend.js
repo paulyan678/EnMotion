@@ -44,9 +44,9 @@ function appendNoProxy(current) {
 
 function startBackend() {
   const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
-  if (nodeMajor !== 20 || nodeMinor < 9) {
+  if (nodeMajor !== 24 || nodeMinor < 11) {
     throw new Error(
-      `Node.js 20.9 or newer (but below 21) is required (found ${process.versions.node}).`,
+      `Node.js 24.11 or newer (but below 25) is required (found ${process.versions.node}).`,
     );
   }
   if (!fs.existsSync(pythonPath)) {

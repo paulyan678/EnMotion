@@ -101,6 +101,9 @@ describe("shot-specific Motion Creator", () => {
       Array.from({ length: count }, (_, index) => `Configure clip for shot ${index + 1}`),
     );
     expect(view.container.querySelectorAll(".aspect-video")).toHaveLength(count);
+    view.container.querySelectorAll('img[data-nimg="fill"]').forEach((image) => {
+      expect(image.parentElement).toHaveClass("relative", "aspect-video");
+    });
   });
 
   it("keeps no-image shots clickable and exposes no global upload or generate action", () => {

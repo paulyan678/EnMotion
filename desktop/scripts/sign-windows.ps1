@@ -20,8 +20,12 @@ if ([string]::IsNullOrWhiteSpace($certificate) -or
 if (-not (Test-Path -LiteralPath $certificate -PathType Leaf)) {
     throw "Windows signing certificate file is missing"
 }
-if (-not $timestamp.StartsWith("https://")) {
-    throw "Windows timestamp URL must use HTTPS"
+$trustedTimestamp = (
+    $timestamp.StartsWith("https://") -or
+    $timestamp -eq "http://timestamp.digicert.com"
+)
+if (-not $trustedTimestamp) {
+    throw "Windows timestamp URL must use HTTPS or the official DigiCert RFC 3161 endpoint"
 }
 
 $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
