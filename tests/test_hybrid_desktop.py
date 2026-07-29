@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import requests
 
 from src.apps.hybrid.client import ControlPlaneClient, ControlPlaneError, RemoteLogin
 from src.apps.hybrid.config import (
@@ -140,6 +141,37 @@ def test_control_plane_does_not_relay_remote_error_detail(monkeypatch) -> None:
 
     assert exc_info.value.detail == "请求内容无效，请检查后重试。"
     assert leaked_detail not in exc_info.value.detail
+
+
+def test_control_plane_retries_transient_proxy_and_tls_failures(monkeypatch) -> None:
+    attempts: list[tuple[float, float]] = []
+    sleeps: list[float] = []
+
+    class HealthyResponse:
+        status_code = 200
+
+    def request(*_args, **kwargs):
+        attempts.append(kwargs["timeout"])
+        if len(attempts) == 1:
+            raise requests.exceptions.ProxyError("proxy tunnel unavailable")
+        if len(attempts) == 2:
+            raise requests.exceptions.SSLError("TLS handshake interrupted")
+        return HealthyResponse()
+
+    monkeypatch.setattr("src.apps.hybrid.client.requests.request", request)
+    monkeypatch.setattr("src.apps.hybrid.client.time.sleep", sleeps.append)
+    client = ControlPlaneClient(
+        HybridSettings(
+            enabled=True,
+            control_plane_url="https://accounts.example.com",
+        )
+    )
+
+    response = client._request("GET", "/health/live")
+
+    assert response.status_code == 200
+    assert attempts == [(8.0, 30.0), (8.0, 30.0), (8.0, 30.0)]
+    assert sleeps == [0.25, 0.5]
 
 
 def test_provider_gateway_matches_control_plane_contract(monkeypatch) -> None:
