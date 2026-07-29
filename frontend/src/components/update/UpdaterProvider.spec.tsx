@@ -65,11 +65,13 @@ describe("desktop updater UI", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Update to 1.1.0" }));
     await waitFor(() => expect(startUpdate).toHaveBeenCalledOnce());
-    const progressbars = screen.getAllByRole("progressbar", { name: "Update download progress" });
-    expect(progressbars).toHaveLength(2);
-    for (const progressbar of progressbars) {
-      expect(progressbar).toHaveAttribute("aria-valuenow", "20");
-    }
+    await waitFor(() => {
+      const progressbars = screen.getAllByRole("progressbar", { name: "Update download progress" });
+      expect(progressbars).toHaveLength(2);
+      for (const progressbar of progressbars) {
+        expect(progressbar).toHaveAttribute("aria-valuenow", "20");
+      }
+    });
 
     act(() => {
       listener?.({

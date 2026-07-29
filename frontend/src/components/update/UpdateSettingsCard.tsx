@@ -64,7 +64,7 @@ export default function UpdateSettingsCard() {
 
       {state.status === "downloading" && (
         <div className="mt-4">
-          <div className="h-1.5 overflow-hidden rounded-full bg-surface-inset" role={percent === null ? undefined : "progressbar"} aria-label={t("downloadProgress")} aria-valuemin={percent === null ? undefined : 0} aria-valuemax={percent === null ? undefined : 100} aria-valuenow={percent ?? undefined}>
+          <div className="h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-label={t("downloadProgress")} aria-valuemin={percent === null ? undefined : 0} aria-valuemax={percent === null ? undefined : 100} aria-valuenow={percent ?? undefined}>
             <div className="h-full rounded-full bg-primary transition-[width] duration-fast" style={{ width: `${percent ?? 35}%` }} />
           </div>
           <p className="mt-2 text-xs text-text-muted">{t("backgroundHint")}</p>
