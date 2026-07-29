@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +15,15 @@ from .config import HybridSettings
 from .session import HybridUser, RemoteSession
 
 logger = logging.getLogger(__name__)
+
+_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS = 8.0
+_CONTROL_PLANE_MAX_TRANSPORT_ATTEMPTS = 4
+_CONTROL_PLANE_RETRY_BACKOFF_SECONDS = 0.25
+_RETRYABLE_TRANSPORT_ERRORS = (
+    requests.exceptions.ConnectTimeout,
+    requests.exceptions.ProxyError,
+    requests.exceptions.SSLError,
+)
 
 
 _PUBLIC_CONTROL_PLANE_ERRORS = {
@@ -75,22 +85,44 @@ class ControlPlaneClient:
         headers.setdefault("Accept", "application/json")
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        try:
-            response = requests.request(
-                method,
-                self._url(path),
-                headers=headers,
-                timeout=timeout or self.settings.request_timeout_seconds,
-                allow_redirects=False,
-                **kwargs,
-            )
-        except requests.RequestException as exc:
-            logger.warning("账号服务连接失败：%s", type(exc).__name__)
-            raise ControlPlaneError(
-                503,
-                "EnMotion 账号服务暂时不可用，请稍后重试。",
-                retryable=True,
-            ) from exc
+        request_timeout = timeout or self.settings.request_timeout_seconds
+        transport_timeout = (
+            min(_CONTROL_PLANE_CONNECT_TIMEOUT_SECONDS, request_timeout),
+            request_timeout,
+        )
+        for attempt in range(1, _CONTROL_PLANE_MAX_TRANSPORT_ATTEMPTS + 1):
+            try:
+                response = requests.request(
+                    method,
+                    self._url(path),
+                    headers=headers,
+                    timeout=transport_timeout,
+                    allow_redirects=False,
+                    **kwargs,
+                )
+                break
+            except _RETRYABLE_TRANSPORT_ERRORS as exc:
+                if attempt == _CONTROL_PLANE_MAX_TRANSPORT_ATTEMPTS:
+                    logger.warning("账号服务连接失败：%s", type(exc).__name__)
+                    raise ControlPlaneError(
+                        503,
+                        "EnMotion 账号服务暂时不可用，请稍后重试。",
+                        retryable=True,
+                    ) from exc
+                logger.warning(
+                    "账号服务连接暂时失败：%s，正在重试（%s/%s）",
+                    type(exc).__name__,
+                    attempt,
+                    _CONTROL_PLANE_MAX_TRANSPORT_ATTEMPTS,
+                )
+                time.sleep(_CONTROL_PLANE_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+            except requests.RequestException as exc:
+                logger.warning("账号服务连接失败：%s", type(exc).__name__)
+                raise ControlPlaneError(
+                    503,
+                    "EnMotion 账号服务暂时不可用，请稍后重试。",
+                    retryable=True,
+                ) from exc
         if 200 <= response.status_code < 300:
             return response
         diagnostic = ""
