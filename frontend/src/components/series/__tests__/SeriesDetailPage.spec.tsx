@@ -12,14 +12,20 @@ vi.mock('@/lib/apiUrl', () => ({
     API_URL: 'http://127.0.0.1:17177',
 }));
 
-vi.mock('@/components/shared/preview/LightboxProvider', () => ({
-    useLightbox: () => ({
-        open: vi.fn(),
-        openInGroup: vi.fn(),
-        registerGroup: vi.fn(),
-        unregisterGroup: vi.fn(),
-    }),
-}));
+vi.mock('@/components/shared/preview/LightboxProvider', async (importOriginal) => {
+    const actual = await importOriginal<
+        typeof import('@/components/shared/preview/LightboxProvider')
+    >();
+    return {
+        ...actual,
+        useLightbox: () => ({
+            open: vi.fn(),
+            openInGroup: vi.fn(),
+            registerGroup: vi.fn(),
+            unregisterGroup: vi.fn(),
+        }),
+    };
+});
 
 // Mock framer-motion
 vi.mock('framer-motion', () => ({

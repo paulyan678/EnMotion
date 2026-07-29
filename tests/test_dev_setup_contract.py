@@ -17,7 +17,7 @@ def test_setup_rejects_unsupported_runtime_versions():
     setup_source = (REPO_ROOT / "scripts" / "dev-setup.js").read_text(encoding="utf-8")
 
     assert "assertNodeVersion();" in setup_source
-    assert "major !== 20 || minor < 9" in setup_source
+    assert "major !== 24 || minor < 11" in setup_source
     assert "MINIMUM_PYTHON = [3, 11]" in setup_source
     assert "assertPythonVersion(venvPython);" in setup_source
 

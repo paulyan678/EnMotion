@@ -1,8 +1,11 @@
+// @vitest-environment happy-dom
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useSettingsStore, THEME_PRESETS, DEFAULT_THEME } from '@/store/settingsStore';
 
 describe('settingsStore', () => {
     beforeEach(() => {
+        localStorage.clear();
         useSettingsStore.setState({ theme: DEFAULT_THEME });
     });
 

@@ -8,9 +8,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from sqlalchemy import and_, or_, select
 
 from ..dependencies import CurrentPrincipal
+from ..http_status import UNPROCESSABLE_CONTENT
 from ..models import UsageRequest, User
 from ..schemas import BalanceResponse, UsagePage, UsagePublic, UserPublic
-
 
 router = APIRouter(prefix="/account", tags=["account"])
 
@@ -26,7 +26,7 @@ def _decode_cursor(value: str) -> tuple[datetime, str]:
         timestamp, usage_id = json.loads(base64.urlsafe_b64decode(padded).decode())
         return datetime.fromisoformat(timestamp), str(usage_id)
     except Exception as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid cursor") from exc
+        raise HTTPException(UNPROCESSABLE_CONTENT, "invalid cursor") from exc
 
 
 @router.get("/me", response_model=UserPublic)

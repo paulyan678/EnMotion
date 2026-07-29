@@ -2,9 +2,9 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@10.8.2",
+  "packageManager": "npm@11.16.0",
   "engines": {
-    "node": ">=20.9 <21"
+    "node": ">=24.11 <25"
   },
   "scripts": {
     "dev": "node ./scripts/run-next-dev.mjs",
@@ -39,7 +39,7 @@
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@types/node": "^20",
+    "@types/node": "^24",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "eslint": "9.39.5",
@@ -53,7 +53,18 @@
     "vitest": "^3.2.4"
   },
   "overrides": {
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.17"
+    },
     "postcss": "$postcss",
     "sharp": "0.35.3"
+  },
+  "allowScripts": {
+    "@parcel/watcher@2.5.6": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "fsevents@2.3.2": true,
+    "@swc/core@1.15.43": true,
+    "unrs-resolver@1.12.2": true
   }
 }

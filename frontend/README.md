@@ -1,6 +1,6 @@
 # EnMotion frontend
 
-The frontend is a Next.js static-export application. Use Node.js 20.9+ (20.x)
+The frontend is a Next.js static-export application. Use Node.js 24.11+ (24.x LTS)
 and the checked-in npm lockfile.
 
 ```bash

@@ -23,10 +23,10 @@ from ..audit import record_audit
 from ..config import ConfigurationError, validate_public_origin
 from ..database import begin_immediate
 from ..dependencies import CurrentPrincipal, client_ip
+from ..http_status import UNPROCESSABLE_CONTENT
 from ..models import ReleaseGrant, User, utcnow
 from ..schemas import ReleaseSessionRequest, ReleaseSessionResponse
 from ..security import new_token, token_digest
-
 
 router = APIRouter(tags=["runtime and releases"])
 
@@ -336,7 +336,7 @@ def latest_release(
 ) -> dict[str, Any]:
     del current_version  # Reserved for future staged-rollout/minimum-version policy.
     if not _SAFE_SEGMENT.fullmatch(platform) or not _SAFE_SEGMENT.fullmatch(channel):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid release selector")
+        raise HTTPException(UNPROCESSABLE_CONTENT, "invalid release selector")
     manifest = _load_manifest(request.app.state.settings.release_manifest)
     latest = _latest_release_entry(
         manifest,
@@ -581,7 +581,7 @@ def create_release_session(
         Version(payload.current_version)
     except InvalidVersion as exc:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            UNPROCESSABLE_CONTENT,
             "current_version is not a valid application version",
         ) from exc
 
@@ -731,7 +731,7 @@ async def download_release(
     channel: str = Query(default="stable", min_length=1, max_length=40),
 ) -> StreamingResponse:
     if not all(_SAFE_SEGMENT.fullmatch(value) for value in (platform, version, channel)):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid release selector")
+        raise HTTPException(UNPROCESSABLE_CONTENT, "invalid release selector")
     manifest = await run_in_threadpool(
         _load_manifest,
         request.app.state.settings.release_manifest,

@@ -61,8 +61,8 @@ output root.
 Prerequisites:
 
 - Python 3.11 or 3.12
-- Node.js 20.9–20.x
-- npm 10
+- Node.js 24.11–24.x LTS
+- npm 11
 - FFmpeg
 - Rust stable and the Tauri prerequisites for desktop packaging
 
