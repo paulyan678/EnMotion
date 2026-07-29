@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -19,6 +20,7 @@ class PlaygroundStorage:
     HISTORY_PATH = "output/playground_history.json"
     TEMPLATES_PATH = "output/playground_templates.json"
     ORPHAN_RECOVERY_REASON = "EnMotion 在此次生成过程中重新启动。您可以点击重试再次运行。"
+    TERMINAL_STATUSES = frozenset({"completed", "failed"})
 
     def __init__(
         self,
@@ -85,9 +87,12 @@ class PlaygroundStorage:
         for generation in self._history:
             if str(generation.status).lower() not in {"pending", "processing"}:
                 continue
+            now = datetime.now(timezone.utc).isoformat()
             generation.status = "failed"
             if not generation.error:
                 generation.error = self.ORPHAN_RECOVERY_REASON
+            generation.updated_at = now
+            generation.finished_at = now
             recovered += 1
         if recovered:
             logger.warning("Recovered %s interrupted Playground generation(s)", recovered)
@@ -160,7 +165,10 @@ class PlaygroundStorage:
         """Append a generation record and persist."""
         with self._lock, self._shared_lock():
             self._refresh_history()
-            candidate = [*self._history, gen.model_copy(deep=True)]
+            stored = gen.model_copy(deep=True)
+            if str(stored.status).lower() in self.TERMINAL_STATUSES and not stored.finished_at:
+                stored.finished_at = stored.updated_at or stored.created_at
+            candidate = [*self._history, stored]
             self._save_file(self.history_path, candidate)
             self._history = candidate
 
@@ -197,12 +205,117 @@ class PlaygroundStorage:
             self._refresh_history()
             for i, existing in enumerate(self._history):
                 if existing.id == gen.id:
+                    now = datetime.now(timezone.utc).isoformat()
+                    existing_terminal = str(existing.status).lower() in self.TERMINAL_STATUSES
+                    next_terminal = str(gen.status).lower() in self.TERMINAL_STATUSES
+                    if next_terminal:
+                        gen.finished_at = (
+                            (existing.finished_at or existing.updated_at or existing.created_at)
+                            if existing_terminal
+                            else now
+                        )
+                    else:
+                        # A future retry that moves a terminal generation back
+                        # to active work starts a fresh lifecycle.
+                        gen.finished_at = None
+                    gen.updated_at = now
                     candidate = list(self._history)
                     candidate[i] = gen.model_copy(deep=True)
                     self._save_file(self.history_path, candidate)
                     self._history = candidate
                     return
         logger.warning("update_generation: id %s not found", gen.id)
+
+    def mark_output_saved(
+        self,
+        generation_id: str,
+        output_id: str,
+        category: str,
+    ) -> Optional[str]:
+        """Atomically persist only one output's library metadata.
+
+        This deliberately avoids replacing a generation snapshot captured
+        before a long file copy or library registration. It therefore cannot
+        overwrite concurrent lifecycle/output updates. The returned category
+        is the value that is actually persisted, including on idempotent
+        replay.
+        """
+
+        if category not in {"character", "scene", "prop"}:
+            raise ValueError(f"Unsupported library category: {category}")
+        with self._lock, self._shared_lock():
+            self._refresh_history()
+            for generation_index, existing in enumerate(self._history):
+                if existing.id != generation_id:
+                    continue
+                stored = existing.model_copy(deep=True)
+                for output in stored.outputs:
+                    if output.id != output_id:
+                        continue
+                    if output.saved_to_library:
+                        return output.library_category or "prop"
+                    persisted_category = output.library_category or category
+                    output.saved_to_library = True
+                    output.library_category = persisted_category
+                    stored.updated_at = datetime.now(timezone.utc).isoformat()
+                    candidate = list(self._history)
+                    candidate[generation_index] = stored
+                    self._save_file(self.history_path, candidate)
+                    self._history = candidate
+                    return persisted_category
+                return None
+        return None
+
+    def prepare_output_library_save(
+        self,
+        generation_id: str,
+        output_id: str,
+        category: str,
+        asset_id: str,
+        media_path: str,
+    ) -> Optional[tuple[str, str, str]]:
+        """Durably journal deterministic save identities before side effects.
+
+        If a process exits after copying or registering but before the final
+        saved flag is persisted, the next retry reuses this exact category,
+        asset id, and media path rather than creating duplicates.
+        """
+
+        if category not in {"character", "scene", "prop"}:
+            raise ValueError(f"Unsupported library category: {category}")
+        with self._lock, self._shared_lock():
+            self._refresh_history()
+            for generation_index, existing in enumerate(self._history):
+                if existing.id != generation_id:
+                    continue
+                stored = existing.model_copy(deep=True)
+                for output in stored.outputs:
+                    if output.id != output_id:
+                        continue
+                    persisted_category = output.library_category or category
+                    persisted_asset_id = output.library_asset_id or asset_id
+                    persisted_media_path = output.library_media_path or media_path
+                    changed = (
+                        output.library_category != persisted_category
+                        or output.library_asset_id != persisted_asset_id
+                        or output.library_media_path != persisted_media_path
+                    )
+                    if changed:
+                        output.library_category = persisted_category
+                        output.library_asset_id = persisted_asset_id
+                        output.library_media_path = persisted_media_path
+                        stored.updated_at = datetime.now(timezone.utc).isoformat()
+                        candidate = list(self._history)
+                        candidate[generation_index] = stored
+                        self._save_file(self.history_path, candidate)
+                        self._history = candidate
+                    return (
+                        persisted_category,
+                        persisted_asset_id,
+                        persisted_media_path,
+                    )
+                return None
+        return None
 
     def delete_generation(self, gen_id: str) -> bool:
         """Remove a generation and reclaim outputs unreferenced workspace-wide."""
@@ -260,10 +373,12 @@ class PlaygroundStorage:
             return True
         if not candidate.is_file() or candidate.is_symlink():
             raise UnsafeMediaReferenceError("Playground upload must be a regular file")
-        self._reclaim_deleted_value(str(candidate))
-        return True
+        reclaimed = self._reclaim_deleted_value(str(candidate))
+        if reclaimed is None:
+            raise RuntimeError("Could not verify workspace references before deleting upload")
+        return str(candidate) in reclaimed
 
-    def _reclaim_deleted_value(self, deleted_value) -> list[str]:
+    def _reclaim_deleted_value(self, deleted_value) -> Optional[list[str]]:
         from ...utils.media_gc import (
             load_workspace_reference_values,
             reclaim_unreferenced_workspace_media,
@@ -273,7 +388,7 @@ class PlaygroundStorage:
             remaining = load_workspace_reference_values(self.output_root)
         except RuntimeError as exc:
             logger.warning("Skipping Playground media reclamation: %s", exc)
-            return []
+            return None
 
         delete_callback = None
         from ..server.config import server_mode_enabled

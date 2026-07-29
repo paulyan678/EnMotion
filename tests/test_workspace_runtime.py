@@ -130,6 +130,26 @@ def test_hybrid_proxy_routes_methods_without_building_global_pipeline(tmp_path, 
     assert constructed == []
 
 
+def test_locked_writer_refresh_keeps_transient_task_state_after_metadata_save(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ENMOTION_SERVER_MODE", "false")
+    monkeypatch.setenv("ENMOTION_HYBRID_MODE", "true")
+    registry = WorkspacePipelineRegistry(str(tmp_path / "workspaces"))
+
+    with registry.locked("workspace-a") as pipeline:
+        pipeline.asset_generation_tasks["task-visible"] = {
+            "status": "processing",
+            "progress": 25,
+        }
+        pipeline._save_data()
+
+    refreshed = registry.get("workspace-a")
+    assert refreshed is pipeline
+    assert refreshed.asset_generation_tasks["task-visible"]["status"] == "processing"
+
+
 def test_playground_history_and_templates_are_workspace_private(tmp_path):
     pipeline_registry = WorkspacePipelineRegistry(str(tmp_path / "workspaces"))
     registry = WorkspacePlaygroundRegistry(pipeline_registry)

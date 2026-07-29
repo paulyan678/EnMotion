@@ -9,6 +9,13 @@ import { api } from '@/lib/api';
 import { useTranslations } from "next-intl";
 import GroupedModelGrid from '@/components/common/GroupedModelGrid';
 import ModalPortal from '@/components/common/ModalPortal';
+import ModelSettingInheritanceButton from '@/components/common/ModelSettingInheritanceButton';
+import {
+    buildModelSettingsPatch,
+    normalizeModelSettingOverrides,
+    setModelSettingOverride,
+    type CanonicalModelSettingField,
+} from '@/lib/modelSettingsOverrides';
 
 interface ModelSettingsModalProps {
     isOpen: boolean;
@@ -21,6 +28,10 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const tc = useTranslations("common");
     const updateProject = useProjectStore((state) => state.updateProject);
     const resolvedSettings = resolveModelSettings(currentProject?.model_settings, 'project_settings');
+    const inheritedSettings = resolveModelSettings(
+        currentProject?.inherited_model_settings,
+        'project_settings',
+    );
 
     const [chatModel, setChatModel] = useState(resolvedSettings.chat_model);
     const [imageModel, setImageModel] = useState(resolvedSettings.image_model);
@@ -31,6 +42,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     const [storyboardAspectRatio, setStoryboardAspectRatio] = useState(resolvedSettings.storyboard_aspect_ratio);
     const [isSaving, setIsSaving] = useState(false);
     const [syncedSettings, setSyncedSettings] = useState(currentProject?.model_settings);
+    const [syncedInheritedSettings, setSyncedInheritedSettings] = useState(
+        currentProject?.inherited_model_settings,
+    );
+    const currentOverrides = normalizeModelSettingOverrides(currentProject?.model_settings_overrides);
+    const currentOverrideSignature = currentOverrides.join(",");
+    const [syncedOverrideSignature, setSyncedOverrideSignature] = useState(currentOverrideSignature);
+    const [initialSettings, setInitialSettings] = useState(resolvedSettings);
+    const [initialOverrides, setInitialOverrides] = useState(currentOverrides);
+    const [draftOverrides, setDraftOverrides] = useState(currentOverrides);
     const [wasOpen, setWasOpen] = useState(isOpen);
 
     // Reset the draft before rendering when the backing settings object is
@@ -38,9 +58,19 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
     // settings leave in-progress user edits alone.
     const reopened = isOpen && !wasOpen;
     if (isOpen !== wasOpen) setWasOpen(isOpen);
-    if (currentProject?.model_settings !== syncedSettings || reopened) {
+    if (
+        currentProject?.model_settings !== syncedSettings
+        || currentProject?.inherited_model_settings !== syncedInheritedSettings
+        || currentOverrideSignature !== syncedOverrideSignature
+        || reopened
+    ) {
         setSyncedSettings(currentProject?.model_settings);
+        setSyncedInheritedSettings(currentProject?.inherited_model_settings);
+        setSyncedOverrideSignature(currentOverrideSignature);
         const normalizedSettings = resolveModelSettings(currentProject?.model_settings, 'project_settings');
+        setInitialSettings(normalizedSettings);
+        setInitialOverrides(currentOverrides);
+        setDraftOverrides(currentOverrides);
         setChatModel(normalizedSettings.chat_model);
         setImageModel(normalizedSettings.image_model);
         setI2vModel(normalizedSettings.i2v_model);
@@ -50,22 +80,50 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
         setStoryboardAspectRatio(normalizedSettings.storyboard_aspect_ratio);
     }
 
+    const chooseSetting = (
+        field: CanonicalModelSettingField,
+        setter: (value: string) => void,
+        value: string,
+    ) => {
+        setter(value);
+        setDraftOverrides((fields) => setModelSettingOverride(fields, field, true));
+    };
+
+    const inheritSetting = (
+        field: CanonicalModelSettingField,
+        setter: (value: string) => void,
+    ) => {
+        setter(inheritedSettings[field]);
+        setDraftOverrides((fields) => setModelSettingOverride(fields, field, false));
+    };
+
+    const isOverridden = (field: CanonicalModelSettingField) =>
+        draftOverrides.includes(field);
+
     const handleSave = async () => {
         if (!currentProject) return;
+        const draftSettings = resolveModelSettings({
+            chat_model: chatModel,
+            image_model: imageModel,
+            video_model: i2vModel,
+            character_aspect_ratio: characterAspectRatio,
+            scene_aspect_ratio: sceneAspectRatio,
+            prop_aspect_ratio: propAspectRatio,
+            storyboard_aspect_ratio: storyboardAspectRatio,
+        }, 'project_settings');
+        const patch = buildModelSettingsPatch(
+            initialSettings,
+            initialOverrides,
+            draftSettings,
+            draftOverrides,
+        );
+        if (Object.keys(patch).length === 0) {
+            onClose();
+            return;
+        }
         setIsSaving(true);
         try {
-            const updated = await api.updateModelSettings(currentProject.id, {
-                chat_model: chatModel,
-                image_model: imageModel,
-                t2i_model: imageModel,
-                i2i_model: imageModel,
-                video_model: i2vModel,
-                i2v_model: i2vModel,
-                character_aspect_ratio: characterAspectRatio,
-                scene_aspect_ratio: sceneAspectRatio,
-                prop_aspect_ratio: propAspectRatio,
-                storyboard_aspect_ratio: storyboardAspectRatio,
-            });
+            const updated = await api.updateModelSettings(currentProject.id, patch);
             updateProject(currentProject.id, updated);
             onClose();
         } catch (error) {
@@ -125,11 +183,21 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                     {/* Content */}
                     <div className="space-y-6 overflow-y-auto p-4 sm:p-5">
                         <div className="space-y-3">
-                            <div className="flex items-center gap-2 text-sm font-bold text-foreground">
-                                <MessageSquare size={16} className="text-primary" />
-                                <span>{t("chatModel")}</span>
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                                    <MessageSquare size={16} className="text-primary" />
+                                    <span>{t("chatModel")}</span>
+                                </div>
+                                <ModelSettingInheritanceButton
+                                    overridden={isOverridden("chat_model")}
+                                    onInherit={() => inheritSetting("chat_model", setChatModel)}
+                                />
                             </div>
-                            <GroupedModelGrid models={CHAT_MODELS} selectedId={chatModel} onSelect={setChatModel} />
+                            <GroupedModelGrid
+                                models={CHAT_MODELS}
+                                selectedId={chatModel}
+                                onSelect={(id) => chooseSetting("chat_model", setChatModel, id)}
+                            />
                         </div>
 
                         <div className="border-t border-glass-border" />
@@ -143,11 +211,17 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
                             {/* T2I Model */}
                             <div className="space-y-2">
-                                <label className="text-xs text-text-secondary">{t("model")}</label>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-xs text-text-secondary">{t("model")}</span>
+                                    <ModelSettingInheritanceButton
+                                        overridden={isOverridden("image_model")}
+                                        onInherit={() => inheritSetting("image_model", setImageModel)}
+                                    />
+                                </div>
                                 <GroupedModelGrid
                                     models={IMAGE_MODELS}
                                     selectedId={imageModel}
-                                    onSelect={setImageModel}
+                                    onSelect={(id) => chooseSetting("image_model", setImageModel, id)}
                                 />
                             </div>
 
@@ -155,9 +229,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                                 {/* Character Aspect Ratio */}
                                 <div className="space-y-2">
-                                    <div className="flex items-center gap-1 text-xs text-text-secondary">
-                                        <User size={12} />
-                                        <label>{t("character")}</label>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1 text-xs text-text-secondary">
+                                            <User size={12} />
+                                            <span>{t("character")}</span>
+                                        </div>
+                                        <ModelSettingInheritanceButton
+                                            overridden={isOverridden("character_aspect_ratio")}
+                                            onInherit={() => inheritSetting("character_aspect_ratio", setCharacterAspectRatio)}
+                                        />
                                     </div>
                                     <div className="space-y-1">
                                         {ASPECT_RATIOS.map((ratio) => (
@@ -165,7 +245,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                                 key={ratio.id}
                                                 type="button"
                                                 aria-pressed={characterAspectRatio === ratio.id}
-                                                onClick={() => setCharacterAspectRatio(ratio.id)}
+                                                onClick={() => chooseSetting("character_aspect_ratio", setCharacterAspectRatio, ratio.id)}
                                                 className={`flex min-h-10 w-full flex-col items-center rounded border px-2 py-1.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${characterAspectRatio === ratio.id
                                                         ? 'border-green-500/50 bg-green-500/10'
                                                         : 'border-glass-border hover:border-glass-border bg-glass'
@@ -179,9 +259,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
                                 {/* Scene Aspect Ratio */}
                                 <div className="space-y-2">
-                                    <div className="flex items-center gap-1 text-xs text-text-secondary">
-                                        <Building size={12} />
-                                        <label>{t("scene")}</label>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1 text-xs text-text-secondary">
+                                            <Building size={12} />
+                                            <span>{t("scene")}</span>
+                                        </div>
+                                        <ModelSettingInheritanceButton
+                                            overridden={isOverridden("scene_aspect_ratio")}
+                                            onInherit={() => inheritSetting("scene_aspect_ratio", setSceneAspectRatio)}
+                                        />
                                     </div>
                                     <div className="space-y-1">
                                         {ASPECT_RATIOS.map((ratio) => (
@@ -189,7 +275,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                                 key={ratio.id}
                                                 type="button"
                                                 aria-pressed={sceneAspectRatio === ratio.id}
-                                                onClick={() => setSceneAspectRatio(ratio.id)}
+                                                onClick={() => chooseSetting("scene_aspect_ratio", setSceneAspectRatio, ratio.id)}
                                                 className={`flex min-h-10 w-full flex-col items-center rounded border px-2 py-1.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${sceneAspectRatio === ratio.id
                                                         ? 'border-green-500/50 bg-green-500/10'
                                                         : 'border-glass-border hover:border-glass-border bg-glass'
@@ -203,9 +289,15 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
                                 {/* Prop Aspect Ratio */}
                                 <div className="space-y-2">
-                                    <div className="flex items-center gap-1 text-xs text-text-secondary">
-                                        <Box size={12} />
-                                        <label>{t("prop")}</label>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1 text-xs text-text-secondary">
+                                            <Box size={12} />
+                                            <span>{t("prop")}</span>
+                                        </div>
+                                        <ModelSettingInheritanceButton
+                                            overridden={isOverridden("prop_aspect_ratio")}
+                                            onInherit={() => inheritSetting("prop_aspect_ratio", setPropAspectRatio)}
+                                        />
                                     </div>
                                     <div className="space-y-1">
                                         {ASPECT_RATIOS.map((ratio) => (
@@ -213,7 +305,7 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
                                                 key={ratio.id}
                                                 type="button"
                                                 aria-pressed={propAspectRatio === ratio.id}
-                                                onClick={() => setPropAspectRatio(ratio.id)}
+                                                onClick={() => chooseSetting("prop_aspect_ratio", setPropAspectRatio, ratio.id)}
                                                 className={`flex min-h-10 w-full flex-col items-center rounded border px-2 py-1.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${propAspectRatio === ratio.id
                                                         ? 'border-green-500/50 bg-green-500/10'
                                                         : 'border-glass-border hover:border-glass-border bg-glass'
@@ -238,14 +330,20 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
                             {/* Storyboard Aspect Ratio */}
                             <div className="space-y-2">
-                                <label className="text-xs text-text-secondary">{t("aspectRatio")}</label>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-xs text-text-secondary">{t("aspectRatio")}</span>
+                                    <ModelSettingInheritanceButton
+                                        overridden={isOverridden("storyboard_aspect_ratio")}
+                                        onInherit={() => inheritSetting("storyboard_aspect_ratio", setStoryboardAspectRatio)}
+                                    />
+                                </div>
                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                                     {ASPECT_RATIOS.map((ratio) => (
                                         <button
                                             key={ratio.id}
                                             type="button"
                                             aria-pressed={storyboardAspectRatio === ratio.id}
-                                            onClick={() => setStoryboardAspectRatio(ratio.id)}
+                                            onClick={() => chooseSetting("storyboard_aspect_ratio", setStoryboardAspectRatio, ratio.id)}
                                             className={`flex min-h-11 flex-col items-center rounded-lg border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${storyboardAspectRatio === ratio.id
                                                     ? 'border-blue-500/50 bg-blue-500/10'
                                                     : 'border-glass-border hover:border-glass-border bg-glass'
@@ -271,11 +369,17 @@ export default function ModelSettingsModal({ isOpen, onClose }: ModelSettingsMod
 
                             {/* I2V Model */}
                             <div className="space-y-2">
-                                <label className="text-xs text-text-secondary">{t("model")}</label>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-xs text-text-secondary">{t("model")}</span>
+                                    <ModelSettingInheritanceButton
+                                        overridden={isOverridden("video_model")}
+                                        onInherit={() => inheritSetting("video_model", setI2vModel)}
+                                    />
+                                </div>
                                 <GroupedModelGrid
                                     models={I2V_MODELS}
                                     selectedId={i2vModel}
-                                    onSelect={(id) => setI2vModel(id)}
+                                    onSelect={(id) => chooseSetting("video_model", setI2vModel, id)}
                                 />
                             </div>
                         </div>

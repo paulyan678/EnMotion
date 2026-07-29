@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { InternalAxiosRequestConfig } from "axios";
 import { api } from "@/lib/api";
 import { API_URL } from "@/lib/apiUrl";
 import {
@@ -162,5 +163,31 @@ describe("server-mode HTTP client", () => {
     await expect(client.get("/projects")).rejects.toMatchObject({ isAxiosError: true });
     expect(listener).toHaveBeenCalledOnce();
     window.removeEventListener(AUTH_REQUIRED_EVENT, listener);
+  });
+
+  it("bounds the initial managed-desktop session probe", async () => {
+    const previousAdapter = apiClient.defaults.adapter;
+    const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => ({
+      data: {
+        id: "user-admin",
+        username: "admin",
+        role: "admin",
+        workspace_id: "workspace-admin",
+      },
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      config,
+    }));
+    apiClient.defaults.adapter = adapter;
+
+    try {
+      const { authApi } = await import("@/lib/authApi");
+      await authApi.session();
+      expect(adapter).toHaveBeenCalledOnce();
+      expect(adapter.mock.calls[0][0].timeout).toBe(3_000);
+    } finally {
+      apiClient.defaults.adapter = previousAdapter;
+    }
   });
 });

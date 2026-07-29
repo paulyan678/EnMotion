@@ -13,7 +13,10 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from src.apps.comic_gen.models import Script, VideoTask
-from src.apps.comic_gen.pipeline import ComicGenPipeline
+from src.apps.comic_gen.pipeline import (
+    AssemblyMutationConflictError,
+    ComicGenPipeline,
+)
 from src.apps.comic_gen.video_failures import (
     VIDEO_FAILURE_CODE,
     VIDEO_INTERRUPTED_CODE,
@@ -24,6 +27,7 @@ from src.apps.server.context import Actor
 from src.apps.server.database import Database
 from src.apps.server.job_router import cancel_job as cancel_job_endpoint
 from src.apps.server.jobs import (
+    ASSEMBLY_INPUTS_CHANGED_CODE,
     JOB_HANDLERS,
     QUEUE_PUBLICATION_PENDING,
     JobCancellationOutcome,
@@ -54,6 +58,8 @@ from src.apps.server.jobs import (
     republish_unconfirmed_jobs,
     reserve_jobs,
     retry_workspace_job,
+    _job_failure_result,
+    _public_job_failure,
 )
 from src.apps.server.models import GenerationJob, Workspace, utc_now
 from src.apps.server.quotas import StorageQuotaExceededError
@@ -65,6 +71,16 @@ from src.models.newapi import (
     INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE,
     NewAPIProviderError,
 )
+
+
+def test_assembly_conflict_remains_actionable_in_durable_job_result() -> None:
+    conflict = AssemblyMutationConflictError("project changed during provider work")
+
+    assert _public_job_failure(conflict, "generic failure") == str(conflict)
+    assert _job_failure_result(conflict) == {
+        "error_code": ASSEMBLY_INPUTS_CHANGED_CODE,
+        "error_diagnostic": str(conflict),
+    }
 
 
 @pytest.fixture()

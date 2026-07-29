@@ -83,7 +83,7 @@ def _is_echo(result_en: str, draft_en: str, threshold: float = 0.95) -> bool:
     return SequenceMatcher(None, a, b).ratio() >= threshold
 
 
-def _resolve_image_for_vision(url: str) -> Optional[str]:
+def _resolve_image_for_vision(url: str, output_root: Optional[str] = None) -> Optional[str]:
     """把任意形式的图像 URL 规整成 vision API 能直接消费的形式。
       - 已是 http(s):// 或 data:image/ → 原样返回（New API 能 fetch / 已内联）
       - 看起来是相对路径（output/* 或 /files/* 或裸文件名）→ 读本地文件做 base64 data URI
@@ -145,10 +145,14 @@ def _resolve_image_for_vision(url: str) -> Optional[str]:
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix) :]
             break
-    candidates = [
-        os.path.join("output", cleaned),
-        cleaned,
-    ]
+    # Desktop workspaces use a configured absolute output root (normally
+    # Documents/enmotion-output), not the process working directory.  Keep
+    # the legacy candidates for older local projects, but prefer the supplied
+    # workspace root so uploaded `uploads/...` references resolve reliably.
+    candidates = []
+    if output_root:
+        candidates.append(os.path.join(output_root, cleaned))
+    candidates.extend((os.path.join("output", cleaned), cleaned))
     abs_path = next((p for p in candidates if os.path.exists(p) and os.path.isfile(p)), None)
     if not abs_path:
         return None
@@ -258,7 +262,7 @@ DEFAULT_ENTITY_EXTRACTION_PROMPT = """
             "age": "年龄估计（如 '25'）",
             "gender": "性别",
             "clothing": "默认服装描述。若某角色服装有显著变化（如 从便装换成婚纱），为每个服装变体单独创建一个角色条目，并取一个有区分度的名字（如 '名字 (服装)'）。",
-            "visual_weight": 5  // 1-5 重要度
+            "visual_weight": 5
         }
     ],
     "scenes": [
@@ -406,7 +410,13 @@ class ScriptProcessor:
     def is_configured(self):
         return self.llm.is_configured
 
-    def parse_novel(self, title: str, text: str, custom_extraction_prompt: str = "") -> Script:
+    def parse_novel(
+        self,
+        title: str,
+        text: str,
+        custom_extraction_prompt: str = "",
+        model: str = "",
+    ) -> Script:
         """
         Parses the raw novel text into a structured Script object using an LLM.
 
@@ -416,14 +426,16 @@ class ScriptProcessor:
         """
         logger.info(f"Parsing novel: {title}...")
 
-        self.llm.require_configured()
+        if model:
+            self.llm.require_configured(model)
+        else:
+            self.llm.require_configured()
 
         prompt = self._construct_prompt(text, custom_extraction_prompt)
 
         try:
-            content = self.llm.chat(
-                messages=[{"role": "user", "content": prompt}],
-            )
+            kwargs = {"model": model} if model else {}
+            content = self.llm.chat(messages=[{"role": "user", "content": prompt}], **kwargs)
             logger.debug(f"LLM Response Content:\n{content}")
 
             content = _strip_markdown_json(content)
@@ -696,12 +708,16 @@ class ScriptProcessor:
         self,
         script_text: str,
         custom_style_prompt: str = "",
+        model: str = "",
     ) -> List[Dict[str, Any]]:
         """Use the configured LLM to produce validated visual-style recommendations."""
         logger.info("Analyzing script for visual style recommendations...")
 
         try:
-            self.llm.require_configured()
+            if model:
+                self.llm.require_configured(model)
+            else:
+                self.llm.require_configured()
         except Exception as exc:
             logger.warning("Style analysis is not configured (%s)", type(exc).__name__)
             raise StyleAnalysisError(
@@ -717,12 +733,14 @@ class ScriptProcessor:
         user_prompt = f"剧本内容：\n\n{script_text[:2000]}"
 
         try:
+            kwargs = {"model": model} if model else {}
             content = self.llm.chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format={"type": "json_object"},
+                **kwargs,
             )
         except TimeoutError:
             logger.warning("Style analysis provider request timed out")
@@ -783,7 +801,11 @@ class ScriptProcessor:
             ) from None
 
     def analyze_to_storyboard(
-        self, text: str, entities_json: Dict[str, Any], custom_extraction_prompt: str = ""
+        self,
+        text: str,
+        entities_json: Dict[str, Any],
+        custom_extraction_prompt: str = "",
+        model: str = "",
     ) -> List[Dict[str, Any]]:
         """
         Analyzes script text and generates storyboard frames using Prompt B (Storyboard Director).
@@ -795,7 +817,10 @@ class ScriptProcessor:
         """
         logger.info(f"Analyzing text to storyboard: {text[:100]}...")
 
-        self.llm.require_configured()
+        if model:
+            self.llm.require_configured(model)
+        else:
+            self.llm.require_configured()
 
         # Build entities context
         characters_list = entities_json.get("characters", [])
@@ -820,11 +845,13 @@ class ScriptProcessor:
         system_prompt = template.replace("{entities_str}", entities_str).replace("{text}", text)
 
         try:
+            kwargs = {"model": model} if model else {}
             content = self.llm.chat(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": "请开始生成分镜帧列表，确保覆盖剧本中的所有内容。"},
                 ],
+                **kwargs,
             ).strip()
             logger.debug(f"Storyboard Analysis Raw Response: {content[:500]}...")
 
@@ -845,6 +872,7 @@ class ScriptProcessor:
                     },
                 ],
                 response_format={"type": "json_object"},
+                model=model or None,
             ).strip()
             logger.debug(f"Storyboard Analysis Retry Response: {retry_content[:500]}...")
             frames = self._parse_storyboard_json(retry_content)
@@ -895,10 +923,14 @@ class ScriptProcessor:
         scene_assets: List[Dict[str, Any]],
         prev_frame_context: Optional[str] = None,
         next_frame_context: Optional[str] = None,
+        model: str = "",
     ) -> Dict[str, Any]:
         """Phase 2: Refine a coarse frame into a rich frame with full structured fields."""
         try:
-            self.llm.require_configured()
+            if model:
+                self.llm.require_configured(model)
+            else:
+                self.llm.require_configured()
         except Exception:
             raise FrameRefineError(
                 "missing_config",
@@ -995,6 +1027,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
                     },
                 ],
                 response_format={"type": "json_object"},
+                model=model or None,
             )
         except TimeoutError:
             raise FrameRefineError(
@@ -1031,6 +1064,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
         assets: List[Dict[str, Any]],
         feedback: str = "",
         custom_system_prompt: str = "",
+        polish_model: str = "",
     ) -> Dict[str, str]:
         """
         Polishes the storyboard prompt using Qwen-Plus, incorporating asset references.
@@ -1039,7 +1073,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
         logger.debug(f"Polishing prompt: {draft_prompt}")
 
         try:
-            self.llm.require_configured()
+            self.llm.require_configured(polish_model or None)
         except (RuntimeError, ValueError):
             raise PolishError(
                 reason="is_configured_false",
@@ -1083,6 +1117,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
             content = self.llm.chat(
                 messages=[{"role": "user", "content": user_content}],
                 response_format={"type": "json_object"},
+                model=polish_model or None,
             ).strip()
         except Exception as e:
             logger.exception("Storyboard polish: LLM API error")
@@ -1127,6 +1162,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
         prev_cn: str = "",
         image_urls: Optional[List[str]] = None,
         polish_model: str = "",
+        output_root: Optional[str] = None,
     ) -> Dict[str, str]:
         """
         Polishes a video generation prompt using Qwen.
@@ -1212,7 +1248,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
             parts: List[Dict[str, Any]] = []
             for url in image_urls:
                 try:
-                    resolved = _resolve_image_for_vision(url)
+                    resolved = _resolve_image_for_vision(url, output_root=output_root)
                 except (ValueError, RuntimeError):
                     resolved = None
                 if not resolved:

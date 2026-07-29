@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -95,6 +97,120 @@ def test_refresh_cannot_change_account_identity(monkeypatch) -> None:
         vault.ensure_fresh("first", lambda _token: replacement)
     with pytest.raises(RuntimeError):
         vault.remote_for_user("first")
+
+
+def test_keyring_read_times_out_without_blocking_session_restore(monkeypatch) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    class BlockingKeyring:
+        @staticmethod
+        def get_password(_service: str, _account: str) -> str:
+            nonlocal calls
+            calls += 1
+            entered.set()
+            release.wait(timeout=1)
+            return "persisted-refresh-token"
+
+    vault = SessionVault(keyring_timeout_seconds=0.02)
+    monkeypatch.setattr(vault, "_keyring", lambda: BlockingKeyring)
+
+    started = time.monotonic()
+    try:
+        assert vault.persisted_refresh_token() is None
+        assert time.monotonic() - started < 0.5
+        assert entered.wait(timeout=0.5)
+
+        # Repeated browser focus/session probes must not accumulate blocked
+        # Keychain workers while the operating-system prompt is unresolved.
+        assert vault.persisted_refresh_token() is None
+        assert calls == 1
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 0.5
+    while vault._keyring_read_task is not None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert vault.persisted_refresh_token() == "persisted-refresh-token"
+
+
+def test_keyring_update_timeout_does_not_block_login(monkeypatch) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingKeyring:
+        @staticmethod
+        def set_password(_service: str, _account: str, _value: str) -> None:
+            entered.set()
+            release.wait(timeout=1)
+
+    vault = SessionVault(keyring_timeout_seconds=0.02)
+    monkeypatch.setattr(vault, "_keyring", lambda: BlockingKeyring)
+
+    started = time.monotonic()
+    try:
+        local = vault.start(
+            user=_user("bounded-login"),
+            access_token="access",
+            refresh_token="refresh",
+            expires_in=900,
+        )
+        assert time.monotonic() - started < 0.5
+        assert entered.wait(timeout=0.5)
+        assert vault.get_local(local.token) == local
+    finally:
+        release.set()
+    deadline = time.monotonic() + 0.5
+    while vault._keyring_writer_running and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert not vault._keyring_writer_running
+
+
+def test_keyring_writes_finish_with_latest_desired_state(monkeypatch) -> None:
+    first_write_entered = threading.Event()
+    release_first_write = threading.Event()
+    operations: list[tuple[str, str | None]] = []
+
+    class BlockingKeyring:
+        @staticmethod
+        def set_password(_service: str, _account: str, value: str) -> None:
+            operations.append(("set-start", value))
+            if not first_write_entered.is_set():
+                first_write_entered.set()
+                release_first_write.wait(timeout=1)
+            operations.append(("set", value))
+
+        @staticmethod
+        def delete_password(_service: str, _account: str) -> None:
+            operations.append(("delete", None))
+
+    vault = SessionVault(keyring_timeout_seconds=0.02)
+    monkeypatch.setattr(vault, "_keyring", lambda: BlockingKeyring)
+
+    vault.start(
+        user=_user("first-write"),
+        access_token="access-first",
+        refresh_token="refresh-first",
+        expires_in=900,
+    )
+    assert first_write_entered.wait(timeout=0.5)
+    vault.start(
+        user=_user("second-write"),
+        access_token="access-second",
+        refresh_token="refresh-second",
+        expires_in=900,
+    )
+    vault.clear()
+    release_first_write.set()
+
+    deadline = time.monotonic() + 0.5
+    while vault._keyring_writer_running and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert operations[-1] == ("delete", None)
+    with pytest.raises(RuntimeError):
+        vault.remote_for_user("second-write")
 
 
 def test_control_plane_accepts_iso_expiry_payload() -> None:

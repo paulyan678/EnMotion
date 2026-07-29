@@ -17,6 +17,7 @@ from src.apps.comic_gen.llm import (
     PolishError,
     ScriptProcessor,
     _is_echo,
+    _resolve_image_for_vision,
 )
 
 # ---------------------------------------------------------------------------
@@ -41,6 +42,17 @@ class TestIsEcho:
     def test_empty_inputs(self):
         assert _is_echo("", "anything") is False
         assert _is_echo("anything", "") is False
+
+
+def test_vision_resolver_reads_uploaded_image_from_workspace_output_root(tmp_path):
+    uploaded = tmp_path / "uploads" / "first-frame.png"
+    uploaded.parent.mkdir()
+    uploaded.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+
+    resolved = _resolve_image_for_vision("uploads/first-frame.png", str(tmp_path))
+
+    assert resolved is not None
+    assert resolved.startswith("data:image/png;base64,")
 
 
 # ---------------------------------------------------------------------------

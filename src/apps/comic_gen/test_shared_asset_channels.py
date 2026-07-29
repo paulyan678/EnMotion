@@ -14,24 +14,24 @@ real output/*.json is read or written (temp paths + a fake processor).
 Design RFC: docs/plans/2026-06-18-enmotion-core-shared-asset-pool.md
 """
 
+import json
 import os
 import sys
-import json
 import threading
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
 
 import pytest
 
-from src.apps.comic_gen.pipeline import ComicGenPipeline
 from src.apps.comic_gen.models import (
     Character,
-    Scene,
+    GlobalAssetLibrary,
     Prop,
+    Scene,
     Script,
     Series,
-    GlobalAssetLibrary,
 )
+from src.apps.comic_gen.pipeline import ComicGenPipeline
 
 
 # --------------------------------------------------------------------------
@@ -77,6 +77,7 @@ def _series(sid="S", characters=None, scenes=None, props=None):
 
 class _FakeProcessor:
     """Stand-in for self.script_processor so create_project needs no LLM."""
+
     def __init__(self, sid="ep_new"):
         self._sid = sid
 
@@ -87,8 +88,7 @@ class _FakeProcessor:
         return _script(sid=self._sid)
 
 
-def _bare_pipeline(tmp_path, library=None, series_store=None, scripts=None,
-                   script_processor=None):
+def _bare_pipeline(tmp_path, library=None, series_store=None, scripts=None, script_processor=None):
     """Bare ComicGenPipeline with temp persistence paths and only the
     attributes the exercised methods read/write."""
     p = object.__new__(ComicGenPipeline)
@@ -112,9 +112,14 @@ def test_create_library_asset_all_types_persists(tmp_path):
 
     # character WITH an image_url — exercises the AssetUnit/ImageVariant path
     # (the runtime-risky field names in create_library_asset).
-    ch = p.create_library_asset("character", {"name": "Hero", "description": "d", "image_url": "output/assets/characters/x.png"})
+    ch = p.create_library_asset(
+        "character",
+        {"name": "Hero", "description": "d", "image_url": "output/assets/characters/x.png"},
+    )
     assert ch.id.startswith("char_") and ch.name == "Hero"
-    sc = p.create_library_asset("scene", {"name": "Alley", "image_url": "output/assets/scenes/y.png"})
+    sc = p.create_library_asset(
+        "scene", {"name": "Alley", "image_url": "output/assets/scenes/y.png"}
+    )
     assert sc.id.startswith("scene_") and sc.image_url == "output/assets/scenes/y.png"
     pr = p.create_library_asset("prop", {"name": "Gun"})
     assert pr.id.startswith("prop_")
@@ -140,6 +145,25 @@ def test_create_library_character_tolerates_partial_payload(tmp_path):
     p = _bare_pipeline(tmp_path)
     ch = p.create_library_asset("character", {})
     assert ch.name == "未命名"
+
+
+def test_create_library_asset_reuses_explicit_idempotency_identity(tmp_path):
+    p = _bare_pipeline(tmp_path)
+    asset_id = "scene_0123456789ab"
+
+    first = p.create_library_asset(
+        "scene",
+        {"name": "Harbor", "image_url": "assets/scene/harbor.png"},
+        asset_id=asset_id,
+    )
+    replay = p.create_library_asset(
+        "scene",
+        {"name": "Harbor", "image_url": "assets/scene/harbor.png"},
+        asset_id=asset_id,
+    )
+
+    assert replay is first
+    assert [scene.id for scene in p.library_store.scenes] == [asset_id]
 
 
 def test_library_mutations_roll_back_in_memory_when_persistence_fails(tmp_path):
@@ -168,7 +192,9 @@ def test_update_and_delete_library_asset(tmp_path):
     lib = GlobalAssetLibrary(characters=[_char("c1", "old")])
     p = _bare_pipeline(tmp_path, library=lib)
 
-    updated = p.update_library_asset("character", "c1", {"name": "new", "starred": True, "id": "HACK", "status": "X"})
+    updated = p.update_library_asset(
+        "character", "c1", {"name": "new", "starred": True, "id": "HACK", "status": "X"}
+    )
     assert updated.name == "new" and updated.starred is True
     assert updated.id == "c1"  # id is protected from patch
 
@@ -216,10 +242,13 @@ def test_promote_from_project_and_series(tmp_path):
 # --------------------------------------------------------------------------
 def test_create_project_binds_episode_when_series_id(tmp_path):
     ser = _series(sid="S")
-    p = _bare_pipeline(tmp_path, series_store={"S": ser},
-                       script_processor=_FakeProcessor(sid="ep_new"))
+    p = _bare_pipeline(
+        tmp_path, series_store={"S": ser}, script_processor=_FakeProcessor(sid="ep_new")
+    )
 
-    script = p.create_project("New Ep", "text", skip_analysis=True, workflow_mode="r2v", series_id="S")
+    script = p.create_project(
+        "New Ep", "text", skip_analysis=True, workflow_mode="r2v", series_id="S"
+    )
     assert script.series_id == "S"
     assert script.episode_number == 1  # first episode -> max(0)+1
     assert "ep_new" in p.scripts

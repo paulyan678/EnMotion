@@ -156,13 +156,34 @@ class WorkspacePipelineRegistry:
             return self._reader(safe_id)
         return self._writer(safe_id)
 
+    def _refresh_writer_fingerprint(
+        self,
+        workspace_id: str,
+        pipeline: ComicGenPipeline,
+    ) -> None:
+        """Keep in-memory task state attached after this writer persists JSON."""
+
+        fingerprint = self._fingerprint(workspace_id)
+        with self._lock:
+            cached = self._writer_pipelines.get(workspace_id)
+            if cached is not None and cached[0] is pipeline:
+                self._writer_pipelines[workspace_id] = (pipeline, fingerprint)
+
     @contextmanager
     def locked(self, workspace_id: str) -> Iterator[ComicGenPipeline]:
         """Yield a freshly synchronized pipeline under the workspace lock."""
 
         safe_id = self.validate_workspace_id(workspace_id)
         with interprocess_lock(self.lock_path_for(safe_id)):
-            yield self.get(safe_id)
+            pipeline = self.get(safe_id)
+            try:
+                yield pipeline
+            finally:
+                # Pipeline methods atomically replace metadata files while also
+                # retaining transient task maps in memory. Refreshing the
+                # cached fingerprint here prevents the next status poll from
+                # rebuilding the writer and losing those task records.
+                self._refresh_writer_fingerprint(safe_id, pipeline)
 
     def discard(self, workspace_id: str) -> None:
         """Drop only the in-memory instance; persisted workspace data remains."""

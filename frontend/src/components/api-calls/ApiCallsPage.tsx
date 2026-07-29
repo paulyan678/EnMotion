@@ -39,6 +39,7 @@ import {
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
 import GlobalPageTitle from "@/components/layout/GlobalPageTitle";
+import { appDateTimeFormatter, parseApiTimestamp } from "@/lib/dateTime";
 
 type StatusFilter = "all" | ApiCallStatus;
 
@@ -99,10 +100,30 @@ const STATUS_TONES: Record<ApiCallStatus, string> = {
   canceled: "border-glass-border bg-glass text-text-muted",
 };
 
+const BILLING_STATUS_KEYS = {
+  settled: "settled",
+  completed: "completed",
+  captured: "captured",
+  succeeded: "succeeded",
+  reserved: "reserved",
+  processing: "processing",
+  pending_reconciliation: "pendingReconciliation",
+  released: "released",
+  refunded: "refunded",
+  failed: "failed",
+  canceled: "canceled",
+  cancelled: "canceled",
+} as const;
+
+function billingStatusKey(
+  status?: string | null,
+): (typeof BILLING_STATUS_KEYS)[keyof typeof BILLING_STATUS_KEYS] | "other" {
+  const normalized = status?.trim().toLowerCase() ?? "";
+  return BILLING_STATUS_KEYS[normalized as keyof typeof BILLING_STATUS_KEYS] ?? "other";
+}
+
 function parseTimestamp(value?: string | null): number | null {
-  if (!value) return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : null;
+  return parseApiTimestamp(value)?.getTime() ?? null;
 }
 
 export function elapsedMilliseconds(job: ApiCallActivity, now: number): number {
@@ -335,7 +356,7 @@ export default function ApiCallsPage() {
     return key ? t(`operations.${key}`) : t("operations.unknown");
   }, [t]);
 
-  const dateFormatter = useMemo(() => new Intl.DateTimeFormat(locale, {
+  const dateFormatter = useMemo(() => appDateTimeFormatter(locale, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -432,11 +453,17 @@ export default function ApiCallsPage() {
                 const progress = Math.max(0, Math.min(100, job.status === "completed" ? 100 : job.progress || 0));
                 const hasDeterminateProgress = job.status === "completed"
                   || (job.status === "running" && Boolean(job.progress_stage) && progress > 0);
-                const failureMessage = job.error_code === "input_image_privacy"
-                  ? t("errors.inputImagePrivacy")
-                  : job.error && !/[A-Za-z]{2,}/.test(job.error)
-                    ? job.error
-                    : t("errors.requestFailed");
+                const isBilling = job.activity_kind === "billing";
+                const billingStatusLabel = isBilling
+                  ? t(`billing.statuses.${billingStatusKey(job.billing_status)}`)
+                  : null;
+                const failureMessage = isBilling
+                  ? null
+                  : job.error_code === "input_image_privacy"
+                    ? t("errors.inputImagePrivacy")
+                    : job.error && !/[A-Za-z]{2,}/.test(job.error)
+                      ? job.error
+                      : t("errors.requestFailed");
                 return (
                   <article
                     key={job.id}
@@ -470,6 +497,11 @@ export default function ApiCallsPage() {
                             <StatusIcon status={job.status} className="h-3 w-3" />
                             {t(`status.${job.status}`)}
                           </span>
+                          {isBilling ? (
+                            <span className="rounded-full border border-glass-border bg-glass px-2 py-0.5 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                              {t("billing.record")}
+                            </span>
+                          ) : null}
                           {job.outputs && job.outputs.length > 1 ? (
                             <span className="rounded-full border border-glass-border px-2 py-0.5 text-[0.625rem] text-text-muted">
                               {t("outputCount", { count: job.outputs.length })}
@@ -481,6 +513,11 @@ export default function ApiCallsPage() {
                           {job.model_name ? <span>{job.model_name}</span> : null}
                           {job.attempts > 1 ? <span>{t("attempt", { count: job.attempts })}</span> : null}
                         </div>
+                        {billingStatusLabel ? (
+                          <p className="mt-2 line-clamp-1 text-sm text-text-secondary">
+                            {t("billing.outcome", { status: billingStatusLabel })}
+                          </p>
+                        ) : null}
                         {job.detail
                           ? <p className="mt-2 line-clamp-1 text-sm text-text-secondary">{job.detail}</p>
                           : null}
@@ -627,11 +664,17 @@ function JobDetailDrawer({
   const t = useTranslations("apiCalls");
   const drawerRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const failureMessage = job.error_code === "input_image_privacy"
-    ? t("errors.inputImagePrivacy")
-    : job.error && !/[A-Za-z]{2,}/.test(job.error)
-      ? job.error
-      : t("errors.requestFailed");
+  const isBilling = job.activity_kind === "billing";
+  const billingStatusLabel = isBilling
+    ? t(`billing.statuses.${billingStatusKey(job.billing_status)}`)
+    : null;
+  const failureMessage = isBilling
+    ? null
+    : job.error_code === "input_image_privacy"
+      ? t("errors.inputImagePrivacy")
+      : job.error && !/[A-Za-z]{2,}/.test(job.error)
+        ? job.error
+        : t("errors.requestFailed");
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -673,7 +716,7 @@ function JobDetailDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/65 backdrop-blur-sm" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-[100] flex justify-end bg-black/65 backdrop-blur-sm" onMouseDown={onClose}>
       <div
         ref={drawerRef}
         role="dialog"
@@ -682,7 +725,7 @@ function JobDetailDrawer({
         onMouseDown={(event) => event.stopPropagation()}
         className="flex h-full w-full max-w-2xl flex-col border-l border-glass-border bg-surface shadow-2xl"
       >
-        <header className="flex items-start justify-between gap-4 border-b border-glass-border p-5 sm:p-6">
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-glass-border px-5 pb-5 pt-[max(1.25rem,env(safe-area-inset-top))] sm:px-6 sm:pb-6 sm:pt-[max(1.5rem,env(safe-area-inset-top))]">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 id="api-call-detail-title" className="font-display text-2xl text-foreground">
@@ -692,6 +735,11 @@ function JobDetailDrawer({
                 <StatusIcon status={job.status} className="h-3 w-3" />
                 {t(`status.${job.status}`)}
               </span>
+              {isBilling ? (
+                <span className="rounded-full border border-glass-border bg-glass px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                  {t("billing.record")}
+                </span>
+              ) : null}
             </div>
             <p className="mt-1 font-mono text-[0.6875rem] text-text-muted">{job.id}</p>
           </div>
@@ -708,11 +756,19 @@ function JobDetailDrawer({
               <Detail label={t("typeLabel")} value={t(`category.${job.category}`)} />
               <Detail label={t("sourceLabel")} value={t(`sources.${job.source}`)} />
               <Detail label={t("modelLabel")} value={job.model_name || t("notAvailable")} />
+              {billingStatusLabel ? (
+                <Detail label={t("billing.statusLabel")} value={billingStatusLabel} />
+              ) : null}
               <Detail label={t("createdLabel")} value={dateFormatter.format(parseTimestamp(job.created_at) ?? now)} />
               <Detail label={t("startedLabel")} value={job.started_at ? dateFormatter.format(parseTimestamp(job.started_at) ?? now) : t("notAvailable")} />
               <Detail label={t("completedLabel")} value={job.finished_at ? dateFormatter.format(parseTimestamp(job.finished_at) ?? now) : t("notAvailable")} />
               <Detail label={t("durationLabel")} value={formatElapsed(elapsedMilliseconds(job, now))} />
             </dl>
+            {isBilling ? (
+              <p className="mt-3 rounded-xl border border-glass-border bg-glass p-4 text-sm leading-relaxed text-text-secondary">
+                {t("billing.description")}
+              </p>
+            ) : null}
             {job.prompt ? (
               <div className="mt-3 rounded-xl border border-glass-border bg-glass p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">{t("promptLabel")}</p>
@@ -740,12 +796,13 @@ function JobDetailDrawer({
           ) : null}
           {job.outputs?.length ? (
             <MediaSection title={t("outputs")} media={job.outputs} job={job} downloadKey={downloadKey} onDownload={onDownload} />
-          ) : job.status === "completed" ? (
+          ) : job.status === "completed" && !isBilling ? (
             <div className="rounded-xl border border-dashed border-glass-border p-5 text-center text-sm text-text-muted">
               {t("noMediaOutput")}
             </div>
           ) : null}
 
+          {!isBilling ? (
           <section aria-labelledby="progress-timeline-title">
             <h3 id="progress-timeline-title" className="text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">{t("progressTimeline")}</h3>
             <ol className="mt-4 space-y-0">
@@ -797,6 +854,7 @@ function JobDetailDrawer({
               ) : null}
             </ol>
           </section>
+          ) : null}
 
           {job.status === "failed" && failureMessage ? (
             <section className="rounded-xl border border-red-400/30 bg-red-400/[0.07] p-4 text-sm text-red-200">

@@ -10,9 +10,14 @@ import PromptInput from './PromptInput';
 import ParameterBar from './ParameterBar';
 import ResultGallery from './ResultGallery';
 import { usePlaygroundStore, type PlaygroundMode, type PlaygroundGeneration, type QueuedRequest } from './usePlaygroundStore';
-import { getEffectivePlaygroundParameters } from './playgroundModels';
+import {
+  getEffectivePlaygroundInputMedia,
+  getEffectivePlaygroundParameters,
+  supportsPlaygroundNegativePrompt,
+} from './playgroundModels';
 import { playgroundApi, type PlaygroundGenerationResponse } from '@/lib/api';
 import GlobalPageTitle from '@/components/layout/GlobalPageTitle';
+import { toast } from '@/store/toastStore';
 
 /** Modes that require media input (image or video source).
  *  t2i also shows optional media input — when provided, it auto-becomes i2i. */
@@ -43,10 +48,13 @@ function toGeneration(resp: PlaygroundGenerationResponse): PlaygroundGeneration 
       media_type: o.media_type as 'image' | 'video',
       thumbnail_path: o.thumbnail_path,
       saved_to_library: o.saved_to_library,
+      library_category: o.library_category,
     })),
     status: resp.status as PlaygroundGeneration['status'],
     error: resp.error,
     created_at: resp.created_at,
+    updated_at: resp.updated_at,
+    finished_at: resp.finished_at,
   };
 }
 
@@ -81,9 +89,10 @@ export default function PlaygroundPage() {
   // ─── Cleanup poll timers ───────────────────────────────────────────────────
 
   useEffect(() => {
+    const timers = pollTimers.current;
     return () => {
-      pollTimers.current.forEach((timer) => clearInterval(timer));
-      pollTimers.current.clear();
+      timers.forEach((timer) => clearInterval(timer));
+      timers.clear();
     };
   }, []);
 
@@ -162,7 +171,14 @@ export default function PlaygroundPage() {
   // ─── Generate handler — enqueue a request; the dispatcher runs it ──────────
 
   const handleGenerate = useCallback(() => {
-    if (!prompt.trim()) return;
+    const usableInputCount = inputMedia.filter((item) => item.trim().length > 0).length;
+    if (
+      !prompt.trim()
+      || (mode === 'i2i' && usableInputCount < 1)
+      || (mode === 'i2v' && usableInputCount !== 1)
+    ) {
+      return;
+    }
     // Auto-detect i2i: t2i + reference images -> i2i
     const effectiveMode = (mode === 't2i' && inputMedia.length > 0) ? 'i2i' : mode;
     const effectiveParameters = getEffectivePlaygroundParameters(
@@ -170,12 +186,18 @@ export default function PlaygroundPage() {
       modelId,
       parameters,
     );
+    const effectiveInputMedia = getEffectivePlaygroundInputMedia(
+      effectiveMode,
+      inputMedia,
+    );
     enqueueRequest({
       mode: effectiveMode,
       modelId,
       prompt: prompt.trim(),
-      negativePrompt: negativePrompt || undefined,
-      inputMedia,
+      negativePrompt: supportsPlaygroundNegativePrompt(effectiveMode, modelId)
+        ? negativePrompt || undefined
+        : undefined,
+      inputMedia: effectiveInputMedia,
       parameters: effectiveParameters,
       batchSize,
     });
@@ -185,13 +207,21 @@ export default function PlaygroundPage() {
 
   const dispatchRequest = useCallback(async (req: QueuedRequest) => {
     try {
+      const requestInputMedia = getEffectivePlaygroundInputMedia(req.mode, req.inputMedia);
+      const requestParameters = getEffectivePlaygroundParameters(
+        req.mode,
+        req.modelId,
+        req.parameters,
+      );
       const resp = await playgroundApi.generate({
         mode: req.mode,
         model_id: req.modelId,
         prompt: req.prompt,
-        negative_prompt: req.negativePrompt || undefined,
-        input_media: req.inputMedia.length > 0 ? req.inputMedia : undefined,
-        parameters: Object.keys(req.parameters).length > 0 ? req.parameters : undefined,
+        negative_prompt: supportsPlaygroundNegativePrompt(req.mode, req.modelId)
+          ? req.negativePrompt || undefined
+          : undefined,
+        input_media: requestInputMedia.length > 0 ? requestInputMedia : undefined,
+        parameters: requestParameters,
         batch_size: req.batchSize > 1 ? req.batchSize : undefined,
       });
       const gen = toGeneration(resp);
@@ -202,9 +232,10 @@ export default function PlaygroundPage() {
       }
     } catch (err) {
       console.error('[Playground] Dispatch failed:', err);
+      toast.error(t('compose.dispatchFailed'));
       removeFromQueue(req.id);
     }
-  }, [startGeneration, removeFromQueue, startPolling]);
+  }, [removeFromQueue, startGeneration, startPolling, t]);
 
   // Pump: dispatch pending requests up to the concurrency limit.
   const pump = useCallback(() => {
@@ -230,7 +261,16 @@ export default function PlaygroundPage() {
 
   const resultCount = history.reduce((n, g) => n + g.outputs.length, 0);
   const showMediaInput = MODES_WITH_MEDIA.includes(mode) || MODES_WITH_OPTIONAL_MEDIA.includes(mode);
-  const canGenerate = prompt.trim().length > 0;
+  const usableInputCount = inputMedia.filter((item) => item.trim().length > 0).length;
+  let generateBlockReason: string | null = null;
+  if (!prompt.trim()) {
+    generateBlockReason = t('compose.promptRequired');
+  } else if (mode === 'i2i' && usableInputCount < 1) {
+    generateBlockReason = t('compose.referenceRequired');
+  } else if (mode === 'i2v' && usableInputCount !== 1) {
+    generateBlockReason = t('compose.firstFrameRequired');
+  }
+  const canGenerate = generateBlockReason === null;
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -312,10 +352,20 @@ export default function PlaygroundPage() {
 
           {/* Generate CTA (sticky) */}
           <div className="sticky bottom-0 -mx-4 -mb-4 border-t border-glass-border bg-transparent backdrop-blur-md px-4 pb-4 pt-4">
+            {generateBlockReason && (
+              <p
+                id="playground-generate-block-reason"
+                className="mb-2 text-center text-[0.6875rem] text-text-muted"
+              >
+                {generateBlockReason}
+              </p>
+            )}
             <button
               type="button"
               onClick={handleGenerate}
               disabled={!canGenerate}
+              aria-describedby={generateBlockReason ? 'playground-generate-block-reason' : undefined}
+              title={generateBlockReason ?? undefined}
               className={[
                 'inline-flex w-full items-center justify-center gap-[7px] rounded-full px-6 py-[13px]',
                 "font-['Space_Grotesk',sans-serif] text-sm font-semibold",

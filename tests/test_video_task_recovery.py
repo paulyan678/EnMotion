@@ -46,7 +46,6 @@ from src.models.newapi import (
     NewAPIProviderError,
 )
 
-
 VIDEO_MODEL = "doubao-seedance-2-0-fast-260128"
 VIDEO_KEY_FIELD = "NEWAPI_SEEDANCE_2_FAST_API_KEY"
 
@@ -54,11 +53,13 @@ VIDEO_KEY_FIELD = "NEWAPI_SEEDANCE_2_FAST_API_KEY"
 @pytest.fixture
 def pipeline(tmp_path):
     """Pipeline with temp data files, real IO bypassed."""
-    with patch("src.apps.comic_gen.pipeline.ScriptProcessor"), \
-         patch("src.apps.comic_gen.pipeline.AssetGenerator"), \
-         patch("src.apps.comic_gen.pipeline.StoryboardGenerator"), \
-         patch("src.apps.comic_gen.pipeline.VideoGenerator"), \
-         patch("src.apps.comic_gen.pipeline.ExportManager"):
+    with (
+        patch("src.apps.comic_gen.pipeline.ScriptProcessor"),
+        patch("src.apps.comic_gen.pipeline.AssetGenerator"),
+        patch("src.apps.comic_gen.pipeline.StoryboardGenerator"),
+        patch("src.apps.comic_gen.pipeline.VideoGenerator"),
+        patch("src.apps.comic_gen.pipeline.ExportManager"),
+    ):
         p = ComicGenPipeline()
     p.data_file = str(tmp_path / "projects.json")
     p.series_data_file = str(tmp_path / "series.json")
@@ -249,17 +250,15 @@ def test_terminal_state_and_retry_sync_asset_linked_task_copy(pipeline):
 
 def test_failed_task_metadata_survives_a_fresh_pipeline_reload(tmp_path):
     output_root = tmp_path / "output"
-    with patch("src.apps.comic_gen.pipeline.ScriptProcessor"), \
-         patch("src.apps.comic_gen.pipeline.AssetGenerator"), \
-         patch("src.apps.comic_gen.pipeline.StoryboardGenerator"), \
-         patch("src.apps.comic_gen.pipeline.VideoGenerator"), \
-         patch("src.apps.comic_gen.pipeline.ExportManager"):
-        first = ComicGenPipeline(
-            {"output_root": str(output_root), "recover_orphan_tasks": False}
-        )
-        first.scripts = {
-            "p1": _script_with_tasks(_video_task(status="processing", task_id="t1"))
-        }
+    with (
+        patch("src.apps.comic_gen.pipeline.ScriptProcessor"),
+        patch("src.apps.comic_gen.pipeline.AssetGenerator"),
+        patch("src.apps.comic_gen.pipeline.StoryboardGenerator"),
+        patch("src.apps.comic_gen.pipeline.VideoGenerator"),
+        patch("src.apps.comic_gen.pipeline.ExportManager"),
+    ):
+        first = ComicGenPipeline({"output_root": str(output_root), "recover_orphan_tasks": False})
+        first.scripts = {"p1": _script_with_tasks(_video_task(status="processing", task_id="t1"))}
         assert first.mark_video_task_failed(
             "p1",
             "t1",
@@ -268,9 +267,7 @@ def test_failed_task_metadata_survives_a_fresh_pipeline_reload(tmp_path):
             error_diagnostic="provider polling exceeded 60 minutes",
             overwrite=True,
         )
-        second = ComicGenPipeline(
-            {"output_root": str(output_root), "recover_orphan_tasks": False}
-        )
+        second = ComicGenPipeline({"output_root": str(output_root), "recover_orphan_tasks": False})
 
     reloaded = second.scripts["p1"].video_tasks[0]
     assert reloaded.status == "failed"
@@ -367,9 +364,13 @@ def test_annotate_video_task_returns_none_for_unknown(pipeline):
 def test_model_settings_migrates_stale_models_and_persists_approved_switch(pipeline):
     """Stale saved selections migrate, then approved switches persist."""
     from src.apps.comic_gen.models import Script
+
     script = Script(
-        id="p1", title="P", original_text="t",
-        created_at=time.time(), updated_at=time.time(),
+        id="p1",
+        title="P",
+        original_text="t",
+        created_at=time.time(),
+        updated_at=time.time(),
         model_settings={
             "chat_model": "legacy-chat",
             "t2i_model": "wan2.7-image-pro",
@@ -451,7 +452,9 @@ def test_update_frame_workbench_partial_writes(pipeline):
     pipeline.scripts = {"p1": _script_with_frame(frame)}
     with patch.object(pipeline, "_save_data"):
         updated = pipeline.update_frame_workbench(
-            "p1", "f1", workbench_tab_mode="direct_r2v",
+            "p1",
+            "f1",
+            workbench_tab_mode="direct_r2v",
         )
     assert updated is not None
     assert updated.workbench_tab_mode == "direct_r2v"
@@ -476,7 +479,9 @@ def test_update_frame_workbench_caps_t2i_history_at_10(pipeline):
     long_list = [f"http://img-{i}" for i in range(15)]
     with patch.object(pipeline, "_save_data"):
         updated = pipeline.update_frame_workbench(
-            "p1", "f1", t2i_image_urls=long_list,
+            "p1",
+            "f1",
+            t2i_image_urls=long_list,
         )
     assert updated is not None
     # FIFO: oldest dropped, newest retained.
@@ -489,7 +494,8 @@ def test_update_frame_workbench_clamps_selected_index_against_new_list(pipeline)
     pipeline.scripts = {"p1": _script_with_frame(frame)}
     with patch.object(pipeline, "_save_data"):
         updated = pipeline.update_frame_workbench(
-            "p1", "f1",
+            "p1",
+            "f1",
             t2i_image_urls=["http://a", "http://b"],
             t2i_selected_index=99,  # out of range
         )
@@ -499,14 +505,18 @@ def test_update_frame_workbench_clamps_selected_index_against_new_list(pipeline)
 
 def test_update_frame_workbench_clamps_selected_index_to_zero_when_empty(pipeline):
     frame = StoryboardFrame(
-        id="f1", scene_id="s1",
+        id="f1",
+        scene_id="s1",
         t2i_image_urls=["http://a"],
         t2i_selected_index=0,
     )
     pipeline.scripts = {"p1": _script_with_frame(frame)}
     with patch.object(pipeline, "_save_data"):
         updated = pipeline.update_frame_workbench(
-            "p1", "f1", t2i_image_urls=[], t2i_selected_index=5,
+            "p1",
+            "f1",
+            t2i_image_urls=[],
+            t2i_selected_index=5,
         )
     assert updated is not None
     assert updated.t2i_image_urls == []
@@ -522,12 +532,16 @@ def test_update_frame_workbench_clamps_generate_count_to_range(pipeline):
     pipeline.scripts = {"p1": _script_with_frame(frame)}
     with patch.object(pipeline, "_save_data"):
         too_high = pipeline.update_frame_workbench(
-            "p1", "f1", workbench_generate_count=99,
+            "p1",
+            "f1",
+            workbench_generate_count=99,
         )
         assert too_high is not None
         assert too_high.workbench_generate_count == 6  # clamped to upper bound
         too_low = pipeline.update_frame_workbench(
-            "p1", "f1", workbench_generate_count=0,
+            "p1",
+            "f1",
+            workbench_generate_count=0,
         )
         assert too_low is not None
         assert too_low.workbench_generate_count == 1  # clamped to lower bound
@@ -538,7 +552,8 @@ def test_update_frame_workbench_filters_blank_t2i_urls(pipeline):
     pipeline.scripts = {"p1": _script_with_frame(frame)}
     with patch.object(pipeline, "_save_data"):
         updated = pipeline.update_frame_workbench(
-            "p1", "f1",
+            "p1",
+            "f1",
             t2i_image_urls=["http://a", "", "  ", "http://b", None],  # type: ignore[list-item]
         )
     assert updated is not None
@@ -589,9 +604,7 @@ def test_create_video_task_workbench_tab_defaults_to_none(pipeline, monkeypatch)
 
 
 @pytest.mark.parametrize("consumer_fails", [False, True])
-def test_extract_last_frame_removes_remote_temp_file(
-    pipeline, tmp_path, consumer_fails
-):
+def test_extract_last_frame_removes_remote_temp_file(pipeline, tmp_path, consumer_fails):
     task = _video_task(status="completed", task_id="video-1")
     task.video_url = "https://media.example.test/video.mp4"
     script = _script_with_tasks(task)
@@ -605,8 +618,10 @@ def test_extract_last_frame_removes_remote_temp_file(
             raise RuntimeError("frame extraction failed")
         return script
 
-    with patch.object(pipeline, "_download_temp_image", return_value=str(temporary)), \
-         patch.object(pipeline, "_extract_last_frame_from_path", side_effect=consume):
+    with (
+        patch.object(pipeline, "_download_temp_image", return_value=str(temporary)),
+        patch.object(pipeline, "_extract_last_frame_from_path", side_effect=consume),
+    ):
         if consumer_fails:
             with pytest.raises(RuntimeError, match="frame extraction failed"):
                 pipeline.extract_last_frame(script.id, "frame-1", task.id)
@@ -617,9 +632,7 @@ def test_extract_last_frame_removes_remote_temp_file(
 
 
 @pytest.mark.parametrize("provider_fails", [False, True])
-def test_process_video_task_removes_remote_temp_file(
-    pipeline, tmp_path, provider_fails
-):
+def test_process_video_task_removes_remote_temp_file(pipeline, tmp_path, provider_fails):
     pipeline.output_root = str(tmp_path / "output")
     task = _video_task(status="pending", task_id="video-1")
     task.image_url = "https://media.example.test/source.png"
@@ -635,17 +648,85 @@ def test_process_video_task_removes_remote_temp_file(
             return kwargs["output_path"], None
 
     pipeline._newapi_video_model = VideoModelStub()
-    with patch.object(pipeline, "_download_temp_image", return_value=str(temporary)), \
-         patch.object(pipeline, "_save_data"):
+    with (
+        patch.object(pipeline, "_download_temp_image", return_value=str(temporary)),
+        patch.object(pipeline, "_save_data"),
+    ):
         pipeline.process_video_task(script.id, task.id)
 
     assert not temporary.exists()
     assert task.status == ("failed" if provider_fails else "completed")
 
 
-def test_process_video_task_preserves_provider_safety_metadata(
-    pipeline, tmp_path
+@pytest.mark.parametrize("race", ["cancel", "delete"])
+def test_process_video_task_discards_result_canceled_or_deleted_during_provider(
+    pipeline, tmp_path, race
 ):
+    pipeline.output_root = str(tmp_path / "output")
+    task = _video_task(status="pending", task_id=f"{race}-video")
+    task.image_url = None
+    script = _script_with_tasks(task)
+    pipeline.scripts = {script.id: script}
+
+    class RacingVideoModel:
+        def generate(self, **kwargs):
+            output = Path(kwargs["output_path"])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"provider result")
+            if race == "cancel":
+                assert pipeline.mark_video_task_canceled(script.id, task.id)
+            else:
+                pipeline.delete_video_task(script.id, task.id)
+            return str(output), None
+
+    pipeline._newapi_video_model = RacingVideoModel()
+    with patch.object(pipeline, "_save_data"):
+        pipeline.process_video_task(script.id, task.id)
+
+    remaining = next(
+        (item for item in script.video_tasks if item.id == task.id),
+        None,
+    )
+    if race == "cancel":
+        assert remaining is not None
+        assert remaining.status == "canceled"
+    else:
+        assert remaining is None
+    assert not (Path(pipeline.output_root) / "video" / f"video_{task.id}.mp4").exists()
+
+
+def test_process_video_task_commit_failure_retires_generated_output(pipeline, tmp_path):
+    pipeline.output_root = str(tmp_path / "output")
+    task = _video_task(status="pending", task_id="commit-failure-video")
+    task.image_url = None
+    script = _script_with_tasks(task)
+    pipeline.scripts = {script.id: script}
+
+    class SuccessfulVideoModel:
+        def generate(self, **kwargs):
+            output = Path(kwargs["output_path"])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"provider result")
+            return str(output), None
+
+    pipeline._newapi_video_model = SuccessfulVideoModel()
+    save_calls = 0
+
+    def fail_completion_commit():
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 2:
+            raise OSError("completion persistence failed")
+
+    with patch.object(pipeline, "_save_data", side_effect=fail_completion_commit):
+        pipeline.process_video_task(script.id, task.id)
+
+    assert task.status == "failed"
+    assert task.video_url is None
+    assert not (Path(pipeline.output_root) / "video" / f"video_{task.id}.mp4").exists()
+
+
+def test_process_video_task_preserves_provider_safety_metadata(pipeline, tmp_path):
     pipeline.output_root = str(tmp_path / "output")
     task = _video_task(status="pending", task_id="privacy-video")
     task.image_url = "https://media.example.test/source.png"
@@ -659,18 +740,17 @@ def test_process_video_task_preserves_provider_safety_metadata(
             raise NewAPIProviderError(
                 INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE,
                 error_code=INPUT_IMAGE_PRIVACY_ERROR_CODE,
-                provider_code=(
-                    "InputImageSensitiveContentDetected.PrivacyInformation"
-                ),
+                provider_code=("InputImageSensitiveContentDetected.PrivacyInformation"),
                 provider_message="The input image may contain a real person",
                 http_status=400,
                 phase="video request",
             )
 
     pipeline._newapi_video_model = RejectingVideoModel()
-    with patch.object(
-        pipeline, "_download_temp_image", return_value=str(temporary)
-    ), patch.object(pipeline, "_save_data"):
+    with (
+        patch.object(pipeline, "_download_temp_image", return_value=str(temporary)),
+        patch.object(pipeline, "_save_data"),
+    ):
         pipeline.process_video_task(script.id, task.id)
 
     assert task.status == "failed"
@@ -680,9 +760,7 @@ def test_process_video_task_preserves_provider_safety_metadata(
     assert not temporary.exists()
 
 
-def test_process_video_task_turns_provider_poll_timeout_into_terminal_failure(
-    pipeline, tmp_path
-):
+def test_process_video_task_turns_provider_poll_timeout_into_terminal_failure(pipeline, tmp_path):
     pipeline.output_root = str(tmp_path / "output")
     task = _video_task(status="pending", task_id="timeout-video")
     task.image_url = "https://media.example.test/source.png"
@@ -696,9 +774,10 @@ def test_process_video_task_turns_provider_poll_timeout_into_terminal_failure(
             raise TimeoutError("Provider polling did not finish within 3600 seconds")
 
     pipeline._newapi_video_model = TimedOutVideoModel()
-    with patch.object(
-        pipeline, "_download_temp_image", return_value=str(temporary)
-    ), patch.object(pipeline, "_save_data"):
+    with (
+        patch.object(pipeline, "_download_temp_image", return_value=str(temporary)),
+        patch.object(pipeline, "_save_data"),
+    ):
         pipeline.process_video_task(script.id, task.id)
 
     assert task.status == "failed"
@@ -708,9 +787,7 @@ def test_process_video_task_turns_provider_poll_timeout_into_terminal_failure(
     assert not temporary.exists()
 
 
-def test_retried_asset_video_uses_current_selected_replacement(
-    pipeline, tmp_path
-):
+def test_retried_asset_video_uses_current_selected_replacement(pipeline, tmp_path):
     pipeline.output_root = str(tmp_path / "output")
     uploads = Path(pipeline.output_root) / "uploads"
     snapshots = Path(pipeline.output_root) / "video_inputs"
@@ -756,20 +833,21 @@ def test_retried_asset_video_uses_current_selected_replacement(
             return kwargs["output_path"], None
 
     pipeline._newapi_video_model = SuccessfulRetryModel()
-    with patch.object(
-        pipeline,
-        "_download_temp_image",
-        return_value=str(snapshots / "asset-video.png"),
-    ), patch.object(pipeline, "_save_data"):
+    with (
+        patch.object(
+            pipeline,
+            "_download_temp_image",
+            return_value=str(snapshots / "asset-video.png"),
+        ),
+        patch.object(pipeline, "_save_data"),
+    ):
         pipeline.process_video_task(script.id, task.id)
 
     assert task.status == "completed"
     assert task.video_url == "video/video_asset-video.mp4"
 
 
-def test_asset_video_creation_uses_selected_canonical_image(
-    pipeline, tmp_path, monkeypatch
-):
+def test_asset_video_creation_uses_selected_canonical_image(pipeline, tmp_path, monkeypatch):
     pipeline.output_root = str(tmp_path / "output")
     uploads = Path(pipeline.output_root) / "uploads"
     uploads.mkdir(parents=True)

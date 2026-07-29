@@ -5,6 +5,9 @@ import type { NewApiSecretField } from "@/lib/newApiModels";
 import { notifyAssetUsageChanged } from "@/lib/assetLibrarySync";
 import { authApi, type AccountUsageItem } from "@/lib/authApi";
 import { isHybridModeEnabled } from "@/lib/serverMode";
+import { getAssetUrl } from "@/lib/utils";
+import { apiTimestampMilliseconds } from "@/lib/dateTime";
+import { readWorkspaceItem } from "@/lib/workspaceStorage";
 export { API_URL } from "@/lib/apiUrl";
 
 export const SERIES_MODEL_SETTINGS_TIMEOUT_MS = 30_000;
@@ -53,6 +56,77 @@ export interface ModelSettingsPayload {
     scene_aspect_ratio?: string;
     prop_aspect_ratio?: string;
     storyboard_aspect_ratio?: string;
+}
+
+export type ModelSettingsUpdatePayload = {
+    [Field in keyof ModelSettingsPayload]?: ModelSettingsPayload[Field] | null;
+};
+
+export interface EffectiveModelSettingsPayload extends ModelSettingsPayload {
+    model_settings_overrides?: string[];
+    inherited_model_settings?: ModelSettingsPayload;
+}
+
+export interface PromptConfigPayload {
+    storyboard_polish?: string;
+    video_polish?: string;
+    entity_extraction?: string;
+    style_analysis?: string;
+    storyboard_extraction?: string;
+    polish_model?: string;
+}
+
+const DEFAULT_MODEL_SETTINGS_KEY = "enmotion_default_model_settings";
+const DEFAULT_PROMPT_CONFIG_KEY = "enmotion_default_prompt_config";
+
+function workspaceDefaultModelSettings(): ModelSettingsPayload | undefined {
+    try {
+        const raw = readWorkspaceItem(DEFAULT_MODEL_SETTINGS_KEY);
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as ModelSettingsPayload;
+        const candidate: ModelSettingsPayload = {
+            chat_model: parsed.chat_model,
+            image_model: parsed.image_model ?? parsed.t2i_model ?? parsed.i2i_model,
+            video_model: parsed.video_model ?? parsed.i2v_model,
+            character_aspect_ratio: parsed.character_aspect_ratio,
+            scene_aspect_ratio: parsed.scene_aspect_ratio,
+            prop_aspect_ratio: parsed.prop_aspect_ratio,
+            storyboard_aspect_ratio: parsed.storyboard_aspect_ratio,
+        };
+        const present = Object.fromEntries(
+            Object.entries(candidate).filter(
+                ([, value]) => typeof value === "string" && value.trim().length > 0,
+            ),
+        ) as ModelSettingsPayload;
+        return Object.keys(present).length > 0 ? present : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function workspaceDefaultPromptConfig(): PromptConfigPayload | undefined {
+    try {
+        const raw = readWorkspaceItem(DEFAULT_PROMPT_CONFIG_KEY);
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as PromptConfigPayload;
+        const candidate: PromptConfigPayload = {};
+        for (const field of [
+            "storyboard_polish",
+            "video_polish",
+            "entity_extraction",
+            "style_analysis",
+            "storyboard_extraction",
+            "polish_model",
+        ] as const) {
+            const value = parsed[field];
+            if (typeof value === "string" && value.trim()) {
+                candidate[field] = value;
+            }
+        }
+        return Object.keys(candidate).length > 0 ? candidate : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 export interface ImportFileConfirmResponse {
@@ -205,6 +279,9 @@ export interface ApiCallActivity {
     finished_at?: string | null;
     /** Managed billing history is immutable from the desktop client. */
     managed_read_only?: boolean;
+    /** Billing settlement and application generation are separate activities. */
+    activity_kind?: "billing" | "generation";
+    billing_status?: string | null;
 }
 
 const DURABLE_JOB_POLL_INTERVAL_MS = 1000;
@@ -279,6 +356,7 @@ export interface BgmPreset {
     label: string;
     mood: string;
     url: string;
+    available: boolean;
 }
 
 export interface ReconcileAction {
@@ -402,7 +480,19 @@ export interface RefineSSEEvent {
 
 export const api = {
     createProject: async (title: string, text: string, skipAnalysis: boolean = false, workflowMode: string = "i2v_legacy", seriesId?: string) => {
-        const res = await axios.post(`${API_URL}/projects`, { title, text, workflow_mode: workflowMode, series_id: seriesId }, {
+        const standaloneDefaults = seriesId
+            ? {}
+            : {
+                model_settings: workspaceDefaultModelSettings(),
+                prompt_config: workspaceDefaultPromptConfig(),
+            };
+        const res = await axios.post(`${API_URL}/projects`, {
+            title,
+            text,
+            workflow_mode: workflowMode,
+            series_id: seriesId,
+            ...standaloneDefaults,
+        }, {
             params: { skip_analysis: skipAnalysis }
         });
         // New persisted projects can contain lineage edges, and attaching one
@@ -434,15 +524,23 @@ export const api = {
         return res.data;
     },
 
-    reparseProject: async (scriptId: string, text: string) => {
-        const res = await axios.put(`${API_URL}/projects/${scriptId}/reparse`, { text });
+    reparseProject: async (scriptId: string, text: string, previewRevision = "") => {
+        const res = await axios.put(`${API_URL}/projects/${scriptId}/reparse`, {
+            text,
+            preview_revision: previewRevision,
+        });
         notifyAssetUsageChanged();
         return { ...res.data, originalText: res.data.original_text };
     },
 
     extractPreview: async (scriptId: string, text: string) => {
         const res = await axios.post(`${API_URL}/projects/${scriptId}/extract_preview`, { text });
-        return res.data as { characters: any[]; scenes: any[]; props: any[] };
+        return res.data as {
+            characters: any[];
+            scenes: any[];
+            props: any[];
+            preview_revision?: string;
+        };
     },
 
     /** Persist `original_text` without LLM reparse. Used for textarea
@@ -762,7 +860,7 @@ export const api = {
         return res.data;
     },
 
-    updateModelSettings: async (scriptId: string, settings: ModelSettingsPayload) => {
+    updateModelSettings: async (scriptId: string, settings: ModelSettingsUpdatePayload) => {
         const res = await axios.post(`${API_URL}/projects/${scriptId}/model_settings`, settings);
         return res.data;
     },
@@ -1051,6 +1149,18 @@ export const api = {
         return response.json();
     },
 
+    /** Upload and select a project-owned local BGM track. */
+    uploadCustomBgm: async (scriptId: string, file: File) => {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await axios.post(
+            `${API_URL}/projects/${scriptId}/audio_mix/bgm`,
+            formData,
+            { headers: { "Content-Type": "multipart/form-data" } },
+        );
+        return response.data;
+    },
+
     /** PR-3k · Update audio mix (BGM url + per-track volumes). */
     updateAudioMix: async (scriptId: string, payload: {
         bgm_url?: string | null;
@@ -1148,12 +1258,20 @@ export const api = {
             workflow_mode: opts.workflow_mode ?? "i2v_legacy",
             content_mode: opts.content_mode ?? "scripted",
             default_generation_mode: opts.default_generation_mode ?? "i2v",
+            model_settings: workspaceDefaultModelSettings(),
+            prompt_config: workspaceDefaultPromptConfig(),
         });
         return response.data;
     },
 
     createSeries: async (title: string, description?: string, workflowMode: "i2v_legacy" = "i2v_legacy") => {
-        const response = await axios.post(`${API_URL}/series`, { title, description, workflow_mode: workflowMode });
+        const response = await axios.post(`${API_URL}/series`, {
+            title,
+            description,
+            workflow_mode: workflowMode,
+            model_settings: workspaceDefaultModelSettings(),
+            prompt_config: workspaceDefaultPromptConfig(),
+        });
         return response.data;
     },
     listSeries: async () => {
@@ -1425,6 +1543,7 @@ export const api = {
         has_previous: boolean;
         previous_episode_id: string | null;
         previous_episode_title: string | null;
+        script_available?: boolean;
         raw_snippet: string;
         ai_summary: string | null;
         ai_summary_stale: boolean;
@@ -1578,11 +1697,11 @@ export const api = {
         const response = await axios.put(`${API_URL}/series/${seriesId}/prompt_config`, config);
         return response.data;
     },
-    getSeriesModelSettings: async (seriesId: string) => {
+    getSeriesModelSettings: async (seriesId: string): Promise<EffectiveModelSettingsPayload> => {
         const response = await axios.get(`${API_URL}/series/${seriesId}/model_settings`);
         return response.data;
     },
-    updateSeriesModelSettings: async (seriesId: string, settings: ModelSettingsPayload) => {
+    updateSeriesModelSettings: async (seriesId: string, settings: ModelSettingsUpdatePayload): Promise<EffectiveModelSettingsPayload> => {
         const response = await axios.put(
             `${API_URL}/series/${seriesId}/model_settings`,
             settings,
@@ -1592,11 +1711,8 @@ export const api = {
     },
 
     // Helper: create a project and add it as an episode to a series
-    createEpisodeForSeries: async (seriesId: string, title: string, episodeNumber: number, workflowMode: string = "i2v_legacy") => {
-        const project = await api.createProject(title, "", true, workflowMode);
-        await api.addEpisodeToSeries(seriesId, project.id, episodeNumber);
-        const refreshed = await api.getProject(project.id);
-        return refreshed;
+    createEpisodeForSeries: async (seriesId: string, title: string, _episodeNumber: number, workflowMode: string = "i2v_legacy") => {
+        return api.createProject(title, "", true, workflowMode, seriesId);
     },
 
     // File Import
@@ -1609,7 +1725,14 @@ export const api = {
         return response.data;
     },
     importFileConfirm: async (data: { title: string; description?: string; import_id?: string; text?: string; episodes: any[] }) => {
-        const response = await axios.post<ImportFileConfirmResponse>(`${API_URL}/series/import/confirm`, data);
+        const response = await axios.post<ImportFileConfirmResponse>(
+            `${API_URL}/series/import/confirm`,
+            {
+                ...data,
+                model_settings: workspaceDefaultModelSettings(),
+                prompt_config: workspaceDefaultPromptConfig(),
+            },
+        );
         notifyAssetUsageChanged();
         return response.data;
     },
@@ -1716,9 +1839,16 @@ export const crudApi = {
 
 function accountUsageStatus(status: string): ApiCallStatus {
   const normalized = status.trim().toLowerCase();
-  if (["settled", "completed", "captured", "succeeded"].includes(normalized)) return "completed";
-  if (["failed", "released", "refunded"].includes(normalized)) return "failed";
-  if (["canceled", "cancelled"].includes(normalized)) return "canceled";
+  if (normalized === "failed") return "failed";
+  if (normalized === "canceled" || normalized === "cancelled") return "canceled";
+  if ([
+    "settled",
+    "completed",
+    "captured",
+    "succeeded",
+    "released",
+    "refunded",
+  ].includes(normalized)) return "completed";
   return "running";
 }
 
@@ -1733,7 +1863,7 @@ function accountUsageActivity(item: AccountUsageItem): ApiCallActivity {
   const status = accountUsageStatus(item.status);
   const terminal = ["completed", "failed", "canceled"].includes(status);
   return {
-    id: item.id,
+    id: `billing:${item.id}`,
     task_id: item.id,
     type: item.operation,
     status,
@@ -1749,14 +1879,136 @@ function accountUsageActivity(item: AccountUsageItem): ApiCallActivity {
     started_at: item.created_at,
     finished_at: terminal ? item.settled_at || item.created_at : null,
     managed_read_only: true,
+    activity_kind: "billing",
+    billing_status: item.status,
+  };
+}
+
+const PLAYGROUND_ACTIVITY_PREFIX = "playground:";
+
+function playgroundActivityStatus(status: string): ApiCallStatus {
+  if (status === "pending") return "queued";
+  if (status === "processing") return "running";
+  if (status === "failed") return "failed";
+  if (status === "completed") return "completed";
+  return "running";
+}
+
+function playgroundActivityType(mode: string): string {
+  if (mode === "i2i") return "images.edits";
+  if (mode === "t2i") return "images.generations";
+  return "video.generations";
+}
+
+function primitiveParameters(
+  parameters: Record<string, any>,
+): Record<string, string | number | boolean> {
+  return Object.fromEntries(
+    Object.entries(parameters).filter((entry): entry is [string, string | number | boolean] => {
+      const value = entry[1];
+      return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+    }),
+  );
+}
+
+function playgroundActivity(item: PlaygroundGenerationResponse): ApiCallActivity {
+  const status = playgroundActivityStatus(item.status);
+  const terminal = status === "completed" || status === "failed" || status === "canceled";
+  const recordUpdatedAt = item.updated_at || item.created_at;
+  const lifecycleUpdatedAt = terminal
+    ? item.finished_at || recordUpdatedAt
+    : recordUpdatedAt;
+  const stage = status === "queued"
+    ? "queued"
+    : status === "running"
+      ? "provider_processing"
+      : status === "completed"
+        ? "completed"
+        : "provider_processing";
+  const steps: ApiCallProgressStep[] = [
+    {
+      id: "queued",
+      state: status === "queued" ? "active" : "completed",
+      started_at: item.created_at,
+      finished_at: status === "queued" ? null : item.created_at,
+    },
+  ];
+  if (status !== "queued") {
+    steps.push({
+      id: status === "completed" ? "completed" : "provider_processing",
+      state: status === "running" ? "active" : status === "failed" ? "failed" : "completed",
+      started_at: item.created_at,
+      finished_at: terminal ? lifecycleUpdatedAt : null,
+      message: status === "failed" ? item.error ?? null : null,
+    });
+  }
+  return {
+    id: `${PLAYGROUND_ACTIVITY_PREFIX}${item.id}`,
+    task_id: item.id,
+    type: playgroundActivityType(item.mode),
+    status,
+    category: item.mode === "t2i" || item.mode === "i2i" ? "image" : "video",
+    source: "playground",
+    progress: status === "completed" ? 100 : status === "running" ? 50 : 0,
+    progress_stage: stage,
+    progress_is_estimated: status === "running",
+    progress_steps: steps,
+    error: item.error ?? null,
+    prompt: item.prompt,
+    model_name: item.model_id,
+    parameters: primitiveParameters(item.parameters),
+    source_context: {
+      type: "playground",
+      route: "#/playground",
+      playground_generation_id: item.id,
+    },
+    input_media: item.input_media.map((mediaPath, index) => ({
+      id: `input-${index}`,
+      media_type: "image",
+      media_path: mediaPath,
+      filename: mediaPath.split("/").pop() || `input-${index + 1}`,
+    })),
+    outputs: item.outputs.map((output) => ({
+      id: output.id,
+      media_type: output.media_type === "video" ? "video" : "image",
+      media_path: output.media_path,
+      thumbnail_path: output.thumbnail_path ?? null,
+      filename: output.media_path.split("/").pop() || output.id,
+    })),
+    attempts: 1,
+    created_at: item.created_at,
+    // API Calls sorts and calculates duration from lifecycle time. A later
+    // metadata edit (for example save-to-library) must not make an old
+    // generation look newly completed.
+    updated_at: lifecycleUpdatedAt,
+    started_at: status === "queued" ? null : item.created_at,
+    finished_at: terminal ? lifecycleUpdatedAt : null,
+    managed_read_only: true,
+    activity_kind: "generation",
+    billing_status: null,
   };
 }
 
 export const apiCallsApi = {
   list: async (limit = 200): Promise<ApiCallActivity[]> => {
     if (isHybridModeEnabled()) {
-      const page = await authApi.accountUsage(Math.min(limit, 100));
-      return page.items.map(accountUsageActivity);
+      const [billing, playground] = await Promise.all([
+        authApi.accountUsage(Math.min(limit, 100)),
+        axios.get<PlaygroundGenerationResponse[]>(`${API_URL}/playground/history`, {
+          params: { limit, offset: 0 },
+        }),
+      ]);
+      const activities = [
+        ...playground.data.map(playgroundActivity),
+        ...billing.items.map(accountUsageActivity),
+      ];
+      return activities
+        .sort(
+          (a, b) =>
+            (apiTimestampMilliseconds(b.updated_at) ?? 0) -
+            (apiTimestampMilliseconds(a.updated_at) ?? 0),
+        )
+        .slice(0, limit);
     }
     const response = await axios.get<ApiCallActivity[]>(`${API_URL}/jobs`, { params: { limit } });
     return response.data;
@@ -1776,6 +2028,24 @@ export const apiCallsApi = {
     axios.delete<void>(`${API_URL}/jobs/${jobId}`).then(() => undefined),
 
   download: async (jobId: string, outputId: string) => {
+    if (jobId.startsWith(PLAYGROUND_ACTIVITY_PREFIX)) {
+      const generationId = jobId.slice(PLAYGROUND_ACTIVITY_PREFIX.length);
+      const generation = await axios
+        .get<PlaygroundGenerationResponse>(`${API_URL}/playground/history/${generationId}`)
+        .then((response) => response.data);
+      const output = generation.outputs.find((candidate) => candidate.id === outputId);
+      if (!output) throw new Error("Playground output not found");
+      const response = await apiFetch(getAssetUrl(output.media_path));
+      if (!response.ok) {
+        throw new Error(`Playground output download failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      if (blob.size === 0) throw new Error("Playground output download was empty");
+      return {
+        blob,
+        filename: output.media_path.split("/").pop() || `enmotion-output-${outputId}`,
+      };
+    }
     const response = await axios.get<Blob>(
       `${API_URL}/jobs/${jobId}/outputs/${encodeURIComponent(outputId)}/download`,
       { responseType: "blob" },
@@ -1816,11 +2086,16 @@ export interface PlaygroundGenerationResponse {
     media_type: string;
     thumbnail_path?: string;
     saved_to_library: boolean;
+    library_category?: PlaygroundLibraryCategory;
   }>;
   status: string;
   error?: string;
   created_at: string;
+  updated_at?: string;
+  finished_at?: string | null;
 }
+
+export type PlaygroundLibraryCategory = "character" | "scene" | "prop";
 
 export interface PlaygroundTemplateResponse {
   id: string;
@@ -1851,8 +2126,15 @@ export const playgroundApi = {
   deleteGeneration: (id: string) =>
     axios.delete(API_URL + "/playground/history/" + id).then(r => r.data),
 
-  saveToLibrary: (generationId: string, outputId: string, category?: string) =>
-    axios.post(API_URL + "/playground/history/" + generationId + "/outputs/" + outputId + "/save-to-library", { category: category || "general" }).then(r => r.data),
+  saveToLibrary: (
+    generationId: string,
+    outputId: string,
+    category: PlaygroundLibraryCategory,
+  ) =>
+    axios.post<{ ok: boolean; category: PlaygroundLibraryCategory }>(
+      API_URL + "/playground/history/" + generationId + "/outputs/" + outputId + "/save-to-library",
+      { category },
+    ).then(r => r.data),
 
   getTemplates: () =>
     axios.get<PlaygroundTemplateResponse[]>(API_URL + "/playground/templates").then(r => r.data),
@@ -1876,5 +2158,8 @@ export const playgroundApi = {
   },
 
   deleteUpload: (path: string) =>
-    axios.delete(API_URL + "/playground/upload", { data: { path } }).then(r => r.data),
+    axios.delete<{ ok: boolean }>(
+      API_URL + "/playground/upload",
+      { data: { path } },
+    ).then(r => r.data),
 };

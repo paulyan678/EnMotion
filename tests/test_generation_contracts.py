@@ -165,6 +165,12 @@ def test_entity_extraction_rejects_empty_json_success():
         processor.parse_novel("Title", "A story")
 
 
+def test_default_entity_prompt_is_valid_json_without_inline_comments():
+    from src.apps.comic_gen.llm import DEFAULT_ENTITY_EXTRACTION_PROMPT
+
+    assert '"visual_weight": 5  //' not in DEFAULT_ENTITY_EXTRACTION_PROMPT
+
+
 def test_storyboard_extraction_retries_then_rejects_blank_frames():
     llm = _RefineLLM(content=json.dumps({"frames": [{}]}))
     processor = _processor_with(llm)

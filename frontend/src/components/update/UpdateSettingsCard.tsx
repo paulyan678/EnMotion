@@ -83,12 +83,17 @@ export default function UpdateSettingsCard() {
         </details>
       )}
       {state.status === "error" && (
-        <p role="alert" className="mt-3 flex items-start gap-2 rounded-lg border border-status-failed-border bg-status-failed-bg px-3 py-2 text-xs text-status-failed-fg">
+        <div role="alert" className="mt-3 flex items-start gap-2 rounded-lg border border-status-failed-border bg-status-failed-bg px-3 py-2 text-xs text-status-failed-fg">
           <CircleAlert size={14} className="mt-0.5 shrink-0" />
-          {state.error && !/[A-Za-z]{2,}/.test(state.error.replaceAll("EnMotion", ""))
-            ? state.error
-            : t("failed")}
-        </p>
+          <div>
+            <p className="font-semibold">{t("failed")}</p>
+            <p className="mt-1 leading-relaxed text-status-failed-fg/85">
+              {t("failedHelp", {
+                version: state.currentVersion || t("unknownVersion"),
+              })}
+            </p>
+          </div>
+        </div>
       )}
     </section>
   );

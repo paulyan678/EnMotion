@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Video, AlertCircle } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { getAssetUrl } from '@/lib/utils';
 import PreviewImage from '@/components/shared/preview/PreviewImage';
 import type { PlaygroundGeneration } from './usePlaygroundStore';
 import { useModelDisplayName } from '@/lib/useModelDisplayName';
+import { appDateTimeFormatter, parseApiTimestamp } from '@/lib/dateTime';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -22,11 +23,14 @@ interface GalleryViewProps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
+function formatTime(dateStr: string, locale: string): string {
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return '—';
+  return appDateTimeFormatter(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(date);
 }
 
 const VIDEO_MODES = new Set(['t2v', 'i2v']);
@@ -42,6 +46,7 @@ export default function GalleryView({
 }: GalleryViewProps) {
   const t = useTranslations('playground');
   const tui = useTranslations('ui.playground');
+  const locale = useLocale();
   const modelDisplayName = useModelDisplayName();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const activeIndex = Math.min(selectedIndex, Math.max(0, generations.length - 1));
@@ -50,6 +55,10 @@ export default function GalleryView({
   // Keyboard navigation
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('a, button, input, select, textarea, video, [contenteditable="true"]')) {
+        return;
+      }
       if (e.key === 'ArrowLeft') {
         setSelectedIndex(Math.max(0, activeIndex - 1));
       } else if (e.key === 'ArrowRight') {
@@ -113,7 +122,8 @@ export default function GalleryView({
               src={mediaUrl}
               poster={thumbnailUrl}
               controls
-              className="max-w-full max-h-full object-contain rounded-lg cursor-pointer hover:ring-2 hover:ring-primary/30 transition-all duration-200"
+              onClick={(event) => event.stopPropagation()}
+              className="max-w-full max-h-full object-contain rounded-lg transition-all duration-200"
             />
           ) : (
             <PreviewImage
@@ -137,7 +147,10 @@ export default function GalleryView({
             )}
             {onRetry && (
               <button
-                onClick={() => onRetry(current)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRetry(current);
+                }}
                 className="mt-2 px-3 py-1.5 rounded text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 transition-colors"
               >
                 {tui('retry')}
@@ -156,9 +169,15 @@ export default function GalleryView({
 
       {/* Info bar */}
       <div className="px-6 py-3 bg-surface space-y-1.5">
-        <p className="text-xs text-text-secondary line-clamp-2 leading-relaxed cursor-pointer hover:text-foreground transition-colors" onClick={handleClick} title={t('gallery.viewDetail')}>
+        <button
+          type="button"
+          className="block w-full text-left text-xs text-text-secondary line-clamp-2 leading-relaxed cursor-pointer hover:text-foreground transition-colors"
+          onClick={handleClick}
+          aria-label={`${t('gallery.viewDetail')}: ${current.prompt || tui('noPrompt')}`}
+          title={t('gallery.viewDetail')}
+        >
           {current.prompt || tui('noPrompt')}
-        </p>
+        </button>
         <div className="flex items-center gap-2">
           <span className="font-mono text-[0.5625rem] bg-elevated text-text-muted rounded px-[6px] py-[2px]">
             {modelDisplayName(current.model_id, current.mode.toUpperCase())}
@@ -174,7 +193,7 @@ export default function GalleryView({
             </span>
           )}
           <span className="font-mono text-[0.5625rem] text-text-muted ml-auto">
-            {formatTime(current.created_at)}
+            {formatTime(current.created_at, locale)}
           </span>
         </div>
       </div>
@@ -202,6 +221,8 @@ export default function GalleryView({
               <button
                 key={gen.id}
                 onClick={() => setSelectedIndex(idx)}
+                aria-label={gen.prompt || tui('noPrompt')}
+                aria-pressed={isSelected}
                 className={`w-14 h-14 rounded-md overflow-hidden border-2 cursor-pointer shrink-0 transition-colors ${
                   isSelected
                     ? 'border-primary'

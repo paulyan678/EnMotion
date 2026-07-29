@@ -1,14 +1,25 @@
 'use client';
 
 import { useState, useMemo, useCallback } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Sparkles, Grid3x3, GalleryHorizontal } from 'lucide-react';
 import { usePlaygroundStore, type PlaygroundGeneration } from './usePlaygroundStore';
 import { playgroundApi } from '@/lib/api';
+import {
+  getEffectivePlaygroundInputMedia,
+  getEffectivePlaygroundParameters,
+  supportsPlaygroundNegativePrompt,
+} from './playgroundModels';
 import ResultCard from './ResultCard';
 import GalleryView from './GalleryView';
 import DetailPanel from './DetailPanel';
 import QueuePanel from './QueuePanel';
+import {
+  apiTimestampMilliseconds,
+  appCalendarDateKey,
+  appDateTimeFormatter,
+  parseApiTimestamp,
+} from '@/lib/dateTime';
 
 type FilterType = 'all' | 'image' | 'video';
 
@@ -18,25 +29,29 @@ function formatSessionLabel(
   dateStr: string,
   todayLabel: string,
   yesterdayLabel: string,
+  locale: string,
+  now = new Date(),
 ): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 86400000);
-  const itemDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return '—';
+  const time = appDateTimeFormatter(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(date);
+  const itemDay = appCalendarDateKey(date);
 
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-
-  if (itemDay.getTime() === today.getTime()) {
-    return `${todayLabel} · ${hh}:${mm}`;
+  if (itemDay === appCalendarDateKey(now)) {
+    return `${todayLabel} · ${time}`;
   }
-  if (itemDay.getTime() === yesterday.getTime()) {
-    return `${yesterdayLabel} · ${hh}:${mm}`;
+  if (itemDay === appCalendarDateKey(new Date(now.getTime() - 86400000))) {
+    return `${yesterdayLabel} · ${time}`;
   }
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  return `${month}/${day} · ${hh}:${mm}`;
+  const day = appDateTimeFormatter(locale, {
+    month: 'numeric',
+    day: 'numeric',
+  }).format(date);
+  return `${day} · ${time}`;
 }
 
 export default function ResultGallery() {
@@ -48,6 +63,7 @@ export default function ResultGallery() {
   } = usePlaygroundStore();
   const t = useTranslations('playground');
   const tui = useTranslations('ui.playground');
+  const locale = useLocale();
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'gallery'>('grid');
   const [detailGen, setDetailGen] = useState<PlaygroundGeneration | null>(null);
@@ -60,13 +76,21 @@ export default function ResultGallery() {
 
   const handleRetry = useCallback(async (gen: PlaygroundGeneration) => {
     try {
+      const inputMedia = getEffectivePlaygroundInputMedia(gen.mode, gen.input_media);
+      const parameters = getEffectivePlaygroundParameters(
+        gen.mode,
+        gen.model_id,
+        gen.parameters,
+      );
       const resp = await playgroundApi.generate({
         mode: gen.mode,
         model_id: gen.model_id,
         prompt: gen.prompt,
-        negative_prompt: gen.negative_prompt || undefined,
-        input_media: gen.input_media.length > 0 ? gen.input_media : undefined,
-        parameters: Object.keys(gen.parameters).length > 0 ? gen.parameters : undefined,
+        negative_prompt: supportsPlaygroundNegativePrompt(gen.mode, gen.model_id)
+          ? gen.negative_prompt || undefined
+          : undefined,
+        input_media: inputMedia.length > 0 ? inputMedia : undefined,
+        parameters,
         batch_size: gen.batch_size > 1 ? gen.batch_size : undefined,
       });
       const newGen: PlaygroundGeneration = {
@@ -82,6 +106,8 @@ export default function ResultGallery() {
         status: resp.status as PlaygroundGeneration['status'],
         error: resp.error,
         created_at: resp.created_at,
+        updated_at: resp.updated_at,
+        finished_at: resp.finished_at,
       };
       startGeneration(newGen);
       // Poll for status
@@ -94,8 +120,17 @@ export default function ResultGallery() {
             updateGeneration({
               ...newGen,
               status: full.status as PlaygroundGeneration['status'],
-              outputs: full.outputs.map((o) => ({ id: o.id, media_path: o.media_path, media_type: o.media_type as 'image' | 'video', thumbnail_path: o.thumbnail_path, saved_to_library: o.saved_to_library })),
+              outputs: full.outputs.map((o) => ({
+                id: o.id,
+                media_path: o.media_path,
+                media_type: o.media_type as 'image' | 'video',
+                thumbnail_path: o.thumbnail_path,
+                saved_to_library: o.saved_to_library,
+                library_category: o.library_category,
+              })),
               error: full.error,
+              updated_at: full.updated_at,
+              finished_at: full.finished_at,
             });
           }
         } catch { clearInterval(poll); }
@@ -133,7 +168,8 @@ export default function ResultGallery() {
     () =>
       [...filtered].sort(
         (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+          (apiTimestampMilliseconds(b.created_at) ?? 0) -
+          (apiTimestampMilliseconds(a.created_at) ?? 0),
       ),
     [filtered],
   );
@@ -147,8 +183,8 @@ export default function ResultGallery() {
 
     for (let i = 0; i < sorted.length; i++) {
       if (i > 0) {
-        const prevTime = new Date(sorted[i - 1].created_at).getTime();
-        const currTime = new Date(sorted[i].created_at).getTime();
+        const prevTime = apiTimestampMilliseconds(sorted[i - 1].created_at) ?? 0;
+        const currTime = apiTimestampMilliseconds(sorted[i].created_at) ?? 0;
         const gap = prevTime - currTime; // prev is more recent (descending)
         if (gap > 30 * 60 * 1000) {
           result.push({
@@ -157,6 +193,7 @@ export default function ResultGallery() {
               sorted[i].created_at,
               t('results.today'),
               t('results.yesterday'),
+              locale,
             ),
             key: `divider-${sorted[i].id}`,
           });
@@ -166,7 +203,7 @@ export default function ResultGallery() {
     }
 
     return result;
-  }, [sorted, t]);
+  }, [locale, sorted, t]);
 
   // Flat list of generation data items (no dividers) for GalleryView and DetailPanel
   const dataItems = useMemo(
@@ -256,6 +293,8 @@ export default function ResultGallery() {
           <div className="flex items-center gap-[2px] bg-surface-inset rounded-full p-1 atelier-pill-tabs">
             <button
               onClick={() => setViewMode('grid')}
+              aria-label={t('results.gridView')}
+              aria-pressed={viewMode === 'grid'}
               className={`rounded-full p-2 transition-all cursor-pointer ${
                 viewMode === 'grid'
                   ? 'bg-surface text-foreground atelier-pill-tab-active'
@@ -267,6 +306,8 @@ export default function ResultGallery() {
             </button>
             <button
               onClick={() => setViewMode('gallery')}
+              aria-label={t('results.galleryView')}
+              aria-pressed={viewMode === 'gallery'}
               className={`rounded-full p-2 transition-all cursor-pointer ${
                 viewMode === 'gallery'
                   ? 'bg-surface text-foreground atelier-pill-tab-active'

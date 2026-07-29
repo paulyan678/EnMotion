@@ -1,6 +1,6 @@
 "use client";
 import { motion, AnimatePresence } from "framer-motion";
-import { Users, MapPin, Box, Check, X } from "lucide-react";
+import { Users, MapPin, Box, Check, X, Loader2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import ModalPortal from "@/components/common/ModalPortal";
 
@@ -16,6 +16,7 @@ interface EntityConfirmModalProps {
     currentCounts: { characters: number; scenes: number; props: number };
     onConfirm: () => void;
     onDiscard: () => void;
+    applying?: boolean;
 }
 
 export default function EntityConfirmModal({
@@ -24,10 +25,14 @@ export default function EntityConfirmModal({
     currentCounts,
     onConfirm,
     onDiscard,
+    applying = false,
 }: EntityConfirmModalProps) {
     const t = useTranslations("script");
 
     if (!preview) return null;
+    const handleDismiss = () => {
+        if (!applying) onDiscard();
+    };
 
     const sections = [
         { key: "characters" as const, icon: Users, items: preview.characters, prev: currentCounts.characters },
@@ -36,7 +41,7 @@ export default function EntityConfirmModal({
     ];
 
     return (
-        <ModalPortal isOpen={isOpen} onClose={onDiscard}>
+        <ModalPortal isOpen={isOpen} onClose={handleDismiss}>
             {(dialogRef) => (
                 <AnimatePresence>
                     {isOpen && (
@@ -45,12 +50,13 @@ export default function EntityConfirmModal({
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-overlay p-3 backdrop-blur-sm sm:p-4"
-                            onClick={onDiscard}
+                            onClick={handleDismiss}
                         >
                             <motion.div
                                 ref={dialogRef}
                                 role="dialog"
                                 aria-modal="true"
+                                aria-busy={applying}
                                 aria-labelledby="entity-confirm-title"
                                 aria-describedby="entity-confirm-description"
                                 tabIndex={-1}
@@ -108,6 +114,7 @@ export default function EntityConfirmModal({
                             <button
                                 type="button"
                                 onClick={onDiscard}
+                                disabled={applying}
                                 className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                             >
                                 <X size={14} />
@@ -116,9 +123,10 @@ export default function EntityConfirmModal({
                             <button
                                 type="button"
                                 onClick={onConfirm}
-                                className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-accent transition-colors hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                                disabled={applying}
+                                className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-accent transition-colors hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                                <Check size={14} />
+                                {applying ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
                                 {t("extractApply")}
                             </button>
                         </footer>

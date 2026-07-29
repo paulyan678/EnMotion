@@ -1,7 +1,7 @@
 import os
 import uuid
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,10 +25,37 @@ DEFAULT_VIDEO_PARAMETERS = {
     "duration": 5,
     "resolution": "720p",
     "aspect_ratio": "16:9",
+    "generate_audio": True,
+    "watermark": False,
 }
+DEFAULT_IMAGE_PARAMETERS = {
+    "size": "1536x1024",
+    "quality": "auto",
+}
+IMAGE_SIZES = frozenset({"1536x1024", "1024x1024", "1024x1536"})
+IMAGE_QUALITIES = frozenset({"auto", "high", "medium", "low"})
 VIDEO_RESOLUTIONS = frozenset({"720p", "1080p"})
 VIDEO_ASPECT_RATIOS = frozenset({"16:9", "9:16", "1:1"})
 SEEDANCE_STANDARD_MODEL = "doubao-seedance-2-0-260128"
+LibraryCategory = Literal["character", "scene", "prop"]
+
+
+def normalize_playground_image_parameters(parameters: Optional[dict]) -> dict:
+    """Return only the image parameters supported by the approved catalog."""
+
+    source = dict(parameters or {})
+    size = source.get("size", DEFAULT_IMAGE_PARAMETERS["size"])
+    if not isinstance(size, str) or size.strip().lower() not in IMAGE_SIZES:
+        raise ValueError("图像尺寸必须是 1536x1024、1024x1024 或 1024x1536")
+
+    quality = source.get("quality", DEFAULT_IMAGE_PARAMETERS["quality"])
+    if not isinstance(quality, str) or quality.strip().lower() not in IMAGE_QUALITIES:
+        raise ValueError("图像质量必须是 auto、high、medium 或 low")
+
+    return {
+        "size": size.strip().lower(),
+        "quality": quality.strip().lower(),
+    }
 
 
 def normalize_playground_video_parameters(
@@ -44,17 +71,15 @@ def normalize_playground_video_parameters(
     becoming a provider-incompatible value later in the worker.
     """
 
-    normalized = dict(parameters or {})
+    source = dict(parameters or {})
 
-    duration = normalized.get("duration", DEFAULT_VIDEO_PARAMETERS["duration"])
+    duration = source.get("duration", DEFAULT_VIDEO_PARAMETERS["duration"])
     if isinstance(duration, bool) or not isinstance(duration, int):
         raise ValueError("视频时长必须是 4 至 15 秒之间的整数")
     if duration < 4 or duration > 15:
         raise ValueError("视频时长必须为 4 至 15 秒")
 
-    resolution = normalized.get(
-        "resolution", DEFAULT_VIDEO_PARAMETERS["resolution"]
-    )
+    resolution = source.get("resolution", DEFAULT_VIDEO_PARAMETERS["resolution"])
     if not isinstance(resolution, str):
         raise ValueError("视频分辨率必须是 720p 或 1080p")
     resolution = resolution.strip().lower()
@@ -63,24 +88,35 @@ def normalize_playground_video_parameters(
     if resolution == "1080p" and not (
         mode == PlaygroundMode.T2V and model_id == SEEDANCE_STANDARD_MODEL
     ):
-        raise ValueError(
-            "仅 Seedance 2.0 文生视频支持 1080p"
-        )
+        raise ValueError("仅 Seedance 2.0 文生视频支持 1080p")
 
-    aspect_ratio = normalized.get(
-        "aspect_ratio", DEFAULT_VIDEO_PARAMETERS["aspect_ratio"]
-    )
+    aspect_ratio = source.get("aspect_ratio", DEFAULT_VIDEO_PARAMETERS["aspect_ratio"])
     if not isinstance(aspect_ratio, str):
         raise ValueError("视频画面比例必须是 16:9、9:16 或 1:1")
     aspect_ratio = aspect_ratio.strip()
     if aspect_ratio not in VIDEO_ASPECT_RATIOS:
         raise ValueError("视频画面比例必须是 16:9、9:16 或 1:1")
 
-    normalized.update(
-        duration=duration,
-        resolution=resolution,
-        aspect_ratio=aspect_ratio,
-    )
+    generate_audio = source.get("generate_audio", DEFAULT_VIDEO_PARAMETERS["generate_audio"])
+    if not isinstance(generate_audio, bool):
+        raise ValueError("视频音频开关必须是布尔值")
+
+    watermark = source.get("watermark", DEFAULT_VIDEO_PARAMETERS["watermark"])
+    if not isinstance(watermark, bool):
+        raise ValueError("视频水印开关必须是布尔值")
+
+    normalized = {
+        "duration": duration,
+        "resolution": resolution,
+        "aspect_ratio": aspect_ratio,
+        "generate_audio": generate_audio,
+        "watermark": watermark,
+    }
+    seed = source.get("seed")
+    if seed is not None:
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError("随机种子必须是整数")
+        normalized["seed"] = seed
     return normalized
 
 
@@ -88,8 +124,24 @@ class PlaygroundOutput(BaseModel):
     id: str = Field(..., description="Unique identifier (UUID)")
     media_path: str = Field(..., description="Generated file path relative to output/")
     media_type: str = Field(..., description="Output media type: image or video")
-    thumbnail_path: Optional[str] = Field(None, description="Thumbnail file path relative to output/")
-    saved_to_library: bool = Field(False, description="Whether this output has been saved to the project library")
+    thumbnail_path: Optional[str] = Field(
+        None, description="Thumbnail file path relative to output/"
+    )
+    saved_to_library: bool = Field(
+        False, description="Whether this output has been saved to the project library"
+    )
+    library_category: Optional[LibraryCategory] = Field(
+        None,
+        description="Persisted classification for a pending or completed library save",
+    )
+    library_asset_id: Optional[str] = Field(
+        None,
+        description="Durable idempotency identity for the registered library asset",
+    )
+    library_media_path: Optional[str] = Field(
+        None,
+        description="Durable output-relative destination for the library copy",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -171,6 +223,10 @@ class PlaygroundOutput(BaseModel):
 
         if "saved_to_library" not in data and "saved" in data:
             data["saved_to_library"] = bool(data.get("saved"))
+        if data.get("saved_to_library") and not data.get("library_category"):
+            # Before classifications were persisted, the Playground's
+            # unclassified/default save path registered assets as props.
+            data["library_category"] = "prop"
 
         if not data.get("id") and media_path:
             data["id"] = str(
@@ -187,14 +243,30 @@ class PlaygroundGeneration(BaseModel):
     mode: PlaygroundMode = Field(..., description="Generation mode")
     model_id: str = Field(..., description="Model identifier from model catalog")
     prompt: str = Field(..., description="Text prompt for generation")
-    negative_prompt: Optional[str] = Field(None, description="Negative prompt to exclude undesired elements")
-    input_media: List[str] = Field(default_factory=list, description="Input file paths for image/video-conditioned modes")
-    parameters: dict = Field(default_factory=dict, description="Generation parameters (resolution, duration, aspect_ratio, etc.)")
-    batch_size: int = Field(1, ge=1, le=4, description="Number of outputs to generate per request (1-4)")
+    negative_prompt: Optional[str] = Field(
+        None, description="Negative prompt to exclude undesired elements"
+    )
+    input_media: List[str] = Field(
+        default_factory=list, description="Input file paths for image/video-conditioned modes"
+    )
+    parameters: dict = Field(
+        default_factory=dict,
+        description="Generation parameters (resolution, duration, aspect_ratio, etc.)",
+    )
+    batch_size: int = Field(
+        1, ge=1, le=4, description="Number of outputs to generate per request (1-4)"
+    )
     outputs: List[PlaygroundOutput] = Field(default_factory=list, description="Generated outputs")
-    status: str = Field("pending", description="Generation status: pending/processing/completed/failed")
+    status: str = Field(
+        "pending", description="Generation status: pending/processing/completed/failed"
+    )
     error: Optional[str] = Field(None, description="Error message if generation failed")
     created_at: str = Field(..., description="Creation timestamp in ISO 8601 format")
+    updated_at: str = Field(..., description="Last record update in ISO 8601 format")
+    finished_at: Optional[str] = Field(
+        None,
+        description="Immutable timestamp of the latest terminal lifecycle transition",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -202,6 +274,15 @@ class PlaygroundGeneration(BaseModel):
         if not isinstance(value, dict):
             return value
         data = dict(value)
+        if not data.get("updated_at") and data.get("created_at"):
+            data["updated_at"] = data["created_at"]
+        if str(data.get("status") or "").lower() in {"completed", "failed"} and not data.get(
+            "finished_at"
+        ):
+            # Historical records used updated_at for both record edits and
+            # lifecycle completion. Capture that value once on read so later
+            # metadata-only edits cannot inflate duration or reorder activity.
+            data["finished_at"] = data.get("updated_at") or data.get("created_at")
         outputs = data.get("outputs")
 
         if isinstance(outputs, dict):
@@ -260,9 +341,13 @@ class PlaygroundTemplate(BaseModel):
     category: str = Field("general", description="Template category: image/video/general")
     prompt: str = Field(..., description="Template prompt text")
     negative_prompt: Optional[str] = Field(None, description="Default negative prompt")
-    default_mode: Optional[PlaygroundMode] = Field(None, description="Default generation mode for this template")
+    default_mode: Optional[PlaygroundMode] = Field(
+        None, description="Default generation mode for this template"
+    )
     default_model_id: Optional[str] = Field(None, description="Default model identifier")
-    default_parameters: dict = Field(default_factory=dict, description="Default generation parameters")
+    default_parameters: dict = Field(
+        default_factory=dict, description="Default generation parameters"
+    )
     created_at: str = Field(..., description="Creation timestamp in ISO 8601 format")
     updated_at: str = Field(..., description="Last update timestamp in ISO 8601 format")
 
@@ -298,17 +383,33 @@ class GenerateRequest(BaseModel):
     mode: PlaygroundMode = Field(..., description="Generation mode")
     model_id: str = Field(..., max_length=128, description="Model identifier from model catalog")
     prompt: str = Field(..., max_length=50_000, description="Text prompt for generation")
-    negative_prompt: Optional[str] = Field(None, max_length=50_000, description="Negative prompt to exclude undesired elements")
-    input_media: Optional[List[str]] = Field(None, max_length=4, description="Input file paths for image/video-conditioned modes")
-    parameters: Optional[dict] = Field(None, max_length=64, description="Generation parameters (resolution, duration, aspect_ratio, etc.)")
-    batch_size: Optional[int] = Field(1, ge=1, le=4, description="Number of outputs to generate (1-4)")
+    negative_prompt: Optional[str] = Field(
+        None, max_length=50_000, description="Negative prompt to exclude undesired elements"
+    )
+    input_media: Optional[List[str]] = Field(
+        None, max_length=16, description="Input file paths for image/video-conditioned modes"
+    )
+    parameters: Optional[dict] = Field(
+        None,
+        max_length=64,
+        description="Generation parameters (resolution, duration, aspect_ratio, etc.)",
+    )
+    batch_size: Optional[int] = Field(
+        1, ge=1, le=4, description="Number of outputs to generate (1-4)"
+    )
 
     @model_validator(mode="after")
     def validate_newapi_selection(self):
         validate_model_for_mode(self.model_id, self.mode.value)
+        if self.mode in {PlaygroundMode.T2I, PlaygroundMode.T2V}:
+            self.input_media = None
         if self.mode in {PlaygroundMode.I2I, PlaygroundMode.I2V} and not self.input_media:
             raise ValueError(f"{self.mode.value} 生成需要一张来源图片")
-        if self.mode in {PlaygroundMode.T2V, PlaygroundMode.I2V}:
+        if self.mode == PlaygroundMode.I2V and len(self.input_media or []) != 1:
+            raise ValueError("i2v 生成只接受一张来源图片")
+        if self.mode in {PlaygroundMode.T2I, PlaygroundMode.I2I}:
+            self.parameters = normalize_playground_image_parameters(self.parameters)
+        else:
             self.parameters = normalize_playground_video_parameters(
                 self.mode,
                 self.model_id,
@@ -318,7 +419,12 @@ class GenerateRequest(BaseModel):
 
 
 class SaveToLibraryRequest(BaseModel):
-    category: str = Field("general", description="Library category for the saved output")
+    model_config = ConfigDict(extra="forbid")
+
+    category: LibraryCategory = Field(
+        ...,
+        description="Explicit library category for the saved output",
+    )
 
 
 class CreateTemplateRequest(BaseModel):

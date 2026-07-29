@@ -15,6 +15,7 @@ import {
   type AccountUsageItem,
 } from "@/lib/authApi";
 import ModalPortal from "@/components/common/ModalPortal";
+import { appDateTimeFormatter, parseApiTimestamp } from "@/lib/dateTime";
 
 const EMPTY_BALANCE: AccountBalance = {
   available_credits: 0,
@@ -24,6 +25,14 @@ const EMPTY_BALANCE: AccountBalance = {
 
 function formatCredits(value: number, locale: string): string {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatUsageTimestamp(
+  value: string | null | undefined,
+  formatter: Intl.DateTimeFormat,
+): string {
+  const timestamp = parseApiTimestamp(value);
+  return timestamp ? formatter.format(timestamp) : "—";
 }
 
 function usageOperationKey(operation: string): string {
@@ -81,6 +90,13 @@ function AccountUsageDialog({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
+  const dateFormatter = useMemo(
+    () => appDateTimeFormatter(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }),
+    [locale],
+  );
 
   const load = useCallback(async (nextCursor?: string) => {
     const loadingNextPage = Boolean(nextCursor);
@@ -180,7 +196,7 @@ function AccountUsageDialog({
                     </p>
                     <p className="mt-0.5 truncate text-xs text-text-muted">{item.model}</p>
                     <p className="mt-1 text-[0.6875rem] text-text-muted">
-                      {new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.created_at))}
+                      {formatUsageTimestamp(item.created_at, dateFormatter)}
                     </p>
                   </div>
                   <div className="text-left sm:text-right">

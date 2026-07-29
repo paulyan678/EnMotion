@@ -36,6 +36,22 @@ function generation(mediaPath: string): PlaygroundGeneration {
   };
 }
 
+function videoGeneration(): PlaygroundGeneration {
+  return {
+    ...generation("playground/videos/result.mp4"),
+    id: "generation-video",
+    mode: "t2v",
+    outputs: [
+      {
+        id: "output-video",
+        media_path: "playground/videos/result.mp4",
+        media_type: "video",
+        saved_to_library: false,
+      },
+    ],
+  };
+}
+
 beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
     bottom: 240,
@@ -142,5 +158,48 @@ describe("Playground image rendering", () => {
       "src",
       "https://studio.example/files/playground/images/restored.png",
     );
+  });
+
+  it("lets video controls handle clicks without opening detail", () => {
+    const item = videoGeneration();
+    const onOpenDetail = vi.fn();
+    const { container } = renderWithIntl(
+      <GalleryView generations={[item]} onOpenDetail={onOpenDetail} />,
+      { locale: "en" },
+    );
+
+    const videoControls = container.querySelector("video[controls]");
+    expect(videoControls).toBeInstanceOf(HTMLVideoElement);
+    fireEvent.click(videoControls!);
+    fireEvent.keyDown(videoControls!, { key: "Enter" });
+    expect(onOpenDetail).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", {
+      name: `Click to view details: ${item.prompt}`,
+    }));
+    expect(onOpenDetail).toHaveBeenCalledWith(item);
+  });
+
+  it("retries a failed gallery item without also opening detail", () => {
+    const item: PlaygroundGeneration = {
+      ...generation(""),
+      status: "failed",
+      outputs: [],
+      error: "Generation failed",
+    };
+    const onOpenDetail = vi.fn();
+    const onRetry = vi.fn();
+    renderWithIntl(
+      <GalleryView
+        generations={[item]}
+        onOpenDetail={onOpenDetail}
+        onRetry={onRetry}
+      />,
+      { locale: "en" },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledWith(item);
+    expect(onOpenDetail).not.toHaveBeenCalled();
   });
 });

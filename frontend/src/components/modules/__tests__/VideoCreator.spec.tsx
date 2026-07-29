@@ -74,11 +74,13 @@ function renderCreator(locale: "en" | "zh" = "en") {
 }
 
 beforeEach(() => {
+  window.__ENMOTION_RUNTIME_CONFIG__ = undefined;
   useProjectStore.setState({ projects: [], currentProject: null });
   useToastStore.getState().clear();
 });
 
 afterEach(() => {
+  window.__ENMOTION_RUNTIME_CONFIG__ = undefined;
   vi.restoreAllMocks();
   useProjectStore.setState({ projects: [], currentProject: null });
   useToastStore.getState().clear();
@@ -256,6 +258,23 @@ describe("shot-specific Motion Creator", () => {
     ));
     expect(await screen.findByText("Submitted")).toBeInTheDocument();
     expect(useProjectStore.getState().currentProject?.video_tasks).toEqual([createdTask]);
+  });
+
+  it("submits directly in hybrid mode without reading the forbidden environment endpoint", async () => {
+    window.__ENMOTION_RUNTIME_CONFIG__ = {
+      hybridMode: true,
+      serverMode: false,
+    };
+    seed([frame(8)]);
+    const envSpy = vi.spyOn(api, "getEnvConfig");
+    const createSpy = vi.spyOn(api, "createVideoTask").mockResolvedValue([]);
+    renderCreator();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure clip for shot 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate Clip" }));
+
+    await waitFor(() => expect(createSpy).toHaveBeenCalledOnce());
+    expect(envSpy).not.toHaveBeenCalled();
   });
 
   it("uses localized Clip Start Frame and shot controls in Chinese", () => {

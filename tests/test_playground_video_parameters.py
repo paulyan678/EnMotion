@@ -41,6 +41,8 @@ def test_video_request_materializes_authoritative_defaults():
         "duration": 5,
         "resolution": "720p",
         "aspect_ratio": "16:9",
+        "generate_audio": True,
+        "watermark": False,
     }
 
 
@@ -59,6 +61,7 @@ def test_video_request_normalizes_supported_string_parameters():
         "duration": 15,
         "resolution": "1080p",
         "aspect_ratio": "9:16",
+        "generate_audio": True,
         "watermark": True,
     }
 
@@ -122,7 +125,7 @@ def test_720p_is_allowed_for_every_video_model_and_mode(mode, model_id):
     assert request.parameters["resolution"] == "720p"
 
 
-def test_image_request_parameters_are_not_rewritten():
+def test_image_request_materializes_catalog_defaults_and_strips_stale_video_parameters():
     t2i = GenerateRequest.model_validate(
         {
             "mode": "t2i",
@@ -136,12 +139,39 @@ def test_image_request_parameters_are_not_rewritten():
             "model_id": "gpt-image-2",
             "prompt": "Paint the fox",
             "input_media": ["playground/uploads/fox.png"],
-            "parameters": {"size": "1024x1024", "quality": "high"},
+            "parameters": {
+                "size": "1024x1024",
+                "quality": "high",
+                "resolution": "1080p",
+                "watermark": True,
+            },
         }
     )
 
-    assert t2i.parameters is None
+    assert t2i.parameters == {"size": "1536x1024", "quality": "auto"}
     assert i2i.parameters == {"size": "1024x1024", "quality": "high"}
+
+
+def test_text_modes_drop_stale_media_and_i2v_requires_exactly_one_first_frame():
+    t2v = GenerateRequest.model_validate(
+        {
+            "mode": "t2v",
+            "model_id": FAST_MODEL,
+            "prompt": "A quiet camera push-in",
+            "input_media": ["playground/uploads/stale.png"],
+        }
+    )
+    assert t2v.input_media is None
+
+    with pytest.raises(ValidationError, match="只接受一张"):
+        GenerateRequest.model_validate(
+            {
+                "mode": "i2v",
+                "model_id": FAST_MODEL,
+                "prompt": "A quiet camera push-in",
+                "input_media": ["one.png", "two.png"],
+            }
+        )
 
 
 def test_service_normalizes_legacy_empty_video_parameters_before_adapter_call():
@@ -168,6 +198,8 @@ def test_service_normalizes_legacy_empty_video_parameters_before_adapter_call():
         "duration": 5,
         "resolution": "720p",
         "aspect_ratio": "16:9",
+        "generate_audio": True,
+        "watermark": False,
     }
     assert captured["duration"] == 5
     assert captured["resolution"] == "720p"

@@ -1,15 +1,32 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from .config import MODEL_CAPABILITIES
 from .security import ADMIN_RESET_PASSWORD_MIN_LENGTH, DEFAULT_PASSWORD_MIN_LENGTH
 
 
-class UserPublic(BaseModel):
+class UtcResponseModel(BaseModel):
+    """Serialize every API datetime as an unambiguous UTC instant.
+
+    SQLite drops timezone metadata even for ``DateTime(timezone=True)``.
+    Treat those persisted values as UTC and always emit the RFC 3339 ``Z``
+    suffix so browser clients never reinterpret them as local wall time.
+    """
+
+    @field_serializer("*", when_used="json", check_fields=False)
+    def serialize_utc_datetimes(self, value: Any) -> Any:
+        if not isinstance(value, datetime):
+            return value
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class UserPublic(UtcResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -22,7 +39,7 @@ class UserPublic(BaseModel):
     updated_at: datetime
 
 
-class SessionPublic(BaseModel):
+class SessionPublic(UtcResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -57,7 +74,7 @@ class ChangePasswordRequest(BaseModel):
     )
 
 
-class TokenResponse(BaseModel):
+class TokenResponse(UtcResponseModel):
     access_token: str
     refresh_token: str
     token_type: Literal["bearer"] = "bearer"
@@ -67,23 +84,23 @@ class TokenResponse(BaseModel):
     user: UserPublic
 
 
-class SessionResponse(BaseModel):
+class SessionResponse(UtcResponseModel):
     user: UserPublic
     session: SessionPublic
 
 
-class MessageResponse(BaseModel):
+class MessageResponse(UtcResponseModel):
     message: str
     reauthentication_required: bool = False
 
 
-class BalanceResponse(BaseModel):
+class BalanceResponse(UtcResponseModel):
     available_credits: int
     reserved_credits: int
     total_credits: int
 
 
-class UsagePublic(BaseModel):
+class UsagePublic(UtcResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -101,7 +118,7 @@ class UsagePublic(BaseModel):
     settled_at: datetime | None
 
 
-class UsagePage(BaseModel):
+class UsagePage(UtcResponseModel):
     items: list[UsagePublic]
     next_cursor: str | None
 
@@ -141,7 +158,7 @@ class CreditAdjustmentRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
 
 
-class LedgerPublic(BaseModel):
+class LedgerPublic(UtcResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -215,7 +232,7 @@ class RateCardUpdate(BaseModel):
         return value
 
 
-class RateCardPublic(BaseModel):
+class RateCardPublic(UtcResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -235,7 +252,7 @@ class ReconcileUsageRequest(BaseModel):
     charged_units: int | None = Field(default=None, ge=0, le=2_000_000_000)
 
 
-class AuditPublic(BaseModel):
+class AuditPublic(UtcResponseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -248,13 +265,13 @@ class AuditPublic(BaseModel):
     created_at: datetime
 
 
-class ProviderModelStatus(BaseModel):
+class ProviderModelStatus(UtcResponseModel):
     model: str
     capability: Literal["chat", "image", "video"]
     configured: bool
 
 
-class ProviderConfigPublic(BaseModel):
+class ProviderConfigPublic(UtcResponseModel):
     version: int = Field(ge=0)
     source: Literal["environment", "managed"]
     base_url: str
@@ -300,10 +317,10 @@ class ReleaseSessionRequest(BaseModel):
     channel: Literal["stable"] = "stable"
 
 
-class ReleaseSessionResponse(BaseModel):
+class ReleaseSessionResponse(UtcResponseModel):
     manifest_url: str
 
 
-class IdempotentReplayResponse(BaseModel):
+class IdempotentReplayResponse(UtcResponseModel):
     idempotent_replay: Literal[True] = True
     usage_request: UsagePublic

@@ -6,7 +6,6 @@ import {
   X,
   Download,
   Crown,
-  Bookmark,
   Video,
   RotateCcw,
   Trash2,
@@ -14,12 +13,16 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import { playgroundApi } from '@/lib/api';
-import { useTranslations } from 'next-intl';
+import { playgroundApi, type PlaygroundLibraryCategory } from '@/lib/api';
+import { useLocale, useTranslations } from 'next-intl';
 import { getAssetUrl } from '@/lib/utils';
+import { appDateTimeFormatter, parseApiTimestamp } from '@/lib/dateTime';
+import { saveAuthenticatedMedia } from '@/lib/download';
+import { toast } from '@/store/toastStore';
 import PreviewImage from '@/components/shared/preview/PreviewImage';
 import { usePlaygroundStore, type PlaygroundGeneration } from './usePlaygroundStore';
 import { useModelDisplayName } from '@/lib/useModelDisplayName';
+import LibrarySaveMenu from './LibrarySaveMenu';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -39,15 +42,18 @@ interface DetailPanelProps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatTimestamp(dateStr: string): string {
-  const date = new Date(dateStr);
-  const yyyy = date.getFullYear();
-  const MM = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
-  return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
+function formatTimestamp(dateStr: string, locale: string): string {
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return '—';
+  return appDateTimeFormatter(locale, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 // ---------------------------------------------------------------------------
@@ -65,9 +71,13 @@ export default function DetailPanel({
 }: DetailPanelProps) {
   const t = useTranslations('playground');
   const tui = useTranslations('ui.playground');
+  const td = useTranslations('apiCalls');
+  const tp = useTranslations('preview');
+  const locale = useLocale();
   const modelDisplayName = useModelDisplayName();
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const updateGeneration = usePlaygroundStore((s) => s.updateGeneration);
   const removeGeneration = usePlaygroundStore((s) => s.removeGeneration);
@@ -77,11 +87,11 @@ export default function DetailPanel({
 
   // Always read the latest generation from store (so saved_to_library stays in sync)
   const generation = history.find((g) => g.id === generationProp.id) ?? generationProp;
-  const saved = generation.outputs[0]?.saved_to_library ?? false;
 
   // Determine media — focus the clicked output of a batch, else the first.
   const output =
     generation.outputs.find((o) => o.id === focusOutputId) ?? generation.outputs[0];
+  const saved = output?.saved_to_library ?? false;
   const featured = output ? featuredByGen[generation.id] === output.id : false;
   const isVideo =
     output?.media_type === 'video' ||
@@ -131,30 +141,35 @@ export default function DetailPanel({
     });
   };
 
-  const handleDownload = () => {
-    if (!mediaUrl) return;
-    const a = document.createElement('a');
-    a.href = mediaUrl;
-    a.download = output?.media_path?.split('/').pop() || 'download';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const handleDownload = async () => {
+    if (!mediaUrl || !output?.media_path || downloading) return;
+    setDownloading(true);
+    try {
+      await saveAuthenticatedMedia(
+        mediaUrl,
+        output.media_path.split('/').pop() || 'enmotion-output',
+      );
+    } catch {
+      toast.error(td('downloadError'));
+    } finally {
+      setDownloading(false);
+    }
   };
 
-  const handleSaveToLibrary = async () => {
-    if (!output || saving) return;
+  const handleSaveToLibrary = async (category: PlaygroundLibraryCategory) => {
+    if (!output || saving || saved) return;
     setSaving(true);
     try {
-      const newSaved = !saved;
-      if (newSaved) {
-        await playgroundApi.saveToLibrary(generation.id, output.id);
-      }
+      const result = await playgroundApi.saveToLibrary(generation.id, output.id, category);
       const updatedOutputs = generation.outputs.map((o) =>
-        o.id === output.id ? { ...o, saved_to_library: newSaved } : o
+        o.id === output.id
+          ? { ...o, saved_to_library: true, library_category: result.category }
+          : o
       );
       updateGeneration({ ...generation, outputs: updatedOutputs });
     } catch (err) {
       console.error('[DetailPanel] Save to library failed:', err);
+      toast.error(t('card.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -251,6 +266,7 @@ export default function DetailPanel({
           {hasPrev && (
             <button
               onClick={navigatePrev}
+              aria-label={tp('prev')}
               className="absolute left-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-elevated backdrop-blur-sm border border-glass-border flex items-center justify-center hover:bg-hover-bg transition-colors"
             >
               <ChevronLeft className="w-5 h-5 text-foreground/80" />
@@ -259,6 +275,7 @@ export default function DetailPanel({
           {hasNext && (
             <button
               onClick={navigateNext}
+              aria-label={tp('next')}
               className="absolute right-3 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-elevated backdrop-blur-sm border border-glass-border flex items-center justify-center hover:bg-hover-bg transition-colors"
             >
               <ChevronRight className="w-5 h-5 text-foreground/80" />
@@ -271,6 +288,7 @@ export default function DetailPanel({
           {/* Close button */}
           <button
             onClick={onClose}
+            aria-label={tp('close')}
             className="absolute top-4 right-4 z-10 w-8 h-8 rounded-lg bg-glass border border-glass-border flex items-center justify-center hover:bg-hover-bg transition-colors"
           >
             <X className="w-4 h-4 text-text-muted" />
@@ -290,7 +308,7 @@ export default function DetailPanel({
               {modelDisplayName(generation.model_id)}
             </h2>
             <p className="font-mono text-[0.625rem] text-text-muted mt-1.5">
-              {formatTimestamp(generation.created_at)}
+              {formatTimestamp(generation.created_at, locale)}
             </p>
           </div>
 
@@ -382,19 +400,13 @@ export default function DetailPanel({
                 <RotateCcw className="w-4 h-4" />
                 {tui('retry')}
               </button>
-            ) : output ? (
-              <button
-                onClick={handleSaveToLibrary}
-                disabled={saving}
-                className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium transition cursor-pointer disabled:opacity-50 disabled:cursor-wait ${
-                  saved
-                    ? 'bg-primary text-on-accent hover:bg-primary-hover'
-                    : 'bg-primary text-on-accent shadow-[var(--glow-primary)] hover:bg-primary-hover'
-                }`}
-              >
-                <Bookmark className={`w-4 h-4 ${saved ? 'fill-current' : ''}`} />
-                {saving ? t('detail.saving') : saved ? t('detail.savedCancel') : t('detail.saveToLibrary')}
-              </button>
+            ) : output && !isVideo ? (
+              <LibrarySaveMenu
+                saved={saved}
+                saving={saving}
+                variant="full"
+                onSelect={handleSaveToLibrary}
+              />
             ) : null}
 
             {/* Featured (best-of-batch) toggle — amber only when active */}
@@ -425,7 +437,9 @@ export default function DetailPanel({
                 {mediaUrl && (
                   <button
                     onClick={handleDownload}
-                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full bg-surface-inset border border-glass-border text-text-secondary text-[0.8125rem] font-medium hover:text-foreground hover:bg-hover-bg transition"
+                    disabled={downloading}
+                    aria-busy={downloading}
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full bg-surface-inset border border-glass-border text-text-secondary text-[0.8125rem] font-medium hover:text-foreground hover:bg-hover-bg transition disabled:opacity-50"
                   >
                     <Download className="w-4 h-4" />
                     {tui('download')}

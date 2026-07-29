@@ -25,7 +25,7 @@ from .models import (
     SaveToLibraryRequest,
     UpdateTemplateRequest,
 )
-from .service import PlaygroundService
+from .service import PlaygroundService, UnsupportedPlaygroundLibraryMediaError
 from .storage import PlaygroundStorage
 
 logger = get_logger(__name__)
@@ -226,13 +226,20 @@ def delete_generation(generation_id: str):
 def save_to_library(
     generation_id: str,
     output_id: str,
-    request: Optional[SaveToLibraryRequest] = None,
+    request: SaveToLibraryRequest,
 ):
     """Save a specific generation output to the project library."""
-    category = request.category if request else "general"
-    if not _current_service().save_to_library(generation_id, output_id, category):
+    try:
+        persisted_category = _current_service().save_to_library(
+            generation_id,
+            output_id,
+            request.category,
+        )
+    except UnsupportedPlaygroundLibraryMediaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if persisted_category is None:
         raise HTTPException(status_code=404, detail="未找到此生成记录或输出文件。")
-    return {"ok": True}
+    return {"ok": True, "category": persisted_category}
 
 
 router.add_api_route("/history", list_history, methods=["GET"])
@@ -357,6 +364,12 @@ def delete_upload(request: DeleteUploadRequest):
     except UnsafeMediaReferenceError as exc:
         logger.warning("Playground 媒体引用无效：%s", exc)
         raise HTTPException(status_code=400, detail=MEDIA_REFERENCE_MESSAGE) from exc
+    except RuntimeError as exc:
+        logger.warning("Playground 素材清理暂时无法验证引用：%s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="暂时无法安全清理素材，请稍后重试。",
+        ) from exc
     return {"ok": True}
 
 

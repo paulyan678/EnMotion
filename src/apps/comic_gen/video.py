@@ -1,6 +1,6 @@
 import os
 import uuid
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 from .models import GenerationStatus, Script, StoryboardFrame
 from ...models.newapi import NewAPIVideoModel
 from ...utils.newapi_models import VIDEO, get_model_spec, get_selected_model
@@ -203,10 +203,14 @@ class VideoGenerator:
 
         return frame
 
-    def generate_video(self, script: Script) -> Script:
+    def generate_video(
+        self,
+        script: Script,
+        model_id: Optional[str] = None,
+    ) -> Script:
         """Generate video clips for every storyboard frame in a script."""
         total_frames = len(script.frames)
-        model_id = script.model_settings.video_model
+        model_id = model_id or script.model_settings.video_model
 
         logger.info(f"Generating video clips for script: {script.title}")
         for index, frame in enumerate(script.frames):

@@ -126,7 +126,7 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
         const frameCount = frames.length;
         const hasArt = !!currentProject?.art_direction;
         const hasMerged = !!currentProject?.merged_video_url;
-        const statusFor = (id: string): { status?: "ready" | "idle" | "gated"; statusLabel?: string } => {
+        const statusFor = (id: string): { status?: "ready" | "warn" | "idle" | "gated"; statusLabel?: string } => {
             switch (id) {
                 case "art_direction":
                     return hasArt ? { status: "ready", statusLabel: tp("railArtReady") } : { status: "idle" };
@@ -140,7 +140,7 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                 case "assembly":
                     return hasMerged
                         ? { status: "ready", statusLabel: tp("railAssembled") }
-                        : (frameCount > 0 ? { status: "ready", statusLabel: tp("railAssemblyReady") } : { status: "gated", statusLabel: tp("railAssemblyGated") });
+                        : (frameCount > 0 ? { status: "warn", statusLabel: tp("railAssemblyReady") } : { status: "gated", statusLabel: tp("railAssemblyGated") });
                 default:
                     return {};
             }
@@ -347,6 +347,7 @@ function EntityExtractionConfirm() {
     const currentProject = useProjectStore((s) => s.currentProject);
     const confirmExtraction = useProjectStore((s) => s.confirmExtraction);
     const discardExtraction = useProjectStore((s) => s.discardExtraction);
+    const isApplying = useProjectStore((s) => s.isAnalyzing);
 
     const handleConfirm = async () => {
         try {
@@ -374,6 +375,7 @@ function EntityExtractionConfirm() {
                 }}
                 onConfirm={handleConfirm}
                 onDiscard={handleDiscard}
+                applying={isApplying}
             />
         ) : null
     );

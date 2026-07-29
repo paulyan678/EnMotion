@@ -7,6 +7,7 @@ import PromptTemplateModal from "@/components/modules/playground/PromptTemplateM
 import { usePlaygroundStore } from "@/components/modules/playground/usePlaygroundStore";
 import { playgroundApi } from "@/lib/api";
 import { renderWithIntl } from "@/test/renderWithIntl";
+import { useToastStore } from "@/store/toastStore";
 
 vi.mock("@/lib/api", () => ({
   API_URL: "http://127.0.0.1:17177",
@@ -16,6 +17,8 @@ vi.mock("@/lib/api", () => ({
     getTemplates: vi.fn().mockResolvedValue([]),
     getGenerationStatus: vi.fn(),
     getGeneration: vi.fn(),
+    uploadMedia: vi.fn(),
+    deleteUpload: vi.fn(),
   },
 }));
 
@@ -25,6 +28,7 @@ afterEach(() => {
     activeGenerationIds: [],
     isGenerating: false,
     prompt: "",
+    negativePrompt: "",
     mode: "t2i",
     modelId: "gpt-image-2",
     inputMedia: [],
@@ -35,6 +39,7 @@ afterEach(() => {
     showTemplateModal: false,
     templates: [],
   });
+  useToastStore.getState().clear();
   vi.clearAllMocks();
 });
 
@@ -163,6 +168,148 @@ describe("playground responsive layout", () => {
         parameters: effectiveParameters,
       }));
     });
+  });
+
+  it("visibly switches T2I reference uploads to I2I before composing the request", async () => {
+    const prompt = "Turn this harbor photo into a watercolor";
+    const uploadedPath = "playground/uploads/harbor.png";
+    usePlaygroundStore.setState({
+      mode: "t2i",
+      modelId: "gpt-image-2",
+      prompt,
+      inputMedia: [],
+      parameters: {},
+      queue: [],
+    });
+    vi.mocked(playgroundApi.uploadMedia).mockResolvedValueOnce({ path: uploadedPath });
+    vi.mocked(playgroundApi.generate).mockResolvedValueOnce({
+      id: "image-edit-generation",
+      mode: "i2i",
+      model_id: "gpt-image-2",
+      prompt,
+      input_media: [uploadedPath],
+      parameters: { size: "1536x1024", quality: "auto" },
+      batch_size: 1,
+      outputs: [],
+      status: "failed",
+      error: "Test terminal response",
+      created_at: "2026-07-29T04:00:00Z",
+    });
+
+    const { container } = renderWithIntl(<PlaygroundPage />);
+    const fileInput = container.querySelector('input[type="file"]');
+    expect(fileInput).toBeInstanceOf(HTMLInputElement);
+    fireEvent.change(fileInput!, {
+      target: { files: [new File(["image"], "harbor.png", { type: "image/png" })] },
+    });
+
+    await waitFor(() => {
+      expect(usePlaygroundStore.getState()).toMatchObject({
+        mode: "i2i",
+        inputMedia: [uploadedPath],
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成" }));
+
+    await waitFor(() => {
+      expect(playgroundApi.generate).toHaveBeenCalledWith(expect.objectContaining({
+        mode: "i2i",
+        model_id: "gpt-image-2",
+        input_media: [uploadedPath],
+      }));
+    });
+  });
+
+  it.each([
+    ["i2i" as const, "gpt-image-2", "图生图需要至少添加一张参考图片。"],
+    [
+      "i2v" as const,
+      "doubao-seedance-2-0-fast-260128",
+      "图生视频需要且只能添加一张首帧图片。",
+    ],
+  ])("blocks %s generation until its required image is present", (mode, modelId, reason) => {
+    usePlaygroundStore.setState({
+      mode,
+      modelId,
+      prompt: "Animate a lighthouse in a storm",
+      inputMedia: [],
+      queue: [],
+    });
+
+    renderWithIntl(<PlaygroundPage />);
+
+    const generate = screen.getByRole("button", { name: "生成" });
+    expect(generate).toBeDisabled();
+    expect(generate).toHaveAccessibleDescription(reason);
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    fireEvent.click(generate);
+    expect(playgroundApi.generate).not.toHaveBeenCalled();
+  });
+
+  it("hides and clears an unsupported negative prompt before dispatch", async () => {
+    const prompt = "A paper-cut forest at sunrise";
+    usePlaygroundStore.setState({
+      mode: "t2i",
+      modelId: "gpt-image-2",
+      prompt,
+      negativePrompt: "blurry, low contrast",
+      inputMedia: [],
+      queue: [],
+    });
+    vi.mocked(playgroundApi.generate).mockResolvedValueOnce({
+      id: "image-generation",
+      mode: "t2i",
+      model_id: "gpt-image-2",
+      prompt,
+      input_media: [],
+      parameters: { size: "1536x1024", quality: "auto" },
+      batch_size: 1,
+      outputs: [],
+      status: "failed",
+      error: "Test terminal response",
+      created_at: "2026-07-29T04:00:00Z",
+    });
+
+    renderWithIntl(<PlaygroundPage />);
+
+    expect(screen.queryByText("负面提示词")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(usePlaygroundStore.getState().negativePrompt).toBe("");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成" }));
+
+    await waitFor(() => {
+      expect(playgroundApi.generate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "t2i",
+          model_id: "gpt-image-2",
+          negative_prompt: undefined,
+        }),
+      );
+    });
+  });
+
+  it("shows a localized error when a queued request cannot be dispatched", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    usePlaygroundStore.setState({
+      mode: "t2i",
+      modelId: "gpt-image-2",
+      prompt: "A clockwork harbor",
+      inputMedia: [],
+      queue: [],
+    });
+    vi.mocked(playgroundApi.generate).mockRejectedValueOnce(new Error("offline"));
+
+    renderWithIntl(<PlaygroundPage />);
+    fireEvent.click(screen.getByRole("button", { name: "生成" }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+        kind: "error",
+        title: "生成任务启动失败，请重试。",
+      });
+    });
+    expect(usePlaygroundStore.getState().queue).toEqual([]);
   });
 
   it("keeps the history drawer within narrow viewports", () => {

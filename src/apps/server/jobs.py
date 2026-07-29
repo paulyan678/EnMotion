@@ -93,6 +93,15 @@ logger = logging.getLogger(__name__)
 GENERATION_JOB_FAILED_MESSAGE = "生成任务失败，请稍后重试。"
 STORYBOARD_JOB_FAILED_MESSAGE = "分镜生成失败，请稍后重试。"
 PLAYGROUND_JOB_FAILED_MESSAGE = "生成失败，请稍后重试。"
+ASSEMBLY_INPUTS_CHANGED_CODE = "assembly_inputs_changed"
+
+
+def _is_assembly_mutation_conflict(exc: BaseException) -> bool:
+    # Imported lazily to avoid coupling worker module initialization to the
+    # desktop pipeline's provider stack.
+    from ..comic_gen.pipeline import AssemblyMutationConflictError
+
+    return isinstance(exc, AssemblyMutationConflictError)
 
 
 def _public_job_failure(exc: BaseException, fallback: str) -> str:
@@ -102,6 +111,8 @@ def _public_job_failure(exc: BaseException, fallback: str) -> str:
         return str(exc)
     if isinstance(exc, StorageQuotaExceededError):
         return "存储空间不足，请删除部分文件后重试。"
+    if _is_assembly_mutation_conflict(exc):
+        return str(exc)
     return fallback
 
 
@@ -125,7 +136,9 @@ def _as_bool(value: str | None) -> bool:
 
 celery_app = Celery(
     "enmotion",
-    broker=os.getenv("ENMOTION_QUEUE_REDIS_URL", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")),
+    broker=os.getenv(
+        "ENMOTION_QUEUE_REDIS_URL", os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    ),
 )
 celery_app.conf.update(
     accept_content=["json"],
@@ -1322,6 +1335,11 @@ def job_to_dict(record: GenerationJob, *, queue_position: int | None = None) -> 
 def _job_failure_result(exc: Exception) -> dict[str, str] | None:
     if isinstance(exc, NewAPIProviderError):
         return exc.job_result()
+    if _is_assembly_mutation_conflict(exc):
+        return {
+            "error_code": ASSEMBLY_INPUTS_CHANGED_CODE,
+            "error_diagnostic": str(exc),
+        }
     return None
 
 
@@ -1582,7 +1600,9 @@ def _finish_job_once(
 
 
 def _terminal_outbox_directory() -> Path:
-    return Path(os.getenv("ENMOTION_DATA_DIR", "data")).expanduser().resolve() / "job-terminal-outbox"
+    return (
+        Path(os.getenv("ENMOTION_DATA_DIR", "data")).expanduser().resolve() / "job-terminal-outbox"
+    )
 
 
 def _terminal_intent_path(job_id: str) -> Path:
@@ -2106,16 +2126,12 @@ def recover_stale_reservations(
                     continue
                 cleanup_error = _cleanup_stale_workspace_task(record)
                 record.status = "failed"
-                interrupted_message = (
-                    "任务在进入生成队列前中断，请重试此操作。"
-                )
+                interrupted_message = "任务在进入生成队列前中断，请重试此操作。"
                 if record.job_type == "video":
                     record.error = VIDEO_QUEUE_UNAVAILABLE_MESSAGE
                     record.result = {
                         "error_code": VIDEO_QUEUE_UNAVAILABLE_CODE,
-                        "error_diagnostic": (
-                            interrupted_message
-                        )[:4000],
+                        "error_diagnostic": (interrupted_message)[:4000],
                     }
                 else:
                     record.error = interrupted_message
@@ -2151,9 +2167,7 @@ def _cleanup_stale_workspace_task(record: GenerationJob) -> str | None:
                 payload.get("task_id", record.id),
                 VIDEO_QUEUE_UNAVAILABLE_MESSAGE,
                 error_code=VIDEO_QUEUE_UNAVAILABLE_CODE,
-                error_diagnostic=(
-                    "任务在进入生成队列前中断，请重试此操作。"
-                ),
+                error_diagnostic=("任务在进入生成队列前中断，请重试此操作。"),
                 overwrite=True,
             )
         elif record.job_type == "playground":

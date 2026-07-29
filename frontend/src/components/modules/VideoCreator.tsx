@@ -30,6 +30,7 @@ import {
     isApprovedModelForCapability,
 } from "@/lib/newApiModels";
 import { VIDEO_I2V_MODELS } from "@/lib/modelCatalog";
+import { isHybridModeEnabled } from "@/lib/serverMode";
 import {
     useProjectStore,
     type Project,
@@ -266,14 +267,16 @@ export default function VideoCreator({
         setIsSubmitting(true);
         setInlineError(null);
         try {
-            const secretField = getSecretFieldForModel(params.model, "video");
-            const env = await api.getEnvConfig();
-            const configured = configuredSecretFields(env as Record<string, unknown>);
-            if (!secretField || !configured[secretField]) {
-                setInlineError(t("configureModelKey", {
-                    key: locale === "zh" ? t("selectedModelKey") : (secretField || t("selectedModelKey")),
-                }));
-                return;
+            if (!isHybridModeEnabled()) {
+                const secretField = getSecretFieldForModel(params.model, "video");
+                const env = await api.getEnvConfig();
+                const configured = configuredSecretFields(env as Record<string, unknown>);
+                if (!secretField || !configured[secretField]) {
+                    setInlineError(t("configureModelKey", {
+                        key: locale === "zh" ? t("selectedModelKey") : (secretField || t("selectedModelKey")),
+                    }));
+                    return;
+                }
             }
 
             if (!await savePrompt(prompt)) return;

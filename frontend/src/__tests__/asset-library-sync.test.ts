@@ -69,7 +69,12 @@ beforeEach(() => {
   useProjectStore.setState({
     projects: [baseProject],
     currentProject: baseProject,
-    pendingExtraction: { characters: [], scenes: [], props: [] },
+    pendingExtraction: {
+      characters: [],
+      scenes: [],
+      props: [],
+      preview_revision: "preview-revision-1",
+    },
     pendingExtractionScript: "new",
     seriesList: [],
     currentSeries: null,
@@ -168,7 +173,11 @@ describe("asset library invalidation", () => {
 
     await useProjectStore.getState().confirmExtraction();
 
-    expect(api.reparseProject).toHaveBeenCalledWith(baseProject.id, "new");
+    expect(api.reparseProject).toHaveBeenCalledWith(
+      baseProject.id,
+      "new",
+      "preview-revision-1",
+    );
     expect(api.getProject).toHaveBeenCalledWith(baseProject.id);
     expect(api.getSeries).toHaveBeenCalledWith(series.id);
     expect(useProjectStore.getState().currentProject?.characters).toEqual(

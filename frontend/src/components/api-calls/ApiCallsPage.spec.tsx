@@ -111,6 +111,31 @@ const completedWithMedia: ApiCallActivity = {
   finished_at: "2026-07-21T08:00:12.000Z",
 };
 
+const failedBilling: ApiCallActivity = {
+  id: "billing:usage-failed",
+  task_id: "usage-failed",
+  type: "images.generations",
+  status: "failed",
+  category: "image",
+  source: "workspace",
+  progress: 0,
+  attempts: 1,
+  created_at: "2026-07-21T08:00:00.000Z",
+  updated_at: "2026-07-21T08:00:05.000Z",
+  finished_at: "2026-07-21T08:00:05.000Z",
+  managed_read_only: true,
+  activity_kind: "billing",
+  billing_status: "failed",
+};
+
+const canceledBilling: ApiCallActivity = {
+  ...failedBilling,
+  id: "billing:usage-canceled",
+  task_id: "usage-canceled",
+  status: "canceled",
+  billing_status: "cancelled",
+};
+
 describe("API Calls dashboard", () => {
   beforeEach(() => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([running, queued, failed]);
@@ -329,6 +354,46 @@ describe("API Calls dashboard", () => {
     expect(await screen.findByText(/可能看起来像真实人物/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开动态参考生成的详情" }));
     expect(screen.getByText("技术详情")).toBeInTheDocument();
+  });
+
+  it("shows a failed billing outcome without presenting it as a generation failure", async () => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([failedBilling]);
+    renderWithIntl(<ApiCallsPage />, { locale: "en" });
+
+    const card = await screen.findByRole("button", { name: "Open details for Image generation" });
+    expect(within(card).getByText("Billing record")).toBeInTheDocument();
+    expect(within(card).getByText("Billing outcome: Failed")).toBeInTheDocument();
+    expect(within(card).getByText("Failed")).toBeInTheDocument();
+    expect(within(card).queryByText("Succeeded")).not.toBeInTheDocument();
+    expect(within(card).queryByText("The request failed. Check the input and try again.")).not.toBeInTheDocument();
+
+    fireEvent.click(card);
+    const dialog = screen.getByRole("dialog", { name: "Image generation" });
+    expect(within(dialog).getByText("Billing outcome")).toBeInTheDocument();
+    expect(within(dialog).getByText(
+      "This account record tracks credit settlement, not generation progress or outputs.",
+    )).toBeInTheDocument();
+    expect(within(dialog).queryByText("Failure reason:")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Processing timeline")).not.toBeInTheDocument();
+  });
+
+  it("shows a canceled billing outcome in Chinese on both card and detail", async () => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([canceledBilling]);
+    renderWithIntl(<ApiCallsPage />, { locale: "zh" });
+
+    const card = await screen.findByRole("button", { name: "打开图像生成的详情" });
+    expect(within(card).getByText("账务记录")).toBeInTheDocument();
+    expect(within(card).getByText("账务结果：已取消")).toBeInTheDocument();
+    expect(within(card).getByText("已取消")).toBeInTheDocument();
+    expect(within(card).queryByText("已成功")).not.toBeInTheDocument();
+
+    fireEvent.click(card);
+    const dialog = screen.getByRole("dialog", { name: "图像生成" });
+    expect(within(dialog).getByText("账务结果")).toBeInTheDocument();
+    expect(within(dialog).getByText(
+      "此账户记录仅反映额度结算，不代表生成进度或生成结果。",
+    )).toBeInTheDocument();
+    expect(within(dialog).queryByText("处理时间线")).not.toBeInTheDocument();
   });
 
   it("renders persisted image and video media, posters, and individual downloads", async () => {

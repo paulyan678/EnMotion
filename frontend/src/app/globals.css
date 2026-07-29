@@ -268,12 +268,12 @@ html.atelier-light {
   --color-glass:       rgba(255, 255, 255, 0.55);
   --color-overlay:     rgba(36, 31, 26, 0.25);
 
-  --color-border-default: rgba(36, 31, 26, 0.12);
-  --color-border-subtle:  rgba(36, 31, 26, 0.07);
+  --color-border-default: rgba(36, 31, 26, 0.20);
+  --color-border-subtle:  rgba(36, 31, 26, 0.12);
 
   --color-text-primary:   #241f1a;
-  --color-text-secondary: #5d564d;
-  --color-text-muted:     #6d655b;
+  --color-text-secondary: #4f4942;
+  --color-text-muted:     #5f574d;
 
   --color-primary:       var(--seed-primary);
   --color-primary-hover: var(--seed-primary-2);
@@ -347,12 +347,12 @@ html.brand-light {
   --color-glass:       rgba(0, 0, 0, 0.03);
   --color-overlay:     rgba(0, 0, 0, 0.2);
 
-  --color-border-default: rgba(0, 0, 0, 0.1);
-  --color-border-subtle:  rgba(0, 0, 0, 0.06);
+  --color-border-default: rgba(0, 0, 0, 0.18);
+  --color-border-subtle:  rgba(0, 0, 0, 0.10);
 
   --color-text-primary:   #1a1a1a;
-  --color-text-secondary: #6b7280;
-  --color-text-muted:     #657080;
+  --color-text-secondary: #4b5563;
+  --color-text-muted:     #596273;
 
   --color-primary:       var(--seed-primary);
   --color-primary-hover: var(--seed-primary-2);

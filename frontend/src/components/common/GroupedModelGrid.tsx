@@ -132,7 +132,9 @@ export default function GroupedModelGrid({
     const groups = useMemo(() => buildGroups(models), [models]);
     const accentClasses = ACCENT_CLASSES[accent];
 
-    const gridCols = columns === 3 ? 'grid-cols-3' : 'grid-cols-2';
+    const gridCols = columns === 3
+        ? 'grid-cols-1 sm:grid-cols-3'
+        : 'grid-cols-1 sm:grid-cols-2';
 
     return (
         <div className={`space-y-4${className ? ` ${className}` : ''}`}>
@@ -154,8 +156,10 @@ export default function GroupedModelGrid({
                             return (
                                 <button
                                     key={model.id}
+                                    type="button"
+                                    aria-pressed={isSelected}
                                     onClick={() => onSelect(model.id)}
-                                    className={`relative flex flex-col items-start p-3.5 rounded-lg border transition-all text-left ${
+                                    className={`relative flex min-h-11 flex-col items-start rounded-lg border p-3.5 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                                         isSelected
                                             ? accentClasses.selected
                                             : 'border-glass-border bg-glass hover:-translate-y-0.5 hover:border-primary/40'

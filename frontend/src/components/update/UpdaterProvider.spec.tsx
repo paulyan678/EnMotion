@@ -124,5 +124,9 @@ describe("desktop updater UI", () => {
 
     expect(await screen.findByRole("button", { name: "Retry update" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Retry update" })).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Confirm that you are signed in and online, then retry.",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("version 1.0.0");
   });
 });
