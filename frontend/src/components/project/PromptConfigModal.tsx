@@ -6,7 +6,7 @@ import { X, FileText, RotateCcw, ChevronDown, ChevronRight, Loader2 } from 'luci
 import { useTranslations } from 'next-intl';
 import { useProjectStore } from '@/store/projectStore';
 import { api } from '@/lib/api';
-import { DEFAULT_ACTIVE_MODELS, getApprovedModels, getModelTranslationKey, normalizeActiveModel } from '@/lib/newApiModels';
+import { getApprovedModels, getModelTranslationKey } from '@/lib/newApiModels';
 import ModalPortal from '@/components/common/ModalPortal';
 
 interface PromptConfigModalProps {
@@ -41,37 +41,57 @@ export default function PromptConfigModal({ isOpen, onClose }: PromptConfigModal
     const tc = useTranslations("common");
     const tm = useTranslations("models");
 
-    const [config, setConfig] = useState<{ storyboard_polish: string; video_polish: string; polish_model: string }>({ storyboard_polish: '', video_polish: '', polish_model: DEFAULT_ACTIVE_MODELS.chat });
+    const [config, setConfig] = useState<{ storyboard_polish: string; video_polish: string; polish_model: string }>({ storyboard_polish: '', video_polish: '', polish_model: '' });
     const [defaults, setDefaults] = useState<PromptDefaults | null>(null);
     const [expandedDefault, setExpandedDefault] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [wasOpen, setWasOpen] = useState(isOpen);
+    const [openRevision, setOpenRevision] = useState(0);
+    const [loadedRequestKey, setLoadedRequestKey] = useState<string | null>(null);
+
+    if (isOpen !== wasOpen) {
+        setWasOpen(isOpen);
+        if (isOpen) setOpenRevision((revision) => revision + 1);
+    }
+
+    const projectId = currentProject?.id ?? "";
+    const requestKey = `${projectId}:${openRevision}`;
+    const isLoading = isOpen && loadedRequestKey !== requestKey;
 
     useEffect(() => {
-        if (isOpen && currentProject) {
-            setIsLoading(true);
-            setLoadError(null);
-            setExpandedDefault(null);
-            api.getPromptConfig(currentProject.id)
-                .then((data) => {
-                    setConfig({
-                        storyboard_polish: data.prompt_config?.storyboard_polish ?? '',
-                        video_polish: data.prompt_config?.video_polish ?? '',
-                        polish_model: normalizeActiveModel('chat', data.prompt_config?.polish_model),
-                    });
-                    setDefaults({
-                        storyboard_polish: data.defaults?.storyboard_polish ?? '',
-                        video_polish: data.defaults?.video_polish ?? '',
-                    });
-                })
-                .catch((err) => {
-                    console.error("Failed to load prompt config:", err);
-                    setLoadError(t("promptLoadFailed"));
-                })
-                .finally(() => setIsLoading(false));
-        }
-    }, [isOpen, currentProject?.id]);
+        if (!isOpen || !projectId) return;
+        let cancelled = false;
+        api.getPromptConfig(projectId)
+            .then((data) => {
+                if (cancelled) return;
+                setLoadError(null);
+                setExpandedDefault(null);
+                setConfig({
+                    storyboard_polish: data.prompt_config?.storyboard_polish ?? '',
+                    video_polish: data.prompt_config?.video_polish ?? '',
+                    // Empty is the persisted inheritance sentinel. Do not
+                    // normalize it into the catalog default merely by
+                    // opening and saving this dialog.
+                    polish_model: data.prompt_config?.polish_model ?? '',
+                });
+                setDefaults({
+                    storyboard_polish: data.defaults?.storyboard_polish ?? '',
+                    video_polish: data.defaults?.video_polish ?? '',
+                });
+            })
+            .catch((err) => {
+                if (cancelled) return;
+                console.error("Failed to load prompt config:", err);
+                setLoadError(t("promptLoadFailed"));
+            })
+            .finally(() => {
+                if (!cancelled) setLoadedRequestKey(requestKey);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen, projectId, requestKey]);
 
     const handleSave = async () => {
         if (!currentProject) return;
@@ -168,6 +188,7 @@ export default function PromptConfigModal({ isOpen, onClose }: PromptConfigModal
                                         onChange={(e) => setConfig(prev => ({ ...prev, polish_model: e.target.value }))}
                                         className="min-h-11 w-full rounded-lg border border-glass-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/40"
                                     >
+                                        <option value="">{t("polishModelInherit")}</option>
                                         {CHAT_MODELS.map((model) => (
                                             <option key={model.id} value={model.id}>{tm(`${getModelTranslationKey(model.id)}.name`)}</option>
                                         ))}

@@ -20,6 +20,22 @@
 # import_file_preview, import_file_confirm, upload_t2i_frame,
 # analyze_script_for_styles. All others are `def` for a reason.
 # ─────────────────────────────────────────────────────────────────────────────
+import asyncio
+import hashlib
+import json
+import logging
+import mimetypes
+import os
+import tempfile
+import threading
+import time
+import traceback
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv, set_key
 from fastapi import (
     BackgroundTasks,
     FastAPI,
@@ -30,47 +46,26 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import Optional, Dict, List, Any
-from pathlib import Path
-import asyncio
-import hashlib
-import mimetypes
-import time
-from concurrent.futures import ThreadPoolExecutor
-import json
-import os
-import tempfile
-import threading
-import uuid
-import logging
-import traceback
-from .pipeline import (
-    AssetTypeChangeConflictError,
-    ComicGenPipeline,
-    InvalidAssetAttributesError,
-    LibraryAssetInUseError,
+
+from ...utils import setup_logging
+from ...utils.deployment_security import (
+    cors_middleware_options,
+    diagnostic_access_allowed,
+    is_diagnostic_path,
 )
-from .models import (
-    ArtDirection,
-    CameraMovementType,
-    PromptConfig,
-    Script,
-    Series,
-    StoryboardFrame,
-    VideoTask,
-)
-from .llm import (
-    DEFAULT_ENTITY_EXTRACTION_PROMPT,
-    DEFAULT_STORYBOARD_EXTRACTION_PROMPT,
-    DEFAULT_STORYBOARD_POLISH_PROMPT,
-    DEFAULT_STYLE_ANALYSIS_PROMPT,
-    DEFAULT_VIDEO_POLISH_PROMPT,
-    FrameRefineError,
-    ScriptProcessor,
-    StyleAnalysisError,
+from ...utils.newapi_models import (
+    CHAT,
+    IMAGE,
+    MODEL_API_KEY_FIELDS,
+    VIDEO,
+    MissingNewAPIKeyError,
+    get_model_spec,
+    get_selected_model,
+    migrate_legacy_newapi_environment,
+    public_model_status,
 )
 from ...utils.oss_utils import (
     OSSImageUploader,
@@ -78,6 +73,7 @@ from ...utils.oss_utils import (
     sign_oss_urls_in_data,
 )
 from ...utils.uploads import (
+    AUDIO_UPLOAD_POLICY,
     GENERIC_MEDIA_UPLOAD_POLICY,
     IMAGE_UPLOAD_POLICY,
     TEXT_IMPORT_UPLOAD_POLICY,
@@ -85,28 +81,8 @@ from ...utils.uploads import (
     read_upload_bytes,
     save_upload_file,
 )
-from ...utils.deployment_security import (
-    cors_middleware_options,
-    diagnostic_access_allowed,
-    is_diagnostic_path,
-)
-from ...utils import setup_logging
-from ...utils.newapi_models import (
-    CHAT,
-    IMAGE,
-    VIDEO,
-    MODEL_API_KEY_FIELDS,
-    MissingNewAPIKeyError,
-    get_model_spec,
-    get_selected_model,
-    migrate_legacy_newapi_environment,
-    public_model_status,
-)
-from ..web_runtime.context import get_tenant
-from ..web_runtime.pipeline_registry import (
-    PipelineProxy,
-    WorkspacePipelineRegistry,
-)
+from ..hybrid import include_hybrid_mode, workspace_isolation_enabled
+from ..server import include_server_mode, server_mode_enabled
 from ..web_runtime.asset_library_feed import (
     AssetLibraryFeedResponse,
     AssetLibraryFeedResponseV3,
@@ -119,18 +95,48 @@ from ..web_runtime.asset_library_feed import (
     query_asset_library_snapshot,
     responsive_asset_library_page,
 )
-from ..web_runtime.file_lock import interprocess_lock
 from ..web_runtime.asset_library_metrics import ASSET_LIBRARY_FEED_LATENCY
+from ..web_runtime.context import get_tenant
+from ..web_runtime.file_lock import interprocess_lock
+from ..web_runtime.pipeline_registry import (
+    PipelineProxy,
+    WorkspacePipelineRegistry,
+)
 from ..web_runtime.workspace_snapshot import (
     WorkspaceSnapshotUnavailable,
     publish_workspace_snapshot,
     read_asset_library_snapshot,
     workspace_ids_with_metadata,
 )
-from ..hybrid import include_hybrid_mode, workspace_isolation_enabled
-from ..server import include_server_mode, server_mode_enabled
-from fastapi.responses import JSONResponse
-from dotenv import load_dotenv, set_key
+from .llm import (
+    DEFAULT_ENTITY_EXTRACTION_PROMPT,
+    DEFAULT_STORYBOARD_EXTRACTION_PROMPT,
+    DEFAULT_STORYBOARD_POLISH_PROMPT,
+    DEFAULT_STYLE_ANALYSIS_PROMPT,
+    DEFAULT_VIDEO_POLISH_PROMPT,
+    FrameRefineError,
+    ScriptProcessor,
+    StyleAnalysisError,
+)
+from .models import (
+    ArtDirection,
+    CameraMovementType,
+    ModelSettings,
+    PromptConfig,
+    Script,
+    Series,
+    StoryboardFrame,
+    VideoTask,
+    canonical_model_setting_overrides,
+)
+from .pipeline import (
+    AssemblyMutationConflictError,
+    AssemblyOperationInProgressError,
+    AssetTypeChangeConflictError,
+    ComicGenPipeline,
+    InvalidAssetAttributesError,
+    LibraryAssetInUseError,
+)
 
 app = FastAPI(title="EnMotion Local API")
 logger = logging.getLogger(__name__)
@@ -283,9 +289,7 @@ async def add_cache_control_header(request: Request, call_next):
         if workspace_isolation_enabled():
             existing_vary = response.headers.get("Vary")
             vary_values = {
-                value.strip()
-                for value in (existing_vary or "").split(",")
-                if value.strip()
+                value.strip() for value in (existing_vary or "").split(",") if value.strip()
             }
             vary_values.add("Cookie")
             response.headers["Vary"] = ", ".join(sorted(vary_values))
@@ -301,6 +305,7 @@ async def attach_request_id(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     return response
+
 
 # Serve only media roots. In desktop mode they remain static mounts. Server mode
 # resolves the same URL shapes inside the authenticated user's private workspace.
@@ -544,9 +549,7 @@ def reclaim_deleted_media(deleted_value: Any) -> List[str]:
         assert tenant is not None
         from ..server.workspace_storage import defer_workspace_file_deletions
 
-        delete_callback = lambda paths: defer_workspace_file_deletions(
-            tenant.workspace_id, paths
-        )
+        delete_callback = lambda paths: defer_workspace_file_deletions(tenant.workspace_id, paths)
     return reclaim_unreferenced_workspace_media(
         deleted_value=deleted_value,
         remaining_values=remaining_values,
@@ -661,9 +664,7 @@ def publish_workspace_job_reservations(records):
     from ..server.jobs import JobQueueUnavailableError, publish_reserved_jobs
 
     try:
-        return publish_reserved_jobs(
-            get_database(), job_ids=[record.id for record in records]
-        )
+        return publish_reserved_jobs(get_database(), job_ids=[record.id for record in records])
     except JobQueueUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -834,8 +835,9 @@ def debug_config(request: Request):
             "OSS_ENDPOINT": bool(os.getenv("OSS_ENDPOINT")),
             "OSS_BUCKET_NAME": bool(os.getenv("OSS_BUCKET_NAME")),
             "ALIBABA_CLOUD_ACCESS_KEY_ID": bool(os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID")),
-        }
+        },
     }
+
 
 def signed_response(data):
     """Helper to sign OSS URLs in data before returning to frontend.
@@ -850,7 +852,9 @@ def signed_response(data):
     if hasattr(data, "model_dump"):
         processed_data = data.model_dump()
     elif isinstance(data, list):
-        processed_data = [item.model_dump() if hasattr(item, "model_dump") else item for item in data]
+        processed_data = [
+            item.model_dump() if hasattr(item, "model_dump") else item for item in data
+        ]
     else:
         processed_data = data
 
@@ -903,6 +907,7 @@ def _serialize_resolved_assets(
 # Shared Request Models (used by both Project and Series endpoints)
 # ============================================================
 
+
 class GenerateAssetRequest(BaseModel):
     asset_id: str = Field(max_length=128)
     asset_type: str = Field(max_length=32)
@@ -935,14 +940,17 @@ class GenerateAssetRequest(BaseModel):
             )
         return value
 
+
 class ToggleLockRequest(BaseModel):
     asset_id: str
     asset_type: str
+
 
 class UpdateAssetImageRequest(BaseModel):
     asset_id: str
     asset_type: str
     image_url: str
+
 
 class UpdateAssetAttributesRequest(BaseModel):
     asset_id: str = Field(max_length=128)
@@ -972,9 +980,7 @@ def health_check(request: Request):
                 # Health is public in server mode and therefore has no tenant
                 # context. Never reach through the fail-closed pipeline proxy.
                 "studio_projects": (
-                    None
-                    if workspace_isolation_enabled()
-                    else len(getattr(pipeline, "scripts", {}))
+                    None if workspace_isolation_enabled() else len(getattr(pipeline, "scripts", {}))
                 ),
             }
         )
@@ -1019,6 +1025,7 @@ def diagnose_log_tail(request: Request, lines: int = 200):
     a runaway client can't hose the process."""
     require_server_admin(request)
     from ...utils import get_log_dir
+
     capped = max(1, min(int(lines or 200), 1000))
     log_path = os.path.join(get_log_dir(), "app.log")
     if not os.path.exists(log_path):
@@ -1032,11 +1039,7 @@ def diagnose_log_tail(request: Request, lines: int = 200):
         raise HTTPException(status_code=500, detail=f"Could not read log: {exc}")
     tail = all_lines[-capped:] if len(all_lines) > capped else all_lines
     error_keywords = ("ERROR", "Exception", "Failed", "Unauthorized", "Traceback")
-    errors = [
-        ln.rstrip("\n")
-        for ln in tail
-        if any(k in ln for k in error_keywords)
-    ][-30:]
+    errors = [ln.rstrip("\n") for ln in tail if any(k in ln for k in error_keywords)][-30:]
     return {
         "path": log_path,
         "total_lines": len(all_lines),
@@ -1060,9 +1063,7 @@ def upload_file(file: UploadFile = File(...)):
 
         # Try uploading to OSS
         oss_url = OSSImageUploader().upload_image(saved.path)
-        reference = authoritative_media_reference(
-            saved.path, current_output_root(), oss_url
-        )
+        reference = authoritative_media_reference(saved.path, current_output_root(), oss_url)
         payload = {"url": reference}
         return signed_response(payload) if oss_url and reference == oss_url else payload
     except HTTPException:
@@ -1083,7 +1084,7 @@ def upload_asset(
     asset_id: str,
     upload_type: str,
     description: Optional[str] = None,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
 ):
     """
     Uploads an image as a new variant for an asset.
@@ -1101,9 +1102,7 @@ def upload_asset(
         # 2. Upload to OSS
         uploader = OSSImageUploader()
         oss_url = uploader.upload_image(saved.path)
-        media_reference = authoritative_media_reference(
-            saved.path, current_output_root(), oss_url
-        )
+        media_reference = authoritative_media_reference(saved.path, current_output_root(), oss_url)
 
         # 3. Update asset with new variant
         updated_script = pipeline.add_uploaded_asset_variant(
@@ -1112,7 +1111,7 @@ def upload_asset(
             asset_id=asset_id,
             upload_type=upload_type,
             image_url=media_reference,
-            description=description
+            description=description,
         )
 
         if not updated_script:
@@ -1137,6 +1136,11 @@ class CreateProjectRequest(BaseModel):
     # the next episode of this series (episode_number = current max + 1).
     # Omit for a standalone project — behavior unchanged.
     series_id: Optional[str] = Field(default=None, max_length=128)
+    # Standalone creation defaults must arrive before the initial entity
+    # extraction. Series episodes intentionally ignore these and inherit from
+    # their parent Series instead.
+    model_settings: Optional[ModelSettings] = None
+    prompt_config: Optional[PromptConfig] = None
 
 
 @app.post("/projects")
@@ -1156,6 +1160,8 @@ async def create_project(request: CreateProjectRequest, skip_analysis: bool = Fa
             skip_analysis,
             request.workflow_mode,
             request.series_id,
+            request.model_settings,
+            request.prompt_config,
         )
     except (ValueError, MissingNewAPIKeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1164,6 +1170,7 @@ async def create_project(request: CreateProjectRequest, skip_analysis: bool = Fa
 
 class ReparseProjectRequest(BaseModel):
     text: str = Field(max_length=2_000_000)
+    preview_revision: str = Field("", max_length=128)
 
 
 class UpdateScriptTextRequest(BaseModel):
@@ -1191,10 +1198,21 @@ def update_script_text(script_id: str, request: UpdateScriptTextRequest):
 async def reparse_project(script_id: str, request: ReparseProjectRequest):
     """Re-parses the text for an existing project, replacing all entities."""
     try:
-        result = await asyncio.to_thread(pipeline.reparse_project, script_id, request.text)
+        if not request.preview_revision:
+            raise HTTPException(
+                status_code=409, detail="Entity preview is required before applying changes"
+            )
+        result = await asyncio.to_thread(
+            pipeline.reparse_project, script_id, request.text, request.preview_revision
+        )
         return get_project(result.id)
+    except HTTPException:
+        raise
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        status_code = 409 if str(e).startswith("Entity preview") else 404
+        raise HTTPException(status_code=status_code, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1203,11 +1221,14 @@ async def reparse_project(script_id: str, request: ReparseProjectRequest):
 async def extract_preview(script_id: str, request: ReparseProjectRequest):
     """Dry-run entity extraction — returns entities without saving."""
     try:
-        result = await asyncio.to_thread(pipeline.extract_preview, script_id, request.text)
+        result, revision = await asyncio.to_thread(
+            pipeline.extract_preview, script_id, request.text
+        )
         return {
             "characters": [c.dict() for c in result.characters],
             "scenes": [s.dict() for s in result.scenes],
             "props": [p.dict() for p in result.props],
+            "preview_revision": revision,
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1238,6 +1259,7 @@ def toggle_project_starred(script_id: str):
 # Series CRUD
 # ============================================================
 
+
 class CreateSeriesRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=20_000)
@@ -1248,6 +1270,8 @@ class CreateSeriesRequest(BaseModel):
     # PR-3e (r2v-workflow-v3) — Visual control preference.
     # 'r2v' (节奏优先, default) | 'i2v' (画面优先).
     default_generation_mode: str = Field(default="r2v", max_length=32)
+    model_settings: Optional[ModelSettings] = None
+    prompt_config: Optional[PromptConfig] = None
 
 
 class UpdateSeriesRequest(BaseModel):
@@ -1270,6 +1294,8 @@ def create_series(request: CreateSeriesRequest):
         request.workflow_mode,
         request.content_mode,
         request.default_generation_mode,
+        request.model_settings,
+        request.prompt_config,
     )
     return signed_response(series)
 
@@ -1342,9 +1368,7 @@ def delete_series(series_id: str, delete_episodes: bool = False):
         series = pipeline.get_series(series_id)
         if not series:
             raise ValueError("Series not found")
-        deleted_episodes = pipeline.delete_series(
-            series_id, delete_episodes=delete_episodes
-        )
+        deleted_episodes = pipeline.delete_series(series_id, delete_episodes=delete_episodes)
         deleted_snapshot = {
             "series": series.model_dump(),
             "episodes": [episode.model_dump() for episode in deleted_episodes],
@@ -1372,7 +1396,9 @@ class AddEpisodeRequest(BaseModel):
 def add_episode_to_series(series_id: str, request: AddEpisodeRequest):
     """Add an existing project as an episode to a Series."""
     try:
-        series = pipeline.add_episode_to_series(series_id, request.script_id, request.episode_number)
+        series = pipeline.add_episode_to_series(
+            series_id, request.script_id, request.episode_number
+        )
         return signed_response(series)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1418,7 +1444,16 @@ def get_series_prompt_config(series_id: str):
 def update_series_prompt_config(series_id: str, config: PromptConfig):
     """Update Series-level prompt config."""
     try:
-        series = pipeline.update_series(series_id, {"prompt_config": config})
+        existing = pipeline.get_series(series_id)
+        if not existing:
+            raise ValueError("Series not found")
+        updates = {
+            field: getattr(config, field)
+            for field in config.model_fields_set
+            if field in PromptConfig.model_fields
+        }
+        merged_config = PromptConfig(**{**existing.prompt_config.model_dump(), **updates})
+        series = pipeline.update_series(series_id, {"prompt_config": merged_config})
         return signed_response(series)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1427,6 +1462,7 @@ def update_series_prompt_config(series_id: str, config: PromptConfig):
 # ============================================================
 # Series Model Settings
 # ============================================================
+
 
 class UpdateModelSettingsRequest(BaseModel):
     chat_model: Optional[str] = None
@@ -1462,21 +1498,51 @@ class UpdateModelSettingsRequest(BaseModel):
         return value
 
 
-def _synchronize_model_setting_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = dict(updates)
-    image_model = next(
-        (normalized.get(key) for key in ("image_model", "t2i_model", "i2i_model") if normalized.get(key)),
-        None,
-    )
-    if image_model:
-        normalized.update(image_model=image_model, t2i_model=image_model, i2i_model=image_model)
-    video_model = next(
-        (normalized.get(key) for key in ("video_model", "i2v_model") if normalized.get(key)),
-        None,
-    )
-    if video_model:
-        normalized.update(video_model=video_model, i2v_model=video_model)
-    return normalized
+def _split_model_setting_patch(
+    settings: UpdateModelSettingsRequest,
+) -> tuple[Dict[str, str], List[str]]:
+    """Separate explicit values from explicit inheritance resets.
+
+    ``None`` is meaningful only when the field was present in the request:
+    it removes that canonical override. An omitted field remains untouched.
+    Legacy image/video aliases are folded into their canonical field.
+    """
+
+    supplied = {
+        field: getattr(settings, field)
+        for field in settings.model_fields_set
+        if field in UpdateModelSettingsRequest.model_fields
+    }
+    updates: Dict[str, str] = {}
+    cleared: List[str] = []
+
+    for canonical, aliases in (
+        ("chat_model", ("chat_model",)),
+        ("image_model", ("image_model", "t2i_model", "i2i_model")),
+        ("video_model", ("video_model", "i2v_model")),
+        ("character_aspect_ratio", ("character_aspect_ratio",)),
+        ("scene_aspect_ratio", ("scene_aspect_ratio",)),
+        ("prop_aspect_ratio", ("prop_aspect_ratio",)),
+        ("storyboard_aspect_ratio", ("storyboard_aspect_ratio",)),
+    ):
+        present = [field for field in aliases if field in supplied]
+        if not present:
+            continue
+        selected = next((supplied[field] for field in present if supplied[field] is not None), None)
+        if selected is None:
+            cleared.append(canonical)
+        else:
+            updates[canonical] = selected
+
+    return updates, canonical_model_setting_overrides(cleared)
+
+
+def _series_model_settings_response(series: Series) -> Dict[str, Any]:
+    payload = pipeline._effective_series_model_settings(series).model_dump()
+    payload["model_settings_overrides"] = list(series.model_settings_overrides)
+    payload["inherited_model_settings"] = pipeline._global_model_settings().model_dump()
+    return payload
+
 
 @app.get("/series/{series_id}/model_settings")
 def get_series_model_settings(series_id: str):
@@ -1484,20 +1550,18 @@ def get_series_model_settings(series_id: str):
     series = pipeline.get_series(series_id)
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
-    return series.model_settings.model_dump()
+    return _series_model_settings_response(series)
 
 
 @app.put("/series/{series_id}/model_settings")
 def update_series_model_settings(series_id: str, settings: UpdateModelSettingsRequest):
     """Update Series-level model settings."""
-    updates = _synchronize_model_setting_updates(
-        {k: v for k, v in settings.model_dump().items() if v is not None}
-    )
-    if not updates:
+    updates, cleared = _split_model_setting_patch(settings)
+    if not updates and not cleared:
         series = pipeline.get_series(series_id)
         if not series:
             raise HTTPException(status_code=404, detail="Series not found")
-        return series.model_settings.model_dump()
+        return _series_model_settings_response(series)
     try:
         current_series = pipeline.get_series(series_id)
         if not current_series:
@@ -1505,12 +1569,29 @@ def update_series_model_settings(series_id: str, settings: UpdateModelSettingsRe
         ms = current_series.model_settings.__class__.model_validate(
             {**current_series.model_settings.model_dump(), **updates}
         )
-        series = pipeline.update_series(series_id, {"model_settings": ms})
+        cleared_set = set(cleared)
+        overrides = canonical_model_setting_overrides(
+            [
+                *(
+                    field
+                    for field in current_series.model_settings_overrides
+                    if field not in cleared_set
+                ),
+                *updates,
+            ]
+        )
+        series = pipeline.update_series(
+            series_id,
+            {
+                "model_settings": ms,
+                "model_settings_overrides": overrides,
+            },
+        )
         # The settings dialog does not consume the full Series document. A
         # full response can contain hundreds of frames/assets and requires
         # every media URL to be signed, making this tiny metadata save appear
         # to hang. Match the GET endpoint and return only the saved settings.
-        return series.model_settings.model_dump()
+        return _series_model_settings_response(series)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1519,21 +1600,26 @@ def update_series_model_settings(series_id: str, settings: UpdateModelSettingsRe
 # Series Asset Operations
 # ============================================================
 
+
 @app.get("/series/{series_id}/assets")
 def get_series_assets(series_id: str):
     """Get all shared assets from a Series."""
     series = pipeline.get_series(series_id)
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
-    return signed_response({
-        "characters": [c.model_dump() for c in series.characters],
-        "scenes": [s.model_dump() for s in series.scenes],
-        "props": [p.model_dump() for p in series.props],
-    })
+    return signed_response(
+        {
+            "characters": [c.model_dump() for c in series.characters],
+            "scenes": [s.model_dump() for s in series.scenes],
+            "props": [p.model_dump() for p in series.props],
+        }
+    )
 
 
 @app.post("/series/{series_id}/assets/generate")
-def generate_series_asset(series_id: str, request: GenerateAssetRequest, background_tasks: BackgroundTasks):
+def generate_series_asset(
+    series_id: str, request: GenerateAssetRequest, background_tasks: BackgroundTasks
+):
     """Generate a single asset for a Series (async)."""
     reservations = []
     try:
@@ -1584,6 +1670,8 @@ def generate_series_asset(series_id: str, request: GenerateAssetRequest, backgro
             pipeline.rollback_asset_generation_task(task_id)
         abandon_workspace_job_reservations(reservations)
         raise
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except (ValueError, MissingNewAPIKeyError) as e:
         if server_mode_enabled() and reservations:
             pipeline.rollback_asset_generation_task(task_id)
@@ -1612,7 +1700,9 @@ def toggle_series_asset_lock(series_id: str, request: ToggleLockRequest):
 def toggle_series_asset_starred(series_id: str, request: ToggleLockRequest):
     """Toggle the starred (library shortlist) status of a Series asset."""
     try:
-        series = pipeline.toggle_series_asset_starred(series_id, request.asset_id, request.asset_type)
+        series = pipeline.toggle_series_asset_starred(
+            series_id, request.asset_id, request.asset_type
+        )
         return signed_response(series)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1624,7 +1714,9 @@ def toggle_series_asset_starred(series_id: str, request: ToggleLockRequest):
 def update_series_asset_image(series_id: str, request: UpdateAssetImageRequest):
     """Update a Series asset's image URL."""
     try:
-        series = pipeline.update_series_asset_image(series_id, request.asset_id, request.asset_type, request.image_url)
+        series = pipeline.update_series_asset_image(
+            series_id, request.asset_id, request.asset_type, request.image_url
+        )
         return signed_response(series)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1660,19 +1752,21 @@ class ImportAssetsRequest(BaseModel):
 class CreateSeriesAssetRequest(BaseModel):
     name: str
     description: Optional[str] = ""
-    persona: Optional[str] = ""        # characters only — grouping label
-    image_url: Optional[str] = None    # optional uploaded master sheet
+    persona: Optional[str] = ""  # characters only — grouping label
+    image_url: Optional[str] = None  # optional uploaded master sheet
 
 
 def _new_id(prefix: str) -> str:
     import uuid
+
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
 @app.post("/series/{series_id}/characters")
 def create_series_character(series_id: str, request: CreateSeriesAssetRequest):
     """Create a new Character at series scope."""
-    from .models import Character, AssetUnit, ImageVariant
+    from .models import AssetUnit, Character, ImageVariant
+
     series = pipeline.get_series(series_id)
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
@@ -1699,6 +1793,7 @@ def create_series_character(series_id: str, request: CreateSeriesAssetRequest):
 @app.post("/series/{series_id}/scenes")
 def create_series_scene(series_id: str, request: CreateSeriesAssetRequest):
     from .models import Scene
+
     series = pipeline.get_series(series_id)
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
@@ -1719,6 +1814,7 @@ def create_series_scene(series_id: str, request: CreateSeriesAssetRequest):
 @app.post("/series/{series_id}/props")
 def create_series_prop(series_id: str, request: CreateSeriesAssetRequest):
     from .models import Prop
+
     series = pipeline.get_series(series_id)
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
@@ -1740,7 +1836,9 @@ def create_series_prop(series_id: str, request: CreateSeriesAssetRequest):
 def import_series_assets(series_id: str, request: ImportAssetsRequest):
     """Deep-copy assets from another Series into this one."""
     try:
-        series, imported_ids, skipped_ids = pipeline.import_assets_from_series(series_id, request.source_series_id, request.asset_ids)
+        series, imported_ids, skipped_ids = pipeline.import_assets_from_series(
+            series_id, request.source_series_id, request.asset_ids
+        )
         return signed_response(series)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1755,6 +1853,7 @@ def import_series_assets(series_id: str, request: ImportAssetsRequest):
 # project-independent pool any project can reference. All mutations route
 # through the ComicGenPipeline.*_library_asset methods so the Playground
 # "录入资产库" flow stays consistent with these endpoints.
+
 
 class CreateLibraryAssetRequest(BaseModel):
     asset_type: str = Field(max_length=32)
@@ -1828,26 +1927,28 @@ class GenerateSourceMotionRefRequest(BaseModel):
 
 
 class PromoteAssetRequest(BaseModel):
-    source_kind: str   # "project" | "series"
+    source_kind: str  # "project" | "series"
     source_id: str
-    asset_type: str    # "character" | "scene" | "prop"
+    asset_type: str  # "character" | "scene" | "prop"
     asset_id: str
 
 
 class ForkFromLibraryRequest(BaseModel):
-    asset_type: str          # "character" | "scene" | "prop"
-    library_asset_id: str    # id of the source asset in the global library
+    asset_type: str  # "character" | "scene" | "prop"
+    library_asset_id: str  # id of the source asset in the global library
 
 
 @app.get("/library/assets")
 def get_library_assets():
     """List all assets in the global shared pool."""
     lib = pipeline.list_library_assets()
-    return signed_response({
-        "characters": _serialize_resolved_assets(lib.characters),
-        "scenes": _serialize_resolved_assets(lib.scenes),
-        "props": _serialize_resolved_assets(lib.props),
-    })
+    return signed_response(
+        {
+            "characters": _serialize_resolved_assets(lib.characters),
+            "scenes": _serialize_resolved_assets(lib.scenes),
+            "props": _serialize_resolved_assets(lib.props),
+        }
+    )
 
 
 @app.get("/library/overview")
@@ -2044,16 +2145,10 @@ def get_asset_library_feed(
         payload = page.model_dump(mode="json")
         if uploader.is_configured:
             payload = sign_oss_urls_in_data(payload, uploader)
-        phases["media_signing_ms"] = round(
-            (time.perf_counter() - phase) * 1000, 3
-        )
+        phases["media_signing_ms"] = round((time.perf_counter() - phase) * 1000, 3)
         phase = time.perf_counter()
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        phases["serialization_ms"] = round(
-            (time.perf_counter() - phase) * 1000, 3
-        )
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        phases["serialization_ms"] = round((time.perf_counter() - phase) * 1000, 3)
         headers["Server-Timing"] = _asset_feed_server_timing(phases)
         elapsed_ms, latency = _asset_feed_latency(started)
         logger.info(
@@ -2211,9 +2306,7 @@ def get_responsive_asset_library_feed(
             output_root=current_output_root(),
             schedule=True,
         )
-        phases["derivative_lookup_ms"] = round(
-            (time.perf_counter() - phase) * 1000, 3
-        )
+        phases["derivative_lookup_ms"] = round((time.perf_counter() - phase) * 1000, 3)
         query_key = json.dumps(
             {
                 "schema_version": 3,
@@ -2265,18 +2358,14 @@ def get_responsive_asset_library_feed(
         payload = responsive_page.model_dump(mode="json")
         if uploader.is_configured:
             payload = sign_oss_urls_in_data(payload, uploader)
-        phases["media_signing_ms"] = round(
-            (time.perf_counter() - phase) * 1000, 3
-        )
+        phases["media_signing_ms"] = round((time.perf_counter() - phase) * 1000, 3)
         phase = time.perf_counter()
         body = json.dumps(
             payload,
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")
-        phases["serialization_ms"] = round(
-            (time.perf_counter() - phase) * 1000, 3
-        )
+        phases["serialization_ms"] = round((time.perf_counter() - phase) * 1000, 3)
         headers["Server-Timing"] = _asset_feed_server_timing(phases)
         elapsed_ms, latency = _asset_feed_latency(started)
         ready_count = sum(
@@ -2376,9 +2465,7 @@ def upload_library_asset_image(file: UploadFile = File(...)):
         enforce_upload_quota(saved.path)
         # Prefer OSS when configured (signed), else fall back to local path.
         oss_url = OSSImageUploader().upload_image(saved.path)
-        reference = authoritative_media_reference(
-            saved.path, current_output_root(), oss_url
-        )
+        reference = authoritative_media_reference(saved.path, current_output_root(), oss_url)
         payload = {"image_url": reference}
         return signed_response(payload) if oss_url and reference == oss_url else payload
     except HTTPException:
@@ -2408,19 +2495,13 @@ def update_library_asset(asset_type: str, asset_id: str, request: UpdateLibraryA
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get(
-    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}"
-)
-def get_source_asset(
-    source_kind: str, source_id: str, asset_type: str, asset_id: str
-):
+@app.get("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}")
+def get_source_asset(source_kind: str, source_id: str, asset_type: str, asset_id: str):
     """Return one complete asset from its exact canonical owner."""
 
     try:
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, asset_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, asset_type, asset_id)
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2508,9 +2589,7 @@ def delete_source_asset(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.patch(
-    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}"
-)
+@app.patch("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}")
 def patch_source_asset(
     source_kind: str,
     source_id: str,
@@ -2531,9 +2610,7 @@ def patch_source_asset(
             target_asset_type=request.target_asset_type,
         )
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, effective_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, effective_type, asset_id)
         )
     except AssetTypeChangeConflictError as e:
         raise HTTPException(
@@ -2558,9 +2635,7 @@ def patch_source_asset(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post(
-    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/generate"
-)
+@app.post("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/generate")
 def generate_source_asset(
     source_kind: str,
     source_id: str,
@@ -2596,9 +2671,7 @@ def generate_source_asset(
             owner_key = (
                 "script_id"
                 if source_kind == "project"
-                else "series_id"
-                if source_kind == "series"
-                else "source_id"
+                else "series_id" if source_kind == "series" else "source_id"
             )
             reservations = reserve_workspace_jobs(
                 [
@@ -2670,9 +2743,7 @@ def generate_source_asset(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_asset_generation_task(task_id)
         else:
-            background_tasks.add_task(
-                pipeline.process_asset_generation_task, task_id
-            )
+            background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
         response = pipeline.source_asset_response_payload(
             source_kind, source_id, asset_type, asset_id
         )
@@ -2718,9 +2789,7 @@ def select_source_asset_variant(
             request.generation_type,
         )
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, asset_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, asset_type, asset_id)
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2739,9 +2808,7 @@ def delete_source_asset_variant(
     variant_id: str,
 ):
     try:
-        asset, _, _, _ = pipeline.find_source_asset(
-            source_kind, source_id, asset_type, asset_id
-        )
+        asset, _, _, _ = pipeline.find_source_asset(source_kind, source_id, asset_type, asset_id)
         deleted_snapshot = asset.model_dump()
         pipeline.delete_source_asset_variant(
             source_kind, source_id, asset_type, asset_id, variant_id
@@ -2779,9 +2846,7 @@ def favorite_source_asset_variant(
             request.generation_type,
         )
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, asset_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, asset_type, asset_id)
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2789,9 +2854,7 @@ def favorite_source_asset_variant(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put(
-    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/favorite"
-)
+@app.put("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/favorite")
 def set_source_asset_favorite(
     source_kind: str,
     source_id: str,
@@ -2810,9 +2873,7 @@ def set_source_asset_favorite(
             request.starred,
         )
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, asset_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, asset_type, asset_id)
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2820,9 +2881,7 @@ def set_source_asset_favorite(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post(
-    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/motion/generate"
-)
+@app.post("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/motion/generate")
 def generate_source_asset_motion(
     source_kind: str,
     source_id: str,
@@ -2870,9 +2929,7 @@ def generate_source_asset_motion(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_motion_ref_task(task_id)
         else:
-            background_tasks.add_task(
-                pipeline.process_source_motion_ref_task, task_id
-            )
+            background_tasks.add_task(pipeline.process_source_motion_ref_task, task_id)
         response = pipeline.source_asset_response_payload(
             source_kind, source_id, asset_type, asset_id
         )
@@ -2917,9 +2974,7 @@ def select_source_asset_motion_variant(
             request.motion_type,
         )
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, asset_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, asset_type, asset_id)
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2939,9 +2994,7 @@ def delete_source_asset_motion_variant(
     request: SourceMotionActionRequest,
 ):
     try:
-        asset, _, _, _ = pipeline.find_source_asset(
-            source_kind, source_id, asset_type, asset_id
-        )
+        asset, _, _, _ = pipeline.find_source_asset(source_kind, source_id, asset_type, asset_id)
         deleted_snapshot = asset.model_dump()
         pipeline.delete_source_asset_motion_variant(
             source_kind,
@@ -2984,9 +3037,7 @@ def favorite_source_asset_motion_variant(
             request.motion_type,
         )
         return signed_response(
-            pipeline.source_asset_response_payload(
-                source_kind, source_id, asset_type, asset_id
-            )
+            pipeline.source_asset_response_payload(source_kind, source_id, asset_type, asset_id)
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -3021,9 +3072,7 @@ def delete_library_asset(asset_type: str, asset_id: str, force: bool = False):
             None,
         )
         if deleted_asset is None:
-            raise ValueError(
-                f"Asset {asset_id} of type {asset_type} not found in library"
-            )
+            raise ValueError(f"Asset {asset_id} of type {asset_type} not found in library")
         deleted_snapshot = deleted_asset.model_dump()
         pipeline.delete_library_asset(asset_type, asset_id, force=force)
         reclaimed = reclaim_deleted_media(deleted_snapshot)
@@ -3096,6 +3145,7 @@ def fork_asset_from_library(script_id: str, request: ForkFromLibraryRequest):
 # File Import & Episode Splitting
 # ============================================================
 
+
 @app.post("/series/import/preview")
 async def import_file_preview(
     file: UploadFile = File(...),
@@ -3114,9 +3164,7 @@ async def import_file_preview(
         if not text.strip():
             raise HTTPException(status_code=400, detail="文件内容为空")
 
-        episodes = await asyncio.to_thread(
-            pipeline.import_file_and_split, text, suggested_episodes
-        )
+        episodes = await asyncio.to_thread(pipeline.import_file_and_split, text, suggested_episodes)
         # Store text in pipeline cache, return import_id instead of full text
         import_id = str(uuid.uuid4())
         pipeline._import_cache[import_id] = text
@@ -3142,6 +3190,8 @@ class ConfirmImportRequest(BaseModel):
     import_id: str = ""
     text: Optional[str] = None
     episodes: List[Dict[str, Any]]  # episode_number, title, start_marker, end_marker, ...
+    model_settings: Optional[ModelSettings] = None
+    prompt_config: Optional[PromptConfig] = None
 
 
 @app.post("/series/import/confirm")
@@ -3162,6 +3212,8 @@ async def import_file_confirm(request: ConfirmImportRequest):
             text,
             request.episodes,
             request.description,
+            request.model_settings,
+            request.prompt_config,
         )
         return signed_response(result)
     except ValueError as e:
@@ -3197,6 +3249,7 @@ class EnvConfig(BaseModel):
     def validate_newapi_base_url(cls, value):
         if value and value.strip():
             from ...models.newapi import normalize_newapi_base_url
+
             return normalize_newapi_base_url(value)
         return value
 
@@ -3486,7 +3539,11 @@ def get_project(script_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
 
     payload = script.model_dump()
+    payload["model_settings"] = pipeline._effective_model_settings(script).model_dump()
     series = pipeline.get_series(script.series_id) if script.series_id else None
+    payload["inherited_model_settings"] = pipeline._effective_series_model_settings(
+        series
+    ).model_dump()
     resolved = pipeline.resolve_episode_assets(script, series)
     episode_character_ids = {asset.id for asset in script.characters}
     episode_scene_ids = {asset.id for asset in script.scenes}
@@ -3598,20 +3655,26 @@ def reconcile_suggestions(script_id: str):
             sname = getattr(item, key, "") if hasattr(item, key) else item.get(key, "")
             conf = _name_match_confidence(local_name, sname)
             if conf > best_conf:
-                best_id, best_name, best_conf = item.id if hasattr(item, "id") else item.get("id"), sname, conf
+                best_id, best_name, best_conf = (
+                    item.id if hasattr(item, "id") else item.get("id"),
+                    sname,
+                    conf,
+                )
         return best_id, best_name, best_conf
 
     def build(local_pool, series_pool):
         result = []
         for local in local_pool:
             sid, sname, conf = best_match(local.name, series_pool)
-            result.append({
-                "local_id": local.id,
-                "local_name": local.name,
-                "suggested_series_id": sid if conf > 0 else None,
-                "suggested_series_name": sname if conf > 0 else None,
-                "confidence": conf,
-            })
+            result.append(
+                {
+                    "local_id": local.id,
+                    "local_name": local.name,
+                    "suggested_series_id": sid if conf > 0 else None,
+                    "suggested_series_name": sname if conf > 0 else None,
+                    "confidence": conf,
+                }
+            )
         return result
 
     return {
@@ -3650,7 +3713,12 @@ def reconcile_apply(script_id: str, request: ApplyReconcileRequest):
     if not series:
         raise HTTPException(status_code=404, detail="Series not found")
 
-    def apply_list(local_pool_attr: str, series_pool_attr: str, actions: list, frame_ref_attr: Optional[str] = None):
+    def apply_list(
+        local_pool_attr: str,
+        series_pool_attr: str,
+        actions: list,
+        frame_ref_attr: Optional[str] = None,
+    ):
         local_pool = getattr(script, local_pool_attr)
         series_pool = getattr(series, series_pool_attr)
         for act in actions:
@@ -3704,8 +3772,10 @@ def _prev_text_revision(prev_text: str) -> str:
     Hash + length is sufficient — collisions don't matter, we only
     detect "did the script change since cache was built"."""
     import hashlib
-    h = hashlib.md5(prev_text.encode("utf-8")).hexdigest()[:12]
-    return f"{len(prev_text)}-{h}"
+
+    normalized = (prev_text or "").strip()
+    h = hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"{len(normalized)}-{h}"
 
 
 @app.get("/projects/{script_id}/previous_episode")
@@ -3763,17 +3833,20 @@ def get_previous_episode_summary(script_id: str):
         }
     prev_id = series.episode_ids[idx - 1]
     prev = pipeline.get_script(prev_id)
-    if not prev or not (prev.original_text or "").strip():
+    if not prev:
         return {
             "has_previous": False,
             "previous_episode_id": prev_id,
-            "previous_episode_title": prev.title if prev else None,
+            "previous_episode_title": None,
+            "script_available": False,
             "raw_snippet": "",
             "ai_summary": None,
             "ai_summary_stale": False,
+            "last_frames": [],
         }
-    raw_snippet = (prev.original_text or "")[-800:]
-    current_rev = _prev_text_revision(prev.original_text or "")
+    previous_text = (prev.original_text or "").strip()
+    raw_snippet = previous_text[-800:]
+    current_rev = _prev_text_revision(previous_text)
     is_stale = (
         script.last_episode_summary_cache is not None
         and script.last_episode_summary_revision != current_rev
@@ -3798,16 +3871,19 @@ def get_previous_episode_summary(script_id: str):
                 idx = getattr(f, "t2i_selected_index", 0) or 0
                 idx = max(0, min(idx, len(urls) - 1))
                 thumb_url = urls[idx]
-        last_frames.append({
-            "id": f.id,
-            "action_description": (f.action_description or "")[:120],
-            "thumbnail_url": thumb_url,
-            "video_url": getattr(f, "video_url", None),
-        })
+        last_frames.append(
+            {
+                "id": f.id,
+                "action_description": (f.action_description or "")[:120],
+                "thumbnail_url": thumb_url,
+                "video_url": getattr(f, "video_url", None),
+            }
+        )
     return {
         "has_previous": True,
         "previous_episode_id": prev_id,
         "previous_episode_title": prev.title,
+        "script_available": bool(previous_text),
         "raw_snippet": raw_snippet,
         "ai_summary": script.last_episode_summary_cache,
         "ai_summary_stale": is_stale,
@@ -3842,6 +3918,7 @@ def generate_previous_episode_summary(script_id: str):
 
     # Call LLM — keep prompt simple and bilingual-friendly
     from .llm_adapter import LLMAdapter
+
     prompt = (
         "请用 150-220 字概括下面这段剧本的核心情节、关键角色出场与结尾留下的悬念/钩子。"
         "不要列点，写成一段连贯的中文叙述，便于作者快速回顾上一集走到了哪里。\n\n"
@@ -3851,7 +3928,7 @@ def generate_previous_episode_summary(script_id: str):
         adapter = LLMAdapter()
         summary = adapter.chat(
             messages=[{"role": "user", "content": prompt}],
-            model=None,  # use adapter default (qwen3.6-plus with fallback chain)
+            model=pipeline._effective_chat_model(script),
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
@@ -3902,12 +3979,14 @@ def get_character_appearances(series_id: str, character_id: str):
             continue
         count = sum(1 for f in ep.frames if character_id in (f.character_ids or []))
         if count > 0:
-            appearances.append({
-                "episode_id": ep_id,
-                "episode_number": ep.episode_number,
-                "episode_title": ep.title,
-                "frame_count": count,
-            })
+            appearances.append(
+                {
+                    "episode_id": ep_id,
+                    "episode_number": ep.episode_number,
+                    "episode_title": ep.title,
+                    "frame_count": count,
+                }
+            )
             total_frames += count
     return {
         "character": {
@@ -3932,10 +4011,7 @@ def get_next_episode_hook(script_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     current_text = script.original_text or ""
     current_rev = _prev_text_revision(current_text)
-    is_stale = (
-        script.next_hook_cache is not None
-        and script.next_hook_revision != current_rev
-    )
+    is_stale = script.next_hook_cache is not None and script.next_hook_revision != current_rev
     return {
         "has_text": bool(current_text.strip()),
         "hook": script.next_hook_cache,
@@ -3956,6 +4032,7 @@ def generate_next_episode_hook(script_id: str):
         raise HTTPException(status_code=400, detail="Episode has no script text yet")
 
     from .llm_adapter import LLMAdapter
+
     # Use last ~1500 chars as context (the ending matters most for hooks)
     ending = text[-1500:]
     prompt = (
@@ -3968,7 +4045,7 @@ def generate_next_episode_hook(script_id: str):
         adapter = LLMAdapter()
         hook = adapter.chat(
             messages=[{"role": "user", "content": prompt}],
-            model=None,
+            model=pipeline._effective_chat_model(script),
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
@@ -4026,6 +4103,7 @@ class AddCharacterRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(max_length=20_000)
 
+
 @app.post("/projects/{script_id}/characters")
 def add_character(script_id: str, request: AddCharacterRequest):
     """Adds a new character."""
@@ -4036,6 +4114,7 @@ def add_character(script_id: str, request: AddCharacterRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/projects/{script_id}/characters/{char_id}")
 def delete_character(script_id: str, char_id: str):
@@ -4053,9 +4132,11 @@ def delete_character(script_id: str, char_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 class AddSceneRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(max_length=20_000)
+
 
 @app.post("/projects/{script_id}/scenes")
 def add_scene(script_id: str, request: AddSceneRequest):
@@ -4067,6 +4148,7 @@ def add_scene(script_id: str, request: AddSceneRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/projects/{script_id}/scenes/{scene_id}")
 def delete_scene(script_id: str, scene_id: str):
@@ -4084,6 +4166,7 @@ def delete_scene(script_id: str, scene_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 class UpdateStyleRequest(BaseModel):
     style_preset: str = Field(min_length=1, max_length=200)
     style_prompt: Optional[str] = Field(default=None, max_length=50_000)
@@ -4094,9 +4177,7 @@ def update_project_style(script_id: str, request: UpdateStyleRequest):
     """Updates the global style settings for a project."""
     try:
         updated_script = pipeline.update_project_style(
-            script_id,
-            request.style_preset,
-            request.style_prompt
+            script_id, request.style_preset, request.style_prompt
         )
         return signed_response(updated_script)
     except ValueError as e:
@@ -4142,10 +4223,13 @@ def generate_assets(script_id: str, background_tasks: BackgroundTasks):
 
 class GenerateMotionRefRequest(BaseModel):
     """Request model for generating Motion Reference videos."""
+
     model_config = ConfigDict(extra="forbid")
 
     asset_id: str = Field(max_length=128)
-    asset_type: str = Field(max_length=32)  # 'full_body' | 'head_shot' for characters; 'scene' | 'prop' for scenes and props
+    asset_type: str = Field(
+        max_length=32
+    )  # 'full_body' | 'head_shot' for characters; 'scene' | 'prop' for scenes and props
     prompt: Optional[str] = Field(default=None, max_length=50_000)
     model: Optional[str] = Field(default=None, max_length=128)
     duration: int = 5
@@ -4160,7 +4244,9 @@ class GenerateMotionRefRequest(BaseModel):
 
 
 @app.post("/projects/{script_id}/assets/generate_motion_ref")
-def generate_motion_ref(script_id: str, request: GenerateMotionRefRequest, background_tasks: BackgroundTasks):
+def generate_motion_ref(
+    script_id: str, request: GenerateMotionRefRequest, background_tasks: BackgroundTasks
+):
     """Generates a Motion Reference video for an asset (Character Full Body/Headshot, Scene, or Prop)."""
     reservations = []
     task_id = str(uuid.uuid4())
@@ -4193,7 +4279,7 @@ def generate_motion_ref(script_id: str, request: GenerateMotionRefRequest, backg
             background_tasks.add_task(pipeline.process_motion_ref_task, script_id, task_id)
 
         # Return script with task_id for frontend polling
-        response_data = script.model_dump() if hasattr(script, 'model_dump') else script.dict()
+        response_data = script.model_dump() if hasattr(script, "model_dump") else script.dict()
         response_data["_task_id"] = task_id
         return signed_response(response_data)
 
@@ -4216,8 +4302,10 @@ def generate_motion_ref(script_id: str, request: GenerateMotionRefRequest, backg
 
 # === STORYBOARD DRAMATIZATION v2 ===
 
+
 class AnalyzeToStoryboardRequest(BaseModel):
     """Request to analyze script text into storyboard frames."""
+
     text: str
 
 
@@ -4230,6 +4318,8 @@ def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequest):
     try:
         updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
         return signed_response(updated_script)
+    except AssemblyMutationConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except (ValueError, MissingNewAPIKeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -4239,6 +4329,7 @@ def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequest):
 
 class RefinePromptRequest(BaseModel):
     """Request to refine a frame's prompt using AI."""
+
     frame_id: str
     raw_prompt: str
     assets: list = []  # List of asset references
@@ -4283,7 +4374,9 @@ def refine_single_frame(script_id: str, frame_id: str):
         frame = pipeline.refine_frame(script_id, frame_id)
         if not frame:
             raise HTTPException(status_code=500, detail="Refine returned no result")
-        return frame.model_dump() if hasattr(frame, 'model_dump') else frame.dict()
+        return frame.model_dump() if hasattr(frame, "model_dump") else frame.dict()
+    except (AssemblyMutationConflictError, AssemblyOperationInProgressError) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except FrameRefineError as e:
         status_code = {
             "missing_config": 503,
@@ -4311,9 +4404,7 @@ def refine_storyboard_batch(script_id: str):
     """Batch-refine frames via desktop SSE or a durable server-mode job."""
     if server_mode_enabled():
         require_workspace_script(script_id)
-        return enqueue_long_workspace_job(
-            "refine_batch", {"script_id": script_id}
-        )
+        return enqueue_long_workspace_job("refine_batch", {"script_id": script_id})
 
     from fastapi.responses import StreamingResponse
 
@@ -4334,9 +4425,7 @@ def generate_storyboard(script_id: str):
     try:
         if server_mode_enabled():
             require_workspace_script(script_id)
-            return enqueue_long_workspace_job(
-                "generate_storyboard", {"script_id": script_id}
-            )
+            return enqueue_long_workspace_job("generate_storyboard", {"script_id": script_id})
         updated_script = pipeline.generate_storyboard(script_id)
         return signed_response(updated_script)
     except HTTPException:
@@ -4351,9 +4440,7 @@ def generate_video(script_id: str):
     try:
         if server_mode_enabled():
             require_workspace_script(script_id)
-            return enqueue_long_workspace_job(
-                "generate_video", {"script_id": script_id}
-            )
+            return enqueue_long_workspace_job("generate_video", {"script_id": script_id})
         updated_script = pipeline.generate_video(script_id)
         return signed_response(updated_script)
     except HTTPException:
@@ -4437,9 +4524,7 @@ def process_video_task(script_id: str, task_id: str):
     except Exception as e:
         logger.exception(f"Error processing video task {task_id}")
         try:
-            pipeline.mark_video_task_failed(
-                script_id, task_id, f"Background error: {e}"
-            )
+            pipeline.mark_video_task_failed(script_id, task_id, f"Background error: {e}")
         except Exception:
             logger.exception(
                 f"Could not mark video task {task_id} as failed after wrapper exception"
@@ -4451,6 +4536,7 @@ class AnnotateVideoTaskRequest(BaseModel):
     Both fields optional so the same endpoint covers star-only,
     label-only, or both. `clear_label=True` explicitly removes
     the label (None on its own means "don't change")."""
+
     is_starred: Optional[bool] = None
     label: Optional[str] = None
     clear_label: bool = False
@@ -4477,6 +4563,7 @@ class UpdateFrameWorkbenchRequest(BaseModel):
     """Storyboard R2V workbench state writeback. Every field optional;
     only what the caller passes gets updated. The server clamps lists
     and indices to safe ranges; rejects unknown enum values."""
+
     workbench_tab_mode: Optional[str] = None  # 't2i_i2v' | 'direct_r2v'
     t2i_image_urls: Optional[List[str]] = None  # full ordered history, server caps at 10 FIFO
     t2i_selected_index: Optional[int] = None  # active首帧 index, clamped to range
@@ -4487,9 +4574,7 @@ class UpdateFrameWorkbenchRequest(BaseModel):
 
 
 @app.patch("/projects/{script_id}/frames/{frame_id}/workbench", response_model=StoryboardFrame)
-def update_frame_workbench(
-    script_id: str, frame_id: str, request: UpdateFrameWorkbenchRequest
-):
+def update_frame_workbench(script_id: str, frame_id: str, request: UpdateFrameWorkbenchRequest):
     """Persist Storyboard R2V workbench state onto a frame so it
     survives refresh and cross-device opens. Previously this state
     lived only in React component state and got lost on reload."""
@@ -4520,9 +4605,7 @@ def delete_frame_t2i_image(script_id: str, frame_id: str, image_index: int):
     """Delete one first-frame candidate and reclaim its unshared server file."""
 
     try:
-        frame, removed_url = pipeline.delete_frame_t2i_image(
-            script_id, frame_id, image_index
-        )
+        frame, removed_url = pipeline.delete_frame_t2i_image(script_id, frame_id, image_index)
         reclaim_deleted_media(removed_url)
         return signed_response(frame)
     except ValueError as exc:
@@ -4571,9 +4654,7 @@ def cancel_video_task(script_id: str, task_id: str):
 
 
 @app.post("/projects/{script_id}/video_tasks/{task_id}/retry", response_model=VideoTask)
-def retry_video_task(
-    script_id: str, task_id: str, background_tasks: BackgroundTasks
-):
+def retry_video_task(script_id: str, task_id: str, background_tasks: BackgroundTasks):
     """Retry the same persisted task with its original generation parameters."""
     if server_mode_enabled():
         tenant = get_tenant(required=True)
@@ -4598,8 +4679,13 @@ def retry_video_task(
         if outcome is JobRetryOutcome.CAPACITY:
             raise HTTPException(status_code=429, detail="The generation queue is full")
     else:
-        if not pipeline.prepare_video_task_retry(script_id, task_id):
-            raise HTTPException(status_code=409, detail="Only failed video tasks can be retried")
+        try:
+            if not pipeline.prepare_video_task_retry(script_id, task_id):
+                raise HTTPException(
+                    status_code=409, detail="Only failed video tasks can be retried"
+                )
+        except AssemblyOperationInProgressError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         background_tasks.add_task(pipeline.process_video_task, script_id, task_id)
 
     script = pipeline.get_script(script_id)
@@ -4631,12 +4717,16 @@ def delete_video_task(script_id: str, task_id: str):
         updated_script = pipeline.delete_video_task(script_id, task_id)
         reclaim_deleted_media(task.model_dump())
         return get_project(updated_script.id)
+    except AssemblyOperationInProgressError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/projects/{script_id}/video_tasks", response_model=List[VideoTask])
-def create_video_task(script_id: str, request: CreateVideoTaskRequest, background_tasks: BackgroundTasks):
+def create_video_task(
+    script_id: str, request: CreateVideoTaskRequest, background_tasks: BackgroundTasks
+):
     """Creates new video generation tasks."""
     reservations = []
     tasks: List[VideoTask] = []
@@ -4723,12 +4813,7 @@ def create_video_task(script_id: str, request: CreateVideoTaskRequest, backgroun
         return signed_response(tasks)
 
     except HTTPException as exc:
-        if (
-            server_mode_enabled()
-            and reservations
-            and tasks
-            and exc.status_code == 503
-        ):
+        if server_mode_enabled() and reservations and tasks and exc.status_code == 503:
             from .video_failures import (
                 VIDEO_QUEUE_UNAVAILABLE_CODE,
                 VIDEO_QUEUE_UNAVAILABLE_MESSAGE,
@@ -4779,7 +4864,9 @@ def create_video_task(script_id: str, request: CreateVideoTaskRequest, backgroun
 
 
 @app.post("/projects/{script_id}/assets/generate")
-def generate_single_asset(script_id: str, request: GenerateAssetRequest, background_tasks: BackgroundTasks):
+def generate_single_asset(
+    script_id: str, request: GenerateAssetRequest, background_tasks: BackgroundTasks
+):
     """Generates a single asset with specific options (async).
     Returns immediately with task_id for polling progress."""
     reservations = []
@@ -4790,9 +4877,7 @@ def generate_single_asset(script_id: str, request: GenerateAssetRequest, backgro
             script, request.asset_id, request.asset_type
         )
         if target_asset is None:
-            raise ValueError(
-                f"{request.asset_type.capitalize()} {request.asset_id} not found"
-            )
+            raise ValueError(f"{request.asset_type.capitalize()} {request.asset_id} not found")
         previous_asset_status = target_asset.status.value
         if server_mode_enabled():
             reservations = reserve_workspace_jobs(
@@ -4832,7 +4917,7 @@ def generate_single_asset(script_id: str, request: GenerateAssetRequest, backgro
             background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
 
         # Return script with task_id for frontend polling
-        response_data = script.model_dump() if hasattr(script, 'model_dump') else script.dict()
+        response_data = script.model_dump() if hasattr(script, "model_dump") else script.dict()
         response_data["_task_id"] = task_id
         return signed_response(response_data)
 
@@ -4862,9 +4947,7 @@ def get_task_status(task_id: str):
         from ..server.database import get_database
         from ..server.jobs import get_workspace_job, job_to_dict
 
-        record = get_workspace_job(
-            get_database(), workspace_id=tenant.workspace_id, job_id=task_id
-        )
+        record = get_workspace_job(get_database(), workspace_id=tenant.workspace_id, job_id=task_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Task not found")
         status = job_to_dict(record)
@@ -4882,7 +4965,7 @@ def get_task_status(task_id: str):
     if status["status"] == "completed":
         script = pipeline.get_script(status["script_id"])
         if script:
-            status["script"] = signed_response(script).body.decode('utf-8')
+            status["script"] = signed_response(script).body.decode("utf-8")
 
     return status
 
@@ -4903,8 +4986,16 @@ class GenerateAssetVideoRequest(BaseModel):
         return value
 
 
-@app.post("/projects/{script_id}/assets/{asset_type}/{asset_id}/generate_video", response_model=Script)
-def generate_asset_video(script_id: str, asset_type: str, asset_id: str, request: GenerateAssetVideoRequest, background_tasks: BackgroundTasks):
+@app.post(
+    "/projects/{script_id}/assets/{asset_type}/{asset_id}/generate_video", response_model=Script
+)
+def generate_asset_video(
+    script_id: str,
+    asset_type: str,
+    asset_id: str,
+    request: GenerateAssetVideoRequest,
+    background_tasks: BackgroundTasks,
+):
     """Generates a video for a specific asset (I2V)."""
     reservations = []
     task_id = str(uuid.uuid4())
@@ -4984,14 +5075,11 @@ def delete_asset_video(script_id: str, asset_type: str, asset_id: str, video_id:
         if not script:
             raise ValueError("Script not found")
         deleted_snapshot = _project_scope_snapshot(script)
-        updated_script = pipeline.delete_asset_video(
-            script_id,
-            asset_id,
-            asset_type,
-            video_id
-        )
+        updated_script = pipeline.delete_asset_video(script_id, asset_id, asset_type, video_id)
         reclaim_deleted_media(deleted_snapshot)
         return get_project(updated_script.id)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         if "Running video tasks" in str(e):
             raise HTTPException(status_code=409, detail=str(e)) from e
@@ -5004,11 +5092,7 @@ def delete_asset_video(script_id: str, asset_type: str, asset_id: str, video_id:
 def toggle_asset_lock(script_id: str, request: ToggleLockRequest):
     """Toggles the locked status of an asset."""
     try:
-        updated_script = pipeline.toggle_asset_lock(
-            script_id,
-            request.asset_id,
-            request.asset_type
-        )
+        updated_script = pipeline.toggle_asset_lock(script_id, request.asset_id, request.asset_type)
         return signed_response(updated_script)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -5021,9 +5105,7 @@ def toggle_asset_starred(script_id: str, request: ToggleLockRequest):
     """Toggles the starred (library shortlist) status of an asset."""
     try:
         updated_script = pipeline.toggle_asset_starred(
-            script_id,
-            request.asset_id,
-            request.asset_type
+            script_id, request.asset_id, request.asset_type
         )
         return signed_response(updated_script)
     except ValueError as e:
@@ -5037,10 +5119,7 @@ def update_asset_image(script_id: str, request: UpdateAssetImageRequest):
     """Updates an asset's image URL manually."""
     try:
         updated_script = pipeline.update_asset_image(
-            script_id,
-            request.asset_id,
-            request.asset_type,
-            request.image_url
+            script_id, request.asset_id, request.asset_type, request.image_url
         )
         return signed_response(updated_script)
     except ValueError as e:
@@ -5054,10 +5133,7 @@ def update_asset_attributes(script_id: str, request: UpdateAssetAttributesReques
     """Updates allowlisted presentation attributes of an asset."""
     try:
         updated_script = pipeline.update_asset_attributes(
-            script_id,
-            request.asset_id,
-            request.asset_type,
-            request.attributes
+            script_id, request.asset_id, request.asset_type, request.attributes
         )
         return signed_response(updated_script)
     except InvalidAssetAttributesError as e:
@@ -5079,10 +5155,7 @@ def update_asset_description(script_id: str, request: UpdateAssetDescriptionRequ
     """Updates an asset's description."""
     try:
         updated_script = pipeline.update_asset_description(
-            script_id,
-            request.asset_id,
-            request.asset_type,
-            request.description
+            script_id, request.asset_id, request.asset_type, request.description
         )
         return signed_response(updated_script)
     except ValueError as e:
@@ -5097,6 +5170,7 @@ class SelectVariantRequest(BaseModel):
     variant_id: str
     generation_type: str = None  # For character: "full_body", "three_view", "headshot"
 
+
 @app.post("/projects/{script_id}/assets/variant/select")
 def select_asset_variant(script_id: str, request: SelectVariantRequest):
     """Selects a specific variant for an asset."""
@@ -5106,7 +5180,7 @@ def select_asset_variant(script_id: str, request: SelectVariantRequest):
             request.asset_id,
             request.asset_type,
             request.variant_id,
-            request.generation_type
+            request.generation_type,
         )
         # Return the same Episode > Series > Global projection as GET
         # /projects/{id}. A raw Script contains only episode-local assets and
@@ -5117,10 +5191,12 @@ def select_asset_variant(script_id: str, request: SelectVariantRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 class DeleteVariantRequest(BaseModel):
     asset_id: str
     asset_type: str
     variant_id: str
+
 
 @app.post("/projects/{script_id}/assets/variant/delete")
 def delete_asset_variant(script_id: str, request: DeleteVariantRequest):
@@ -5131,10 +5207,7 @@ def delete_asset_variant(script_id: str, request: DeleteVariantRequest):
             raise ValueError("Script not found")
         deleted_snapshot = _project_scope_snapshot(script)
         updated_script = pipeline.delete_asset_variant(
-            script_id,
-            request.asset_id,
-            request.asset_type,
-            request.variant_id
+            script_id, request.asset_id, request.asset_type, request.variant_id
         )
         reclaim_deleted_media(deleted_snapshot)
         return get_project(updated_script.id)
@@ -5151,6 +5224,7 @@ class FavoriteVariantRequest(BaseModel):
     generation_type: Optional[str] = None  # For character: 'full_body', 'three_view', 'headshot'
     is_favorited: bool
 
+
 @app.post("/projects/{script_id}/assets/variant/favorite")
 def toggle_variant_favorite(script_id: str, request: FavoriteVariantRequest):
     """Toggles the favorite status of a variant. Favorited variants won't be auto-deleted when limit is reached."""
@@ -5161,7 +5235,7 @@ def toggle_variant_favorite(script_id: str, request: FavoriteVariantRequest):
             request.asset_type,
             request.variant_id,
             request.is_favorited,
-            request.generation_type
+            request.generation_type,
         )
         return get_project(updated_script.id)
     except ValueError as e:
@@ -5169,24 +5243,24 @@ def toggle_variant_favorite(script_id: str, request: FavoriteVariantRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/projects/{script_id}/model_settings", response_model=Script)
+
+@app.post("/projects/{script_id}/model_settings")
 def update_model_settings(script_id: str, request: UpdateModelSettingsRequest):
     """Updates project's model settings for T2I/I2I/I2V and aspect ratios."""
     try:
+        updates, cleared = _split_model_setting_patch(request)
         updated_script = pipeline.update_model_settings(
             script_id,
-            request.t2i_model,
-            request.i2i_model,
-            request.i2v_model,
-            character_aspect_ratio=request.character_aspect_ratio,
-            scene_aspect_ratio=request.scene_aspect_ratio,
-            prop_aspect_ratio=request.prop_aspect_ratio,
-            storyboard_aspect_ratio=request.storyboard_aspect_ratio,
-            image_model=request.image_model,
-            chat_model=request.chat_model,
-            video_model=request.video_model,
+            character_aspect_ratio=updates.get("character_aspect_ratio"),
+            scene_aspect_ratio=updates.get("scene_aspect_ratio"),
+            prop_aspect_ratio=updates.get("prop_aspect_ratio"),
+            storyboard_aspect_ratio=updates.get("storyboard_aspect_ratio"),
+            image_model=updates.get("image_model"),
+            chat_model=updates.get("chat_model"),
+            video_model=updates.get("video_model"),
+            clear_overrides=cleared,
         )
-        return signed_response(updated_script)
+        return get_project(updated_script.id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -5199,6 +5273,14 @@ class UpdatePromptConfigRequest(BaseModel):
     entity_extraction: str = ""
     style_analysis: str = ""
     storyboard_extraction: str = ""
+    polish_model: str = ""
+
+    @field_validator("polish_model")
+    @classmethod
+    def validate_polish_model(cls, value: str) -> str:
+        if value:
+            return get_model_spec(value, CHAT).model_id
+        return value
 
 
 @app.get("/projects/{script_id}/prompt_config")
@@ -5208,14 +5290,14 @@ def get_prompt_config(script_id: str):
         script = pipeline.get_script(script_id)
         if not script:
             raise HTTPException(status_code=404, detail="Project not found")
-        config = script.prompt_config if hasattr(script, 'prompt_config') else PromptConfig()
+        config = script.prompt_config if hasattr(script, "prompt_config") else PromptConfig()
         return {
             "prompt_config": config.model_dump(),
             "defaults": {
                 "storyboard_polish": DEFAULT_STORYBOARD_POLISH_PROMPT,
                 "video_polish": DEFAULT_VIDEO_POLISH_PROMPT,
                 "storyboard_extraction": DEFAULT_STORYBOARD_EXTRACTION_PROMPT,
-            }
+            },
         }
     except HTTPException:
         raise
@@ -5230,14 +5312,13 @@ def update_prompt_config(script_id: str, request: UpdatePromptConfigRequest):
         script = pipeline.get_script(script_id)
         if not script:
             raise HTTPException(status_code=404, detail="Project not found")
-        existing = getattr(script, "prompt_config", None)
-        script.prompt_config = PromptConfig(
-            storyboard_polish=request.storyboard_polish,
-            video_polish=request.video_polish,
-            entity_extraction=request.entity_extraction,
-            style_analysis=request.style_analysis,
-            storyboard_extraction=request.storyboard_extraction,
-        )
+        existing = getattr(script, "prompt_config", None) or PromptConfig()
+        updates = {
+            field: getattr(request, field)
+            for field in request.model_fields_set
+            if field in PromptConfig.model_fields
+        }
+        script.prompt_config = PromptConfig(**{**existing.model_dump(), **updates})
         pipeline._save_data()
         return {"prompt_config": script.prompt_config.model_dump()}
     except HTTPException:
@@ -5274,10 +5355,12 @@ def get_prompt_defaults():
 # Backs the Assembly Mix phase.
 # ─────────────────────────────────────────────────────────────
 
+
 @app.get("/bgm/presets")
 def list_bgm_presets():
     """Return the BGM preset catalog. UI populates the Mix phase picker."""
     from .audio import get_bgm_presets
+
     return get_bgm_presets()
 
 
@@ -5286,6 +5369,51 @@ class AudioMixRequest(BaseModel):
     dialogue_volume: Optional[int] = None  # 0-100
     bgm_volume: Optional[int] = None
     sfx_volume: Optional[int] = None
+
+
+@app.post("/projects/{script_id}/audio_mix/bgm", response_model=Script)
+def upload_custom_bgm(script_id: str, file: UploadFile = File(...)):
+    """Upload and select one project-owned local background track."""
+
+    saved_path: Optional[str] = None
+    try:
+        relative_directory = pipeline.custom_bgm_relative_directory(script_id)
+        saved = save_upload_file(
+            file,
+            workspace_output_path(*relative_directory.split("/")),
+            AUDIO_UPLOAD_POLICY,
+        )
+        saved_path = saved.path
+        if saved.size <= 0:
+            raise HTTPException(status_code=400, detail="Background music file is empty")
+        enforce_upload_quota(saved.path)
+
+        relative_url = f"{relative_directory}/{saved.filename}"
+        updated = pipeline.set_custom_bgm(script_id, relative_url)
+        return signed_response(updated)
+    except (AssemblyMutationConflictError, AssemblyOperationInProgressError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Script not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save custom background music",
+        ) from exc
+    finally:
+        if saved_path:
+            script = pipeline.get_script(script_id)
+            if not script or script.bgm_url != os.path.relpath(
+                saved_path,
+                current_output_root(),
+            ).replace(os.sep, "/"):
+                try:
+                    os.unlink(saved_path)
+                except FileNotFoundError:
+                    pass
 
 
 @app.put("/projects/{script_id}/audio_mix", response_model=Script)
@@ -5297,22 +5425,14 @@ def update_audio_mix(script_id: str, request: AudioMixRequest):
     "omitted" from "explicit null" — clients pass `bgm_url: null` to clear
     the BGM, which the old `is not None` check silently swallowed.
     """
-    script = pipeline.get_script(script_id)
-    if not script:
-        raise HTTPException(status_code=404, detail="Script not found")
-    fields_set = request.model_fields_set
-    if "bgm_url" in fields_set:
-        script.bgm_url = request.bgm_url or None  # null and "" both clear
-    mix = dict(script.mix_settings or {"dialogue": 100, "bgm": 35, "sfx": 60})
-    if "dialogue_volume" in fields_set and request.dialogue_volume is not None:
-        mix["dialogue"] = max(0, min(100, request.dialogue_volume))
-    if "bgm_volume" in fields_set and request.bgm_volume is not None:
-        mix["bgm"] = max(0, min(100, request.bgm_volume))
-    if "sfx_volume" in fields_set and request.sfx_volume is not None:
-        mix["sfx"] = max(0, min(100, request.sfx_volume))
-    script.mix_settings = mix
-    pipeline._save_data()
-    return signed_response(script)
+    updates = {field: getattr(request, field) for field in request.model_fields_set}
+    try:
+        return signed_response(pipeline.update_audio_mix(script_id, updates))
+    except AssemblyOperationInProgressError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Script not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 class DubPreviewRequest(BaseModel):
@@ -5338,13 +5458,16 @@ def preview_dub(script_id: str, frame_id: str, request: DubPreviewRequest):
                 },
             )
         updated_script = pipeline.preview_dub(
-            script_id, frame_id,
+            script_id,
+            frame_id,
             video_task_id=request.video_task_id,
             offset_ms=request.offset_ms,
         )
         return signed_response(updated_script)
     except HTTPException:
         raise
+    except (AssemblyMutationConflictError, AssemblyOperationInProgressError) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
@@ -5362,6 +5485,8 @@ def apply_dub(script_id: str, frame_id: str):
         updated_script = pipeline.apply_dub(script_id, frame_id)
         reclaim_deleted_media(deleted_snapshot)
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5377,6 +5502,8 @@ def revert_frame_dub(script_id: str, frame_id: str):
         updated_script = pipeline.revert_dub(script_id, frame_id)
         reclaim_deleted_media(deleted_snapshot)
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5389,10 +5516,7 @@ class ToggleFrameLockRequest(BaseModel):
 def toggle_frame_lock(script_id: str, request: ToggleFrameLockRequest):
     """Toggles the locked status of a frame."""
     try:
-        updated_script = pipeline.toggle_frame_lock(
-            script_id,
-            request.frame_id
-        )
+        updated_script = pipeline.toggle_frame_lock(script_id, request.frame_id)
         return signed_response(updated_script)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -5415,6 +5539,7 @@ class UpdateFrameRequest(BaseModel):
     camera_movement_description: Optional[str] = Field(default=None, max_length=20_000)
     transition_hint: Optional[str] = Field(default=None, max_length=2_000)
 
+
 @app.post("/projects/{script_id}/frames/update", response_model=Script)
 def update_frame(script_id: str, request: UpdateFrameRequest):
     """Updates frame data (prompt, scene, characters, etc.)."""
@@ -5431,17 +5556,18 @@ def update_frame(script_id: str, request: UpdateFrameRequest):
             prop_ids=request.prop_ids,
             duration=request.duration,
             shot_size=request.shot_size,
-            camera_movement=(
-                request.camera_movement.value if request.camera_movement else None
-            ),
+            camera_movement=(request.camera_movement.value if request.camera_movement else None),
             camera_movement_description=request.camera_movement_description,
             transition_hint=request.transition_hint,
         )
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 class AddFrameRequest(BaseModel):
     scene_id: Optional[str] = Field(default=None, max_length=128)
@@ -5450,6 +5576,7 @@ class AddFrameRequest(BaseModel):
     action_description: str = Field(default="", max_length=20_000)
     camera_angle: str = Field(default="medium_shot", max_length=200)
     insert_at: Optional[int] = Field(default=None, ge=0, le=10_000)
+
 
 @app.post("/projects/{script_id}/frames", response_model=Script)
 def add_frame(script_id: str, request: AddFrameRequest):
@@ -5465,10 +5592,13 @@ def add_frame(script_id: str, request: AddFrameRequest):
             prop_ids=request.prop_ids,
         )
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/projects/{script_id}/frames/{frame_id}")
 def delete_frame(script_id: str, frame_id: str):
@@ -5503,14 +5633,18 @@ def delete_frame(script_id: str, frame_id: str):
             )
         reclaim_deleted_media(deleted_snapshot)
         return get_project(updated_script.id)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 class CopyFrameRequest(BaseModel):
     frame_id: str
     insert_at: Optional[int] = None
+
 
 @app.post("/projects/{script_id}/frames/copy", response_model=Script)
 def copy_frame(script_id: str, request: CopyFrameRequest):
@@ -5518,13 +5652,17 @@ def copy_frame(script_id: str, request: CopyFrameRequest):
     try:
         updated_script = pipeline.copy_frame(script_id, request.frame_id, request.insert_at)
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 class ReorderFramesRequest(BaseModel):
     frame_ids: List[str]
+
 
 @app.put("/projects/{script_id}/frames/reorder", response_model=Script)
 def reorder_frames(script_id: str, request: ReorderFramesRequest):
@@ -5532,10 +5670,13 @@ def reorder_frames(script_id: str, request: ReorderFramesRequest):
     try:
         updated_script = pipeline.reorder_frames(script_id, request.frame_ids)
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 class RenderFrameRequest(BaseModel):
     frame_id: str = Field(max_length=128)
@@ -5572,7 +5713,7 @@ def render_frame(script_id: str, request: RenderFrameRequest):
             request.frame_id,
             request.composition_data,
             request.prompt,
-            request.batch_size
+            request.batch_size,
         )
         return signed_response(updated_script)
     except HTTPException:
@@ -5594,6 +5735,8 @@ def select_video(script_id: str, frame_id: str, request: SelectVideoRequest):
     try:
         updated_script = pipeline.select_video_for_frame(script_id, frame_id, request.video_id)
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -5612,6 +5755,8 @@ def auto_select_latest_video(script_id: str, frame_id: str):
     try:
         updated_script = pipeline.auto_select_latest_video(script_id, frame_id)
         return signed_response(updated_script)
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -5739,9 +5884,7 @@ async def upload_t2i_frame(script_id: str, frame_id: str, file: UploadFile = Fil
         # whole projects.json (~50-500KB) — wrap in to_thread so we don't
         # block the event loop for the ~50ms write. Matches the pattern
         # used by create_project / reparse_project / analyze_script_for_styles.
-        frame = await asyncio.to_thread(
-            pipeline.upload_t2i_frame, script_id, frame_id, rel_path
-        )
+        frame = await asyncio.to_thread(pipeline.upload_t2i_frame, script_id, frame_id, rel_path)
         if frame is None:
             # Roll back the file — frame/script gone, no reference will exist
             if os.path.exists(abs_path):
@@ -5762,6 +5905,7 @@ async def upload_t2i_frame(script_id: str, frame_id: str, file: UploadFile = Fil
 def merge_videos(script_id: str):
     """Merge all selected frame videos into final output"""
     import traceback
+
     try:
         if server_mode_enabled():
             require_workspace_script(script_id)
@@ -5775,6 +5919,8 @@ def merge_videos(script_id: str):
         logger.error(f"[MERGE ERROR] Validation failed: {e}")
         logger.exception("An error occurred")
         raise HTTPException(status_code=400, detail=str(e))
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except RuntimeError as e:
         # FFmpeg or processing errors
         logger.error(f"[MERGE ERROR] Runtime error: {e}")
@@ -5788,10 +5934,12 @@ def merge_videos(script_id: str):
 
 # ===== Export Endpoint =====
 
+
 class ExportRequest(BaseModel):
     resolution: str = Field(default="1080p", max_length=32)
     format: str = Field(default="mp4", max_length=16)
     subtitles: str = Field(default="none", max_length=32)
+
 
 @app.post("/projects/{script_id}/export")
 def export_project(script_id: str, request: ExportRequest):
@@ -5810,6 +5958,8 @@ def export_project(script_id: str, request: ExportRequest):
     except ValueError as e:
         status_code = 404 if str(e) == "Script not found" else 400
         raise HTTPException(status_code=status_code, detail=str(e))
+    except AssemblyOperationInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -5819,6 +5969,7 @@ def export_project(script_id: str, request: ExportRequest):
 
 
 # ===== Art Direction Endpoints =====
+
 
 class AnalyzeStyleRequest(BaseModel):
     script_text: str
@@ -5841,11 +5992,15 @@ async def analyze_script_for_styles(script_id: str, request: AnalyzeStyleRequest
             raise HTTPException(status_code=404, detail="Script not found")
 
         # Use LLM to analyze and recommend styles without blocking the event loop.
-        custom_style = getattr(getattr(script, "prompt_config", None), "style_analysis", "")
+        custom_style = pipeline._effective_prompt_override(
+            "style_analysis",
+            script,
+        )
         recommendations = await asyncio.to_thread(
             pipeline.script_processor.analyze_script_for_styles,
             request.script_text,
             custom_style,
+            pipeline._effective_chat_model(script),
         )
 
         return {"recommendations": recommendations}
@@ -5868,6 +6023,7 @@ async def analyze_script_for_styles(script_id: str, request: AnalyzeStyleRequest
         raise
     except Exception as e:
         import traceback
+
         logger.exception("An error occurred")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5910,7 +6066,9 @@ def update_last_episode_summary(script_id: str, payload: dict):
                     if idx > 0:
                         prev = pipeline.get_script(series.episode_ids[idx - 1])
                         if prev:
-                            script.last_episode_summary_revision = _prev_text_revision(prev.original_text or "")
+                            script.last_episode_summary_revision = _prev_text_revision(
+                                prev.original_text or ""
+                            )
                 except ValueError:
                     pass
     script.updated_at = time.time()
@@ -5928,13 +6086,14 @@ def save_art_direction(script_id: str, request: SaveArtDirectionRequest):
             request.selected_style_id,
             request.style_config,
             request.custom_styles,
-            request.ai_recommendations
+            request.ai_recommendations,
         )
         return signed_response(updated_script)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         import traceback
+
         logger.exception("An error occurred")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5945,17 +6104,22 @@ def get_style_presets():
     try:
         import json
         import os
+
         preset_file = os.path.join(os.path.dirname(__file__), "style_presets.json")
 
         if not os.path.exists(preset_file):
             return {"version": 2, "categories": [], "presets": []}
 
-        with open(preset_file, 'r', encoding='utf-8') as f:
+        with open(preset_file, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict) and data.get("version") == 2:
                 return data
             # Legacy fallback: plain array
-            return {"version": 2, "categories": [], "presets": data if isinstance(data, list) else []}
+            return {
+                "version": 2,
+                "categories": [],
+                "presets": data if isinstance(data, list) else [],
+            }
     except Exception as e:
         logger.exception("Failed to load style presets")
         raise HTTPException(status_code=500, detail=str(e))
@@ -5976,6 +6140,7 @@ def _get_custom_prompt(script_id: str, field: str) -> str:
     effective = pipeline.get_effective_prompt(field, script, series)
     # If it's the system default, return empty so the LLM method uses its built-in default
     from .llm import DEFAULT_STORYBOARD_POLISH_PROMPT, DEFAULT_VIDEO_POLISH_PROMPT
+
     defaults = {
         "storyboard_polish": DEFAULT_STORYBOARD_POLISH_PROMPT,
         "video_polish": DEFAULT_VIDEO_POLISH_PROMPT,
@@ -5986,19 +6151,13 @@ def _get_custom_prompt(script_id: str, field: str) -> str:
 
 
 def _get_polish_model_for_project(script_id: str) -> str:
-    """Resolve the project's active chat selection with series/global fallback."""
+    """Resolve the shared project -> Series -> chat/global polish selection."""
     if not script_id:
         return get_selected_model(CHAT)
     script = pipeline.get_script(script_id)
     if not script:
         return get_selected_model(CHAT)
-    if getattr(script, "model_settings", None):
-        return get_model_spec(script.model_settings.chat_model, CHAT).model_id
-    if getattr(script, "series_id", None):
-        series = pipeline.get_series(script.series_id)
-        if series and getattr(series, "model_settings", None):
-            return get_model_spec(series.model_settings.chat_model, CHAT).model_id
-    return get_selected_model(CHAT)
+    return pipeline._effective_polish_model(script)
 
 
 class PolishVideoPromptRequest(BaseModel):
@@ -6056,6 +6215,7 @@ def polish_video_prompt(request: PolishVideoPromptRequest):
       model_echo 是 warning 性质（带原文双语），其余是 hard error。
     """
     from .llm import PolishError
+
     try:
         custom_prompt = _get_custom_prompt(request.script_id, "video_polish")
         # Polish model: request override → project/series PromptConfig → ""
@@ -6068,11 +6228,9 @@ def polish_video_prompt(request: PolishVideoPromptRequest):
             request.prev_cn,
             image_urls=request.image_urls or None,
             polish_model=polish_model,
+            output_root=current_output_root(),
         )
-        return {
-            "prompt_cn": result.get("prompt_cn", ""),
-            "prompt_en": result.get("prompt_en", "")
-        }
+        return {"prompt_cn": result.get("prompt_cn", ""), "prompt_en": result.get("prompt_en", "")}
     except PolishError as e:
         logger.warning("polish_video_prompt failed: %s", e)
         raise HTTPException(status_code=502, detail=_polish_error_response(e))
@@ -6111,8 +6269,7 @@ def get_env_config(request: Request = None):
     require_server_admin(request)
     try:
         secrets_configured = {
-            field: bool((os.getenv(field, "") or "").strip())
-            for field in SECRET_FIELDS
+            field: bool((os.getenv(field, "") or "").strip()) for field in SECRET_FIELDS
         }
 
         return {
@@ -6173,17 +6330,17 @@ def inspect_api_keys(payload: APIKeyInspectionRequest, request: Request):
 # Prop CRUD Endpoints
 # ============================================
 
+
 class CreatePropRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=20_000)
+
 
 @app.post("/projects/{script_id}/props")
 def create_prop(script_id: str, request: CreatePropRequest):
     """Creates a new prop in the project."""
     try:
-        updated_script = pipeline.add_prop(
-            script_id, request.name, request.description
-        )
+        updated_script = pipeline.add_prop(script_id, request.name, request.description)
         return get_project(updated_script.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

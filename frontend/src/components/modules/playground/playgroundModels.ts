@@ -19,6 +19,10 @@ const VIDEO_DEFAULTS = Object.freeze({
   generateAudio: true,
   watermark: false,
 });
+const IMAGE_DEFAULTS = Object.freeze({
+  size: '1536x1024',
+  quality: 'auto',
+});
 
 export interface PlaygroundModelOption {
   id: string;
@@ -126,6 +130,13 @@ export function getModelParams(
   return getModelsForMode(mode).find((candidate) => candidate.id === modelId)?.params ?? null;
 }
 
+export function supportsPlaygroundNegativePrompt(
+  mode: PlaygroundMode,
+  modelId: string,
+): boolean {
+  return getModelParams(modelId, mode)?.negativePrompt === true;
+}
+
 export function getModelDuration(
   modelId: string,
 ): PlaygroundModelOption['duration'] {
@@ -136,19 +147,32 @@ export function getModelDuration(
 }
 
 /**
- * Build the exact video parameters sent to the generation queue.
+ * Build the exact parameters sent to the generation queue.
  *
  * The controls render defaults even when the Zustand record is empty. Without
  * materialising those values, the server/provider can apply a different
- * default. This also removes image-only settings left behind when a generated
- * image is reused as an I2V reference.
+ * default. Whitelisting per capability also removes settings left behind when
+ * the user changes modes or models.
  */
 export function getEffectivePlaygroundParameters(
   mode: PlaygroundMode,
   modelId: string,
   parameters: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (mode !== 't2v' && mode !== 'i2v') return { ...parameters };
+  if (mode === 't2i' || mode === 'i2i') {
+    const modelParams = getModelParams(modelId, mode);
+    const sizeOptions = modelParams?.size?.options ?? [];
+    const qualityOptions = modelParams?.quality?.options ?? [];
+    const size = typeof parameters.size === 'string'
+      && sizeOptions.includes(parameters.size)
+      ? parameters.size
+      : modelParams?.size?.default ?? IMAGE_DEFAULTS.size;
+    const quality = typeof parameters.quality === 'string'
+      && qualityOptions.includes(parameters.quality)
+      ? parameters.quality
+      : modelParams?.quality?.default ?? IMAGE_DEFAULTS.quality;
+    return { size, quality };
+  }
 
   const resolutionOptions = getVideoResolutionOptions(mode, modelId);
   const resolution = typeof parameters.resolution === 'string'
@@ -203,4 +227,21 @@ export function getEffectivePlaygroundParameters(
   }
 
   return normalized;
+}
+
+/**
+ * Return only media accepted by the selected request mode. Text-to-video must
+ * never inherit a stale image; I2V accepts exactly one first frame.
+ */
+export function getEffectivePlaygroundInputMedia(
+  mode: PlaygroundMode,
+  inputMedia: string[],
+  options: { allowTextToImageReferences?: boolean } = {},
+): string[] {
+  const usable = inputMedia.filter((item) => typeof item === 'string' && item.trim().length > 0);
+  if (mode === 't2i') {
+    return options.allowTextToImageReferences ? usable.slice(0, 16) : [];
+  }
+  if (mode === 't2v') return [];
+  return mode === 'i2v' ? usable.slice(0, 1) : usable.slice(0, 16);
 }

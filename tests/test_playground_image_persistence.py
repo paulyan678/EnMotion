@@ -38,6 +38,9 @@ def test_legacy_playground_outputs_serialize_to_one_media_contract(
         "media_type": expected_type,
         "thumbnail_path": None,
         "saved_to_library": False,
+        "library_category": None,
+        "library_asset_id": None,
+        "library_media_path": None,
     }
 
 
@@ -70,6 +73,8 @@ def test_restored_legacy_history_is_normalized_after_server_restart(tmp_path):
     restored = PlaygroundStorage(output_root=str(output_root)).list_history()[0]
     assert restored.outputs[0].media_path == "playground/images/restored.png"
     assert restored.outputs[0].saved_to_library is True
+    assert restored.outputs[0].library_category == "prop"
+    assert restored.finished_at == restored.updated_at
 
     # A normal later mutation rewrites the legacy envelope in canonical form,
     # and another process/restart can still restore it.

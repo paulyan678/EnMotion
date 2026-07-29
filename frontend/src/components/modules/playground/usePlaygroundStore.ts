@@ -5,7 +5,11 @@ import {
   normalizeActiveModel,
 } from '@/lib/newApiModels';
 import { readWorkspaceItem, writeWorkspaceItem } from '@/lib/workspaceStorage';
-import { getEffectivePlaygroundParameters } from './playgroundModels';
+import { playgroundApi } from '@/lib/api';
+import {
+  getEffectivePlaygroundInputMedia,
+  getEffectivePlaygroundParameters,
+} from './playgroundModels';
 
 // ---------------------------------------------------------------------------
 // Featured (best-of-batch) persistence — client-side localStorage only.
@@ -59,6 +63,34 @@ let queueSeq = 0;
 
 const MODEL_PREFERENCES_LS_KEY = 'enmotion:playground:model-preferences';
 
+function isOwnedPlaygroundUpload(path: string): boolean {
+  if (/^(https?:|data:|blob:)/i.test(path)) return false;
+  return /^(?:output\/)?playground\/uploads\/[^/]/.test(path.replace(/\\/g, '/'));
+}
+
+function droppedOwnedUploads(
+  previous: string[],
+  next: string[],
+  queued: QueuedRequest[],
+): string[] {
+  const queuedReferences = new Set(queued.flatMap((request) => request.inputMedia));
+  return Array.from(new Set(
+    previous.filter(
+      (path) => (
+        isOwnedPlaygroundUpload(path)
+        && !next.includes(path)
+        && !queuedReferences.has(path)
+      ),
+    ),
+  ));
+}
+
+export function isPlaygroundMediaReferencedByQueue(path: string): boolean {
+  return usePlaygroundStore.getState().queue.some(
+    (request) => request.inputMedia.includes(path),
+  );
+}
+
 function loadModelPreferences(): Partial<Record<PlaygroundMode, string>> {
   if (typeof window === 'undefined') return {};
   try {
@@ -97,6 +129,7 @@ export interface PlaygroundOutput {
   media_type: 'image' | 'video';
   thumbnail_path?: string;
   saved_to_library: boolean;
+  library_category?: 'character' | 'scene' | 'prop';
 }
 
 export interface PlaygroundGeneration {
@@ -112,6 +145,8 @@ export interface PlaygroundGeneration {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
   created_at: string;
+  updated_at?: string;
+  finished_at?: string | null;
 }
 
 export interface PlaygroundTemplate {
@@ -236,6 +271,47 @@ const DEFAULT_MODE: PlaygroundMode = 't2i';
 const DEFAULT_MODEL_ID = DEFAULT_ACTIVE_MODELS.image;
 const DEFAULT_PROMPT = '';
 const DEFAULT_BATCH_SIZE = 1;
+const DEFAULT_PARAMETERS = getEffectivePlaygroundParameters(
+  DEFAULT_MODE,
+  DEFAULT_MODEL_ID,
+  {},
+);
+
+function exposeUploadAfterCleanupFailure(path: string): void {
+  const current = usePlaygroundStore.getState();
+  if (current.inputMedia.includes(path)) return;
+
+  const inputMedia = [...current.inputMedia, path];
+  const needsImageEditMode = (
+    current.mode === 't2i'
+    || current.mode === 't2v'
+    || (current.mode === 'i2v' && inputMedia.length > 1)
+  );
+  if (!needsImageEditMode) {
+    usePlaygroundStore.setState({ inputMedia });
+    return;
+  }
+
+  const mode: PlaygroundMode = 'i2i';
+  const modelId = normalizeActiveModel('image', current.modelPreferences[mode]);
+  usePlaygroundStore.setState({
+    mode,
+    modelId,
+    inputMedia,
+    parameters: getEffectivePlaygroundParameters(mode, modelId, current.parameters),
+  });
+}
+
+function reclaimOwnedUploads(paths: string[], context: string): void {
+  for (const path of paths) {
+    void Promise.resolve()
+      .then(() => playgroundApi.deleteUpload(path))
+      .catch((error) => {
+        console.error(`[Playground] Failed to reclaim ${context} upload:`, error);
+        exposeUploadAfterCleanupFailure(path);
+      });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Store
@@ -248,7 +324,7 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   prompt: DEFAULT_PROMPT,
   negativePrompt: '',
   inputMedia: [],
-  parameters: {},
+  parameters: DEFAULT_PARAMETERS,
   batchSize: DEFAULT_BATCH_SIZE,
 
   // -- Model preferences ----------------------------------------------------
@@ -304,7 +380,25 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
     set((s) => ({
       queue: s.queue.map((q) => (q.id === id ? { ...q, status: 'dispatching' as const } : q)),
     })),
-  removeFromQueue: (id) => set((s) => ({ queue: s.queue.filter((q) => q.id !== id) })),
+  removeFromQueue: (id) => {
+    const current = get();
+    const removed = current.queue.find((request) => request.id === id);
+    const queue = current.queue.filter((request) => request.id !== id);
+    set({ queue });
+    if (!removed) return;
+    const protectedPaths = new Set([
+      ...current.inputMedia,
+      ...queue.flatMap((request) => request.inputMedia),
+    ]);
+    reclaimOwnedUploads(
+      Array.from(new Set(
+        removed.inputMedia.filter(
+          (path) => isOwnedPlaygroundUpload(path) && !protectedPaths.has(path),
+        ),
+      )),
+      'deferred queue',
+    );
+  },
   setMaxConcurrent: (n) => {
     const clamped = Math.max(1, Math.min(8, Math.round(n)));
     saveConcurrency(clamped);
@@ -318,25 +412,41 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   // -- Input setters ---------------------------------------------------------
 
   setMode: (mode) => {
-    const { modelPreferences } = get();
+    const { inputMedia, modelPreferences, parameters, queue } = get();
     const capability = mode === 't2i' || mode === 'i2i' ? 'image' : 'video';
     const preferredModel = normalizeActiveModel(capability, modelPreferences[mode]);
+    const nextInputMedia = getEffectivePlaygroundInputMedia(mode, inputMedia);
     set({
       mode,
       modelId: preferredModel,
+      inputMedia: nextInputMedia,
+      parameters: getEffectivePlaygroundParameters(mode, preferredModel, parameters),
     });
+    reclaimOwnedUploads(
+      droppedOwnedUploads(inputMedia, nextInputMedia, queue),
+      'mode-dropped',
+    );
   },
 
   setModelId: (modelId) => {
-    const { mode, modelPreferences } = get();
+    const { inputMedia, mode, modelPreferences, parameters, queue } = get();
     const capability = mode === 't2i' || mode === 'i2i' ? 'image' : 'video';
     if (!isApprovedModelForCapability(modelId, capability)) return;
     const nextPreferences = { ...modelPreferences, [mode]: modelId };
     saveModelPreferences(nextPreferences);
+    const nextInputMedia = getEffectivePlaygroundInputMedia(mode, inputMedia, {
+      allowTextToImageReferences: mode === 't2i',
+    });
     set({
       modelId,
       modelPreferences: nextPreferences,
+      inputMedia: nextInputMedia,
+      parameters: getEffectivePlaygroundParameters(mode, modelId, parameters),
     });
+    reclaimOwnedUploads(
+      droppedOwnedUploads(inputMedia, nextInputMedia, queue),
+      'model-dropped',
+    );
   },
 
   setPrompt: (prompt) => set({ prompt }),
@@ -347,16 +457,21 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
 
   useResultAsReference: (mediaPath, mediaType, targetMode) => {
     if (mediaType === 'video') return;
-    const { modelPreferences, parameters } = get();
+    const { inputMedia, modelPreferences, parameters, queue } = get();
     const mode: PlaygroundMode = targetMode ?? 'i2i';
     const capability = mode === 't2i' || mode === 'i2i' ? 'image' : 'video';
     const preferredModel = normalizeActiveModel(capability, modelPreferences[mode]);
+    const nextInputMedia = getEffectivePlaygroundInputMedia(mode, [mediaPath]);
     set({
       mode,
-      inputMedia: [mediaPath],
+      inputMedia: nextInputMedia,
       modelId: preferredModel,
       parameters: getEffectivePlaygroundParameters(mode, preferredModel, parameters),
     });
+    reclaimOwnedUploads(
+      droppedOwnedUploads(inputMedia, nextInputMedia, queue),
+      'replaced',
+    );
   },
 
   setParameters: (parameters) => set({ parameters }),
@@ -441,39 +556,63 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
     set((s) => ({ templates: s.templates.filter((t) => t.id !== id) })),
 
   applyTemplate: (template) => {
+    const current = get();
+    const nextMode = template.default_mode ?? current.mode;
+    const capability = nextMode === 't2i' || nextMode === 'i2i' ? 'image' : 'video';
+    const nextModel = normalizeActiveModel(
+      capability,
+      template.default_model_id ?? (
+        nextMode === current.mode ? current.modelId : current.modelPreferences[nextMode]
+      ),
+    );
+    const hasTemplateParameters = (
+      template.default_parameters != null
+      && Object.keys(template.default_parameters).length > 0
+    );
+    const parameterSource = hasTemplateParameters
+      ? template.default_parameters
+      : nextMode === current.mode && nextModel === current.modelId
+        ? current.parameters
+        : {};
+    const nextInputMedia = getEffectivePlaygroundInputMedia(nextMode, current.inputMedia, {
+      allowTextToImageReferences: (
+        nextMode === 't2i'
+        && nextMode === current.mode
+      ),
+    });
     const patch: Partial<PlaygroundState> = {
       prompt: template.prompt,
+      mode: nextMode,
+      modelId: nextModel,
+      inputMedia: nextInputMedia,
+      parameters: getEffectivePlaygroundParameters(nextMode, nextModel, parameterSource),
     };
     if (template.negative_prompt != null) {
       patch.negativePrompt = template.negative_prompt;
     }
-    if (template.default_mode != null) {
-      patch.mode = template.default_mode;
-    }
-    if (template.default_model_id != null) {
-      const nextMode = patch.mode ?? get().mode;
-      const capability = nextMode === 't2i' || nextMode === 'i2i' ? 'image' : 'video';
-      patch.modelId = normalizeActiveModel(capability, template.default_model_id);
-    }
-    if (
-      template.default_parameters != null &&
-      Object.keys(template.default_parameters).length > 0
-    ) {
-      patch.parameters = template.default_parameters;
-    }
     set(patch);
+    reclaimOwnedUploads(
+      droppedOwnedUploads(current.inputMedia, nextInputMedia, current.queue),
+      'template-dropped',
+    );
   },
 
   // -- Reset -----------------------------------------------------------------
 
-  resetInput: () =>
+  resetInput: () => {
+    const { inputMedia: previousInputMedia, queue } = get();
     set({
       prompt: DEFAULT_PROMPT,
       negativePrompt: '',
       inputMedia: [],
-      parameters: {},
+      parameters: DEFAULT_PARAMETERS,
       batchSize: DEFAULT_BATCH_SIZE,
-    }),
+    });
+    reclaimOwnedUploads(
+      droppedOwnedUploads(previousInputMedia, [], queue),
+      'reset',
+    );
+  },
 }));
 
 /**
@@ -489,7 +628,7 @@ export function resetPlaygroundWorkspaceState(): void {
     prompt: DEFAULT_PROMPT,
     negativePrompt: '',
     inputMedia: [],
-    parameters: {},
+    parameters: DEFAULT_PARAMETERS,
     batchSize: DEFAULT_BATCH_SIZE,
     modelPreferences,
     history: [],

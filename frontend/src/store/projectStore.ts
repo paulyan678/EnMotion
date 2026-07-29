@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { api } from '@/lib/api';
 import type { FrontendModelSettings } from '@/lib/modelCatalog';
 import { isServerModeEnabled } from '@/lib/serverMode';
-import { readWorkspaceItem, workspaceStateStorage } from '@/lib/workspaceStorage';
+import { workspaceStateStorage } from '@/lib/workspaceStorage';
 import { notifyAssetLibraryChanged } from '@/lib/assetLibrarySync';
 import { notifyStoryboardFramesChanged } from '@/lib/storyboardFrameSync';
 export {
@@ -187,6 +187,12 @@ export interface StoryboardFrame {
     camera_movement_structured?: { primary?: string | null; description?: string | null; speed?: string | null } | null;
     selected_video_id?: string | null;
     video_url?: string | null;
+    audio_url?: string | null;
+    preview_video_url?: string | null;
+    preview_video_task_id?: string | null;
+    dubbed_video_url?: string | null;
+    dubbed_video_task_id?: string | null;
+    dub_offset_ms?: number;
     is_video_pinned?: boolean;
     status?: string;
     locked?: boolean;
@@ -279,6 +285,8 @@ export interface Series {
     art_direction?: ArtDirection;
     prompt_config?: PromptConfig;
     model_settings?: ModelSettings;
+    model_settings_overrides?: string[];
+    inherited_model_settings?: ModelSettings;
     workflow_mode?: "r2v" | "i2v_legacy";
     default_generation_mode?: "i2v";
     episode_ids: string[];
@@ -302,10 +310,12 @@ export interface Project {
     style_preset?: string;
     art_direction?: ArtDirection;
     model_settings?: ModelSettings;
+    model_settings_overrides?: string[];
+    inherited_model_settings?: ModelSettings;
     prompt_config?: PromptConfig;
     workflow_mode?: "i2v_legacy" | "r2v";
     default_generation_mode?: "i2v";
-    merged_video_url?: string;
+    merged_video_url?: string | null;
     /** PR-3k · Assembly Mix phase fields */
     bgm_url?: string | null;
     mix_settings?: Record<string, number>;
@@ -318,12 +328,13 @@ export interface Project {
 interface ProjectStore {
     projects: Project[];
     currentProject: Project | null;
+    scriptDrafts: Record<string, { text: string; projectTitle?: string }>;
     isLoading: boolean;
     isAnalyzing: boolean;
     isAnalyzingArtStyle: boolean;
 
     // Entity extraction confirmation (persists across step switches)
-    pendingExtraction: { characters: any[]; scenes: any[]; props: any[] } | null;
+    pendingExtraction: { characters: any[]; scenes: any[]; props: any[]; preview_revision?: string } | null;
     pendingExtractionScript: string | null;
     confirmExtraction: () => Promise<void>;
     discardExtraction: () => void;
@@ -339,6 +350,11 @@ interface ProjectStore {
     loadProjects: () => void;
     selectProject: (id: string) => Promise<void>;
     updateProject: (id: string, data: Partial<Project>) => void;
+    markScriptDraft: (
+        id: string,
+        draft: { text: string; projectTitle?: string },
+    ) => void;
+    confirmScriptDraft: (id: string, text: string) => void;
     deleteProject: (id: string) => Promise<void>;
     clearCurrentProject: () => void;
 
@@ -376,69 +392,12 @@ interface ProjectStore {
     setCurrentSeries: (series: Series | null) => void;
 }
 
-// localStorage keys mirrored from SettingsPage. These hold the user's
-// global default model settings / prompt config. Kept here so newly
-// created projects can be backfilled with those defaults.
-const LS_KEY_DEFAULT_MODEL = 'enmotion_default_model_settings';
-const LS_KEY_DEFAULT_PROMPT = 'enmotion_default_prompt_config';
-
-function readLS<T>(key: string): T | null {
-    if (typeof window === 'undefined') return null;
-    try {
-        const raw = readWorkspaceItem(key);
-        return raw ? (JSON.parse(raw) as T) : null;
-    } catch {
-        return null;
-    }
-}
-
-// Backfill the SettingsPage defaults onto a freshly created project.
-// Returns the re-fetched project when any default was applied, else null.
-async function injectDefaultsIntoProject(projectId: string): Promise<Project | null> {
-    const ms = readLS<Partial<FrontendModelSettings>>(LS_KEY_DEFAULT_MODEL);
-    const pc = readLS<{
-        storyboard_polish?: string;
-        video_polish?: string;
-        entity_extraction?: string;
-        style_analysis?: string;
-        storyboard_extraction?: string;
-    }>(LS_KEY_DEFAULT_PROMPT);
-
-    let applied = false;
-
-    if (ms) {
-        await api.updateModelSettings(projectId, {
-            chat_model: ms.chat_model,
-            t2i_model: ms.image_model ?? ms.t2i_model,
-            i2i_model: ms.image_model ?? ms.i2i_model,
-            image_model: ms.image_model,
-            i2v_model: ms.video_model ?? ms.i2v_model,
-            video_model: ms.video_model ?? ms.i2v_model,
-            character_aspect_ratio: ms.character_aspect_ratio,
-            scene_aspect_ratio: ms.scene_aspect_ratio,
-            prop_aspect_ratio: ms.prop_aspect_ratio,
-            storyboard_aspect_ratio: ms.storyboard_aspect_ratio,
-        });
-        applied = true;
-    }
-
-    if (pc) {
-        const hasAny = Object.values(pc).some((v) => typeof v === 'string' && v.trim());
-        if (hasAny) {
-            await api.updatePromptConfig(projectId, pc);
-            applied = true;
-        }
-    }
-
-    if (!applied) return null;
-    return api.getProject(projectId);
-}
-
 export const useProjectStore = create<ProjectStore>()(
     persist(
         (set, get) => ({
             projects: [],
             currentProject: null,
+            scriptDrafts: {},
             isLoading: false,
             isAnalyzing: false,
             selectedFrameId: null,
@@ -447,11 +406,19 @@ export const useProjectStore = create<ProjectStore>()(
             pendingExtraction: null,
             pendingExtractionScript: null,
             confirmExtraction: async () => {
-                const { currentProject, pendingExtractionScript } = get();
+                const { currentProject, pendingExtractionScript, pendingExtraction } = get();
                 if (!currentProject?.id || !pendingExtractionScript) return;
+                if (!pendingExtraction?.preview_revision) {
+                    set({ pendingExtraction: null, pendingExtractionScript: null });
+                    throw new Error("Entity preview expired; run extraction again");
+                }
                 set({ isAnalyzing: true });
                 try {
-                    await api.reparseProject(currentProject.id, pendingExtractionScript);
+                    await api.reparseProject(
+                        currentProject.id,
+                        pendingExtractionScript,
+                        pendingExtraction.preview_revision,
+                    );
                     const project = await api.getProject(currentProject.id);
                     const series = project.series_id
                         ? await api.getSeries(project.series_id)
@@ -491,18 +458,7 @@ export const useProjectStore = create<ProjectStore>()(
             createProject: async (title: string, text: string, skipAnalysis: boolean = false, workflowMode: string = "i2v_legacy", seriesId?: string) => {
                 set({ isLoading: true });
                 try {
-                    let project = await api.createProject(title, text, skipAnalysis, workflowMode, seriesId);
-                    // Inject SettingsPage defaults into the new project. These
-                    // are persisted to localStorage by SettingsPage but were
-                    // never wired into creation — so changing defaults had no
-                    // effect. Backfill via the existing per-project endpoints.
-                    try {
-                        const updated = await injectDefaultsIntoProject(project.id);
-                        if (updated) project = { ...project, ...updated, originalText: project.originalText };
-                    } catch (backfillError) {
-                        // Non-fatal: a failed backfill must not block creation.
-                        console.warn('Failed to inject default settings into new project:', backfillError);
-                    }
+                    const project = await api.createProject(title, text, skipAnalysis, workflowMode, seriesId);
                     set((state) => ({
                         projects: [...state.projects, project],
                         currentProject: project,
@@ -520,30 +476,9 @@ export const useProjectStore = create<ProjectStore>()(
                 set({ isAnalyzing: true });
 
                 try {
-                    let project: Project;
                     if (currentProject && currentProject.id) {
-                        await api.reparseProject(currentProject.id, script);
-                        project = await api.getProject(currentProject.id);
-                        const series = project.series_id
-                            ? await api.getSeries(project.series_id)
-                            : null;
-                        // Update the store with the new/updated project
-                        set((state) => ({
-                            projects: state.projects.map((p) =>
-                                p.id === project.id ? { ...project, updatedAt: new Date().toISOString() } : p
-                            ),
-                            currentProject: { ...project, updatedAt: new Date().toISOString() },
-                            currentSeries: series ?? state.currentSeries,
-                            seriesList: series
-                                ? state.seriesList.some((item) => item.id === series.id)
-                                    ? state.seriesList.map((item) => item.id === series.id ? series : item)
-                                    : [...state.seriesList, series]
-                                : state.seriesList,
-                        }));
-                        notifyAssetLibraryChanged({
-                            projectId: project.id,
-                            seriesId: project.series_id,
-                        });
+                        const preview = await api.extractPreview(currentProject.id, script);
+                        set({ pendingExtraction: preview, pendingExtractionScript: script });
                     } else {
                         // If no current project, create one (assuming title is available or default)
                         // This case might be rare if we always create project first, but handling it just in case
@@ -618,15 +553,37 @@ export const useProjectStore = create<ProjectStore>()(
                 }
             },
 
+            markScriptDraft: (id, draft) => set((state) => ({
+                scriptDrafts: {
+                    ...state.scriptDrafts,
+                    [id]: draft,
+                },
+            })),
+
+            confirmScriptDraft: (id, text) => set((state) => {
+                if (state.scriptDrafts[id]?.text !== text) return state;
+                const nextDrafts = { ...state.scriptDrafts };
+                delete nextDrafts[id];
+                return { scriptDrafts: nextDrafts };
+            }),
+
             deleteProject: async (id: string) => {
                 try {
                     // Delete from backend first
                     await api.deleteProject(id);
                     // Then remove from local state
-                    set((state) => ({
-                        projects: state.projects.filter((p) => p.id !== id),
-                        currentProject: state.currentProject?.id === id ? null : state.currentProject
-                    }));
+                    set((state) => {
+                        const nextDrafts = { ...state.scriptDrafts };
+                        delete nextDrafts[id];
+                        return {
+                            projects: state.projects.filter((p) => p.id !== id),
+                            currentProject:
+                                state.currentProject?.id === id
+                                    ? null
+                                    : state.currentProject,
+                            scriptDrafts: nextDrafts,
+                        };
+                    });
                 } catch (error) {
                     console.error('Failed to delete project from backend:', error);
                     // Server confirmation is the deletion contract. Keeping
@@ -776,6 +733,18 @@ export const useProjectStore = create<ProjectStore>()(
                         const currentProjectWasDeleted = state.currentProject
                             ? belongsToDeletedSeries(state.currentProject)
                             : false;
+                        const nextDrafts = { ...state.scriptDrafts };
+                        for (const projectId of Object.keys(nextDrafts)) {
+                            const project = state.projects.find(
+                                (item) => item.id === projectId,
+                            );
+                            if (
+                                listedEpisodeIds.has(projectId)
+                                || project?.series_id === id
+                            ) {
+                                delete nextDrafts[projectId];
+                            }
+                        }
 
                         return {
                             projects: state.projects.filter(
@@ -790,6 +759,7 @@ export const useProjectStore = create<ProjectStore>()(
                             seriesList: state.seriesList.filter((item) => item.id !== id),
                             currentSeries:
                                 state.currentSeries?.id === id ? null : state.currentSeries,
+                            scriptDrafts: nextDrafts,
                         };
                     });
                 } catch (error) {
@@ -813,8 +783,8 @@ export const useProjectStore = create<ProjectStore>()(
             skipHydration: isServerModeEnabled(),
             partialize: (state) => ({
                 projects: state.projects,
-
-                generatingTasks: state.generatingTasks // Now persisting this to maintain state across refreshes
+                scriptDrafts: state.scriptDrafts,
+                generatingTasks: state.generatingTasks, // Persist long-running generation state.
             }),
         }
     )
@@ -825,6 +795,7 @@ export function resetProjectWorkspaceState(): void {
     useProjectStore.setState({
         projects: [],
         currentProject: null,
+        scriptDrafts: {},
         isLoading: false,
         isAnalyzing: false,
         isAnalyzingArtStyle: false,

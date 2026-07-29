@@ -31,7 +31,7 @@ export default function UpdatePill() {
         <span className="hidden truncate sm:inline">{percent === null ? t("downloading") : t("downloadingPercent", { percent })}</span>
         <span
           className="hidden h-1 w-10 overflow-hidden rounded-full bg-surface-inset sm:block"
-          role={percent === null ? undefined : "progressbar"}
+          role="progressbar"
           aria-label={t("downloadProgress")}
           aria-valuemin={percent === null ? undefined : 0}
           aria-valuemax={percent === null ? undefined : 100}

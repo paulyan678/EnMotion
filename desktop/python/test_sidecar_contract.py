@@ -93,6 +93,29 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotEqual(cookie, nonce)
         self.assertNotEqual(sidecar.local_api_nonce(nonce), nonce)
 
+    def test_media_forwarding_replaces_spoofed_nonce_and_preserves_range_headers(self) -> None:
+        headers = [
+            (b"host", b"127.0.0.1:24567"),
+            (b"cookie", b"enmotion_desktop_session=session"),
+            (b"range", b"bytes=1024-2047"),
+            (b"if-none-match", b'"asset-etag"'),
+            (b"x-enmotion-local-nonce", b"untrusted-client-value"),
+        ]
+
+        forwarded = sidecar.headers_with_local_api_nonce(headers, "b" * 64)
+
+        self.assertIn((b"range", b"bytes=1024-2047"), forwarded)
+        self.assertIn((b"if-none-match", b'"asset-etag"'), forwarded)
+        nonce_headers = [
+            value
+            for name, value in forwarded
+            if name.lower() == b"x-enmotion-local-nonce"
+        ]
+        self.assertEqual(
+            nonce_headers,
+            [sidecar.local_api_nonce("b" * 64).encode("ascii")],
+        )
+
     def test_bootstrap_cookie_survives_the_tauri_to_loopback_redirect(self) -> None:
         response = sidecar.desktop_session_response("c" * 64)
         cookie = response.headers["set-cookie"].lower()

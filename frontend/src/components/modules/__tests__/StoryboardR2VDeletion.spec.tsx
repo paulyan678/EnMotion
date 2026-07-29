@@ -1,7 +1,9 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import StoryboardR2V from "@/components/modules/StoryboardR2V";
+import StoryboardR2V, {
+    resolveStoryboardVideoModel,
+} from "@/components/modules/StoryboardR2V";
 import { crudApi } from "@/lib/api";
 import { useProjectStore, type Project } from "@/store/projectStore";
 import { useToastStore } from "@/store/toastStore";
@@ -80,6 +82,15 @@ afterEach(() => {
 });
 
 describe("StoryboardR2V frame deletion", () => {
+    it("prefers the live project model over a stale device cache", () => {
+        expect(
+            resolveStoryboardVideoModel(
+                "doubao-seedance-2-0-mini-260615",
+                "doubao-seedance-2-0-fast-260128",
+            ),
+        ).toBe("doubao-seedance-2-0-mini-260615");
+    });
+
   it("keeps a frame when the Chinese confirmation is canceled", () => {
     seedProject();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);

@@ -52,6 +52,12 @@ IMAGE_UPLOAD_POLICY = UploadPolicy(
     content_type_prefixes=("image/",),
 )
 
+AUDIO_UPLOAD_POLICY = UploadPolicy(
+    max_bytes=25 * 1024 * 1024,
+    extensions=AUDIO_EXTENSIONS,
+    content_type_prefixes=("audio/",),
+)
+
 GENERIC_MEDIA_UPLOAD_POLICY = UploadPolicy(
     max_bytes=10 * 1024 * 1024,
     extensions=IMAGE_EXTENSIONS | AUDIO_EXTENSIONS,

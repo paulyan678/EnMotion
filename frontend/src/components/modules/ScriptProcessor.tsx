@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
 import { Wand2, Loader2, User, MapPin, Box, ChevronRight, ChevronLeft, Save, Sparkles, Plus, Trash2, X, ScrollText } from "lucide-react";
@@ -26,20 +26,47 @@ interface ScriptNode {
     visual_weight?: number;
 }
 
+interface ScriptDraft {
+    projectId: string;
+    projectTitle?: string;
+    text: string;
+}
+
 export default function ScriptProcessor() {
     const ts = useTranslations("script");
     const tc = useTranslations("common");
     const locale = useLocale();
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
+    const scriptDrafts = useProjectStore((state) => state.scriptDrafts);
+    const markScriptDraft = useProjectStore((state) => state.markScriptDraft);
+    const confirmScriptDraft = useProjectStore((state) => state.confirmScriptDraft);
     const analyzeProject = useProjectStore((state) => state.analyzeProject);
     const isAnalyzing = useProjectStore((state) => state.isAnalyzing);
 
     // Initialize from project data. Fallback to snake_case original_text
     // in case the API wrapper didn't map it (e.g. raw axios response, or a
     // store update that spread the backend payload without re-mapping).
-    const projectText = (currentProject?.originalText ?? (currentProject as any)?.original_text) || "";
+    const storedDirtyDraft = currentProject ? scriptDrafts[currentProject.id] : undefined;
+    const serverProjectText =
+        (currentProject?.originalText ?? (currentProject as any)?.original_text) || "";
+    const projectText = storedDirtyDraft?.text ?? serverProjectText;
     const [script, setScript] = useState(projectText);
+    const persistedTextByProject = useRef(new Map<string, string>(
+        currentProject && !storedDirtyDraft ? [[currentProject.id, projectText]] : [],
+    ));
+    const draftTextByProject = useRef(new Map<string, string>(
+        currentProject ? [[currentProject.id, projectText]] : [],
+    ));
+    const activeDraft = useRef<ScriptDraft | null>(
+        currentProject
+            ? { projectId: currentProject.id, projectTitle: currentProject.title, text: projectText }
+            : null,
+    );
+    const pendingSaves = useRef(new Map<string, ScriptDraft>());
+    const saveLoop = useRef<Promise<void> | null>(null);
+    const observedDirtyTextByProject = useRef(new Map<string, string>());
+    const [isSavingScript, setIsSavingScript] = useState(false);
     const [nodes, setNodes] = useState<ScriptNode[]>([]);
 
     // UI State
@@ -47,16 +74,122 @@ export default function ScriptProcessor() {
     const [showPanel, setShowPanel] = useState(true);
     const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
 
-    // Sync from project. Bind on currentProject.id (not the whole object) so
-    // local textarea state isn't clobbered every time we mutate Zustand for
-    // unrelated reasons. We still re-pull text when the user switches
-    // projects, and we resync entity nodes whenever the entity arrays change.
+    const queueScriptSave = useCallback((draft: ScriptDraft) => {
+        markScriptDraft(draft.projectId, {
+            text: draft.text,
+            projectTitle: draft.projectTitle,
+        });
+        pendingSaves.current.set(draft.projectId, draft);
+        if (saveLoop.current) return saveLoop.current;
+
+        saveLoop.current = (async () => {
+            setIsSavingScript(true);
+            const deferredFailures = new Set<string>();
+            while (pendingSaves.current.size > 0) {
+                const entry = Array.from(pendingSaves.current.entries()).find(
+                    ([projectId]) => !deferredFailures.has(projectId),
+                );
+                if (!entry) break;
+                const [projectId, next] = entry;
+                pendingSaves.current.delete(projectId);
+                if (persistedTextByProject.current.get(next.projectId) === next.text) {
+                    confirmScriptDraft(next.projectId, next.text);
+                    continue;
+                }
+                try {
+                    const updated = await api.updateScriptText(next.projectId, next.text);
+                    const persistedText =
+                        (updated as any).original_text ?? updated.originalText ?? next.text;
+                    persistedTextByProject.current.set(next.projectId, persistedText);
+                    confirmScriptDraft(next.projectId, next.text);
+                    const latestDraft = draftTextByProject.current.get(next.projectId);
+                    const visibleText = latestDraft === undefined ? persistedText : latestDraft;
+                    updateProject(next.projectId, {
+                        originalText: visibleText,
+                        original_text: visibleText,
+                    } as any);
+                } catch (error: any) {
+                    // Keep the failed project dirty without overwriting a newer
+                    // queued draft for that same project.
+                    const newerDraft = pendingSaves.current.get(next.projectId);
+                    if (!newerDraft) {
+                        pendingSaves.current.set(next.projectId, next);
+                        deferredFailures.add(next.projectId);
+                    }
+                    const detail =
+                        error?.response?.data?.detail || error?.message || ts("saveFailed");
+                    toast.error(ts("saveFailed"), {
+                        body: String(detail).slice(0, 240),
+                        projectId: next.projectId,
+                        projectTitle: next.projectTitle,
+                    });
+                    // A newer draft queued behind this failed request gets one
+                    // immediate attempt. If no newer draft exists, defer this
+                    // dirty project until the next user-triggered blur.
+                    continue;
+                }
+            }
+        })().finally(() => {
+            setIsSavingScript(false);
+            saveLoop.current = null;
+        });
+
+        return saveLoop.current;
+    }, [confirmScriptDraft, markScriptDraft, ts, updateProject]);
+
+    // Project changes save the outgoing owned draft before rehydrating the
+    // incoming one. Blur can therefore never pair A's text with B's id, even
+    // when the switch happens before the textarea loses focus.
     useEffect(() => {
-        if (currentProject) {
-            const txt = (currentProject as any)?.original_text ?? currentProject.originalText ?? "";
-            setScript(txt || "");
+        const incomingProjectId = currentProject?.id ?? null;
+        const outgoing = activeDraft.current;
+        if (outgoing && outgoing.projectId !== incomingProjectId) {
+            if (persistedTextByProject.current.get(outgoing.projectId) !== outgoing.text) {
+                void queueScriptSave(outgoing);
+            }
         }
-    }, [currentProject?.id]);
+        if (!currentProject) {
+            activeDraft.current = null;
+            setScript("");
+            return;
+        }
+        const serverText =
+            (currentProject as any)?.original_text ?? currentProject.originalText ?? "";
+        const dirtyDraft = scriptDrafts[currentProject.id];
+        if (dirtyDraft) {
+            // The persisted Zustand project snapshot is optimistic. A matching
+            // dirty marker means it must not be treated as server-confirmed.
+            persistedTextByProject.current.delete(currentProject.id);
+        } else if (!persistedTextByProject.current.has(currentProject.id)) {
+            persistedTextByProject.current.set(currentProject.id, serverText);
+        }
+        const incomingText =
+            dirtyDraft?.text
+            ?? draftTextByProject.current.get(currentProject.id)
+            ?? serverText;
+        draftTextByProject.current.set(currentProject.id, incomingText);
+        const incomingDraft = {
+            projectId: currentProject.id,
+            projectTitle: dirtyDraft?.projectTitle ?? currentProject.title,
+            text: incomingText,
+        };
+        activeDraft.current = incomingDraft;
+        setScript(incomingText);
+        if (
+            dirtyDraft
+            && observedDirtyTextByProject.current.get(currentProject.id) !== dirtyDraft.text
+        ) {
+            // Retry a dirty draft restored by remount/rehydration exactly once
+            // per component lifetime. A failure remains marked for the next
+            // remount instead of spinning in the background.
+            observedDirtyTextByProject.current.set(currentProject.id, dirtyDraft.text);
+            void queueScriptSave(incomingDraft);
+        }
+    }, [
+        currentProject?.id,
+        queueScriptSave,
+        scriptDrafts,
+    ]);
 
     useEffect(() => {
         if (!currentProject) {
@@ -233,6 +366,23 @@ export default function ScriptProcessor() {
                         onChange={(e) => {
                             const newText = e.target.value;
                             setScript(newText);
+                            if (currentProject) {
+                                const draft = {
+                                    projectId: currentProject.id,
+                                    projectTitle: currentProject.title,
+                                    text: newText,
+                                };
+                                draftTextByProject.current.set(currentProject.id, newText);
+                                activeDraft.current = draft;
+                                observedDirtyTextByProject.current.set(
+                                    currentProject.id,
+                                    newText,
+                                );
+                                markScriptDraft(currentProject.id, {
+                                    text: newText,
+                                    projectTitle: currentProject.title,
+                                });
+                            }
                             // Update local Zustand state with BOTH the
                             // camelCase view-model key and the snake_case
                             // backend key, so any consumer that reads
@@ -245,22 +395,16 @@ export default function ScriptProcessor() {
                                 } as any);
                             }
                         }}
-                        onBlur={async () => {
-                            // Persist the in-progress text to the backend on
-                            // blur so reloads / navigation don't lose work.
-                            // Goes through /update_text instead of /reparse
-                            // so we don't trigger a heavy LLM call just for
-                            // typing — that's reserved for the explicit
-                            // "提取实体" CTA.
-                            if (!currentProject) return;
-                            const stored = ((currentProject as any).original_text ?? currentProject.originalText) || "";
-                            if (stored === script) return;
-                            try {
-                                await api.updateScriptText(currentProject.id, script);
-                            } catch (err) {
-                                console.warn("Failed to persist script text:", err);
+                        onBlur={() => {
+                            // Persist through the lightweight text endpoint.
+                            // The owned snapshot is captured while editing, so
+                            // a project switch cannot rebind its text to the
+                            // newly selected project.
+                            if (activeDraft.current) {
+                                void queueScriptSave(activeDraft.current);
                             }
                         }}
+                        aria-busy={isSavingScript}
                         placeholder={ts("scriptPlaceholder")}
                         className="w-full h-full bg-transparent text-text-secondary font-mono text-base leading-relaxed resize-none focus:outline-none"
                         spellCheck={false}

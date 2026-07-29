@@ -310,6 +310,16 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
             "native runners must execute the real packaged API and FFmpeg payload",
         )
         check(
+            '--identifier "$identifier"' in workflow_text
+            and '"com.enmotion.desktop.sidecar"' in workflow_text
+            and '"com.enmotion.desktop.demucs-worker"' in workflow_text,
+            "macOS sidecars must keep stable designated identifiers across releases",
+        )
+        check(
+            'test "$core_identifier" = "com.enmotion.desktop.sidecar"' in workflow_text,
+            "the notarized app must retain the stable core-sidecar identifier",
+        )
+        check(
             workflow_text.count("--ffmpeg") == 2,
             "every target SBOM must identify the exact bundled FFmpeg build",
         )

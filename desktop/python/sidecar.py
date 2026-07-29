@@ -38,6 +38,7 @@ RUNTIME_CONFIG_ENV = "ENMOTION_DESKTOP_RUNTIME_CONFIG"
 RUNTIME_SCHEMA_VERSION = 1
 COOKIE_NAME = "enmotion_desktop_session"
 NONCE_HEADER = "X-EnMotion-Desktop-Nonce"
+LOCAL_API_NONCE_HEADER = "X-EnMotion-Local-Nonce"
 MAX_RUNTIME_CONFIG_BYTES = 16 * 1024
 UPDATE_METADATA_FILES = (
     "projects.json",
@@ -288,6 +289,22 @@ def local_api_nonce(nonce: str) -> str:
         b"enmotion-local-api-nonce-v1",
         hashlib.sha256,
     ).hexdigest()
+
+
+def headers_with_local_api_nonce(
+    headers: list[tuple[bytes, bytes]],
+    nonce: str,
+) -> list[tuple[bytes, bytes]]:
+    """Replace an untrusted local nonce while preserving streaming headers."""
+
+    header_name = LOCAL_API_NONCE_HEADER.lower().encode("ascii")
+    forwarded = [
+        (name, value)
+        for name, value in headers
+        if name.lower() != header_name
+    ]
+    forwarded.append((header_name, local_api_nonce(nonce).encode("ascii")))
+    return forwarded
 
 
 def readiness_proof(config: RuntimeConfig) -> str:
@@ -854,6 +871,16 @@ def create_application(config: RuntimeConfig) -> Any:
             cookie = request.cookies.get(COOKIE_NAME, "")
             if not hmac.compare_digest(cookie, cookie_value):
                 return JSONResponse({"detail": "desktop session required"}, status_code=401)
+            if path.startswith("/files/"):
+                # Native img/video requests cannot attach the inner hybrid
+                # nonce. Only after the outer HttpOnly session is validated,
+                # forward the request to the mounted application with a
+                # trusted nonce. Mutating the ASGI headers preserves Range,
+                # conditional requests, HEAD behavior, and streamed bodies.
+                request.scope["headers"] = headers_with_local_api_nonce(
+                    list(request.scope.get("headers", [])),
+                    config.nonce,
+                )
 
         if request.method not in {"GET", "HEAD", "OPTIONS"} and not is_privileged:
             origin = request.headers.get("origin")

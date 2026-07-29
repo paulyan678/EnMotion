@@ -2,13 +2,16 @@
 
 import { useState, useCallback } from 'react';
 import { Download, Video, Copy, Check, Replace, Crown, Bookmark } from 'lucide-react';
-import { useTranslations } from 'next-intl';
-import { playgroundApi } from '@/lib/api';
-import { apiFetch } from '@/lib/httpClient';
+import { useLocale, useTranslations } from 'next-intl';
+import { playgroundApi, type PlaygroundLibraryCategory } from '@/lib/api';
 import { getAssetUrl } from '@/lib/utils';
+import { appDateTimeFormatter, parseApiTimestamp } from '@/lib/dateTime';
+import { saveAuthenticatedMedia } from '@/lib/download';
+import { toast } from '@/store/toastStore';
 import PreviewImage from '@/components/shared/preview/PreviewImage';
 import { usePlaygroundStore, type PlaygroundGeneration } from './usePlaygroundStore';
 import { useModelDisplayName } from '@/lib/useModelDisplayName';
+import LibrarySaveMenu from './LibrarySaveMenu';
 
 interface ResultCardProps {
   generation: PlaygroundGeneration;
@@ -19,15 +22,18 @@ interface ResultCardProps {
   onDelete?: (generation: PlaygroundGeneration) => void;
 }
 
-function formatTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
+function formatTime(dateStr: string, locale: string): string {
+  const date = parseApiTimestamp(dateStr);
+  if (!date) return '—';
+  return appDateTimeFormatter(locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 function getElapsedProgress(createdAt: string): number {
-  const elapsed = Date.now() - new Date(createdAt).getTime();
+  const elapsed = Date.now() - (parseApiTimestamp(createdAt)?.getTime() ?? Date.now());
   // Estimate ~60s for generation, cap at 90%
   const progress = Math.min(elapsed / 60000, 0.9);
   return progress * 100;
@@ -36,6 +42,7 @@ function getElapsedProgress(createdAt: string): number {
 function FailedCard({ generation, onRetry, onDelete }: { generation: PlaygroundGeneration; onRetry?: (g: PlaygroundGeneration) => void; onDelete?: (g: PlaygroundGeneration) => void }) {
   const { prompt, model_id, created_at, error } = generation;
   const t = useTranslations('playground');
+  const locale = useLocale();
   const modelDisplayName = useModelDisplayName();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -112,7 +119,7 @@ function FailedCard({ generation, onRetry, onDelete }: { generation: PlaygroundG
             {modelDisplayName(model_id)}
           </span>
           <span className="font-mono text-[0.5625rem] text-text-muted">
-            {formatTime(created_at)}
+            {formatTime(created_at, locale)}
           </span>
         </div>
       </div>
@@ -123,10 +130,13 @@ function FailedCard({ generation, onRetry, onDelete }: { generation: PlaygroundG
 function CompletedCard({ generation, outputIndex, onGenerateVideo, onOpenDetail }: { generation: PlaygroundGeneration; outputIndex: number; onGenerateVideo?: (path: string) => void; onOpenDetail?: (generation: PlaygroundGeneration, outputId?: string) => void }) {
   const { prompt, model_id, mode, outputs, created_at } = generation;
   const t = useTranslations('playground');
+  const td = useTranslations('apiCalls');
+  const locale = useLocale();
   const modelDisplayName = useModelDisplayName();
   const output = outputs[outputIndex];
   const isVideo = output?.media_type === 'video' || ['t2v', 'i2v'].includes(mode);
   const [saving, setSaving] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const saved = output?.saved_to_library ?? false;
   const mediaUrl = output?.media_path ? getAssetUrl(output.media_path) : null;
@@ -141,42 +151,38 @@ function CompletedCard({ generation, outputIndex, onGenerateVideo, onOpenDetail 
 
   const handleDownload = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!mediaUrl) return;
+    if (!output?.media_path || downloading) return;
+    setDownloading(true);
     try {
-      const resp = await apiFetch(mediaUrl);
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = output?.media_path?.split('/').pop() || 'download';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      await saveAuthenticatedMedia(
+        getAssetUrl(output.media_path),
+        output.media_path.split('/').pop() || 'enmotion-output',
+      );
     } catch {
-      window.open(mediaUrl, '_blank');
+      toast.error(td('downloadError'));
+    } finally {
+      setDownloading(false);
     }
-  }, [mediaUrl, output]);
+  }, [downloading, output, td]);
 
-  const handleSaveToLibrary = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!output || saving) return;
+  const handleSaveToLibrary = useCallback(async (category: PlaygroundLibraryCategory) => {
+    if (!output || saving || saved) return;
     setSaving(true);
     try {
-      const newSaved = !saved;
-      if (newSaved) {
-        await playgroundApi.saveToLibrary(generation.id, output.id);
-      }
+      const result = await playgroundApi.saveToLibrary(generation.id, output.id, category);
       const updatedOutputs = generation.outputs.map((o) =>
-        o.id === output.id ? { ...o, saved_to_library: newSaved } : o
+        o.id === output.id
+          ? { ...o, saved_to_library: true, library_category: result.category }
+          : o
       );
       updateGeneration({ ...generation, outputs: updatedOutputs });
     } catch (err) {
       console.error('[Playground] Save to library failed:', err);
+      toast.error(t('card.saveFailed'));
     } finally {
       setSaving(false);
     }
-  }, [generation, output, saved, saving, updateGeneration]);
+  }, [generation, output, saved, saving, t, updateGeneration]);
 
   const handleUseAsReference = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -268,20 +274,24 @@ function CompletedCard({ generation, outputIndex, onGenerateVideo, onOpenDetail 
         <div className="absolute bottom-0 left-0 right-0 z-[2] flex h-14 items-end justify-end gap-1.5 bg-gradient-to-t from-black/75 to-transparent px-3 pb-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
           <button
             onClick={handleDownload}
+            disabled={downloading}
+            aria-busy={downloading}
             aria-label={t('card.download')}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-elevated backdrop-blur-sm transition hover:bg-hover-bg"
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-elevated backdrop-blur-sm transition hover:bg-hover-bg disabled:opacity-50"
             title={t('card.download')}
           >
             <Download className="w-3.5 h-3.5 text-foreground" />
           </button>
-          <button
-            onClick={handleUseAsReference}
-            aria-label={t('card.useAsReference')}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-elevated backdrop-blur-sm transition hover:bg-hover-bg"
-            title={t('card.useAsReference')}
-          >
-            <Replace className="w-3.5 h-3.5 text-foreground" />
-          </button>
+          {!isVideo && (
+            <button
+              onClick={handleUseAsReference}
+              aria-label={t('card.useAsReference')}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-elevated backdrop-blur-sm transition hover:bg-hover-bg"
+              title={t('card.useAsReference')}
+            >
+              <Replace className="w-3.5 h-3.5 text-foreground" />
+            </button>
+          )}
           {output?.media_type === 'image' && onGenerateVideo && (
             <button
               onClick={(e) => { e.stopPropagation(); onGenerateVideo(output.media_path); }}
@@ -301,15 +311,13 @@ function CompletedCard({ generation, outputIndex, onGenerateVideo, onOpenDetail 
           >
             <Crown className={`w-3.5 h-3.5 ${featured ? 'text-status-starred-solid fill-status-starred-solid' : 'text-foreground'}`} />
           </button>
-          <button
-            onClick={handleSaveToLibrary}
-            aria-label={saved ? t('card.saved') : t('card.saveToLibrary')}
-            aria-pressed={saved}
-            className={`flex h-10 w-10 items-center justify-center rounded-full backdrop-blur-sm transition ${saved ? 'bg-primary/15' : 'bg-elevated hover:bg-hover-bg'}`}
-            title={saved ? t('card.saved') : t('card.saveToLibrary')}
-          >
-            <Bookmark className={`w-3.5 h-3.5 ${saved ? 'text-primary fill-current' : 'text-foreground'}`} />
-          </button>
+          {!isVideo && (
+            <LibrarySaveMenu
+              saved={saved}
+              saving={saving}
+              onSelect={handleSaveToLibrary}
+            />
+          )}
         </div>
       </div>
 
@@ -335,7 +343,7 @@ function CompletedCard({ generation, outputIndex, onGenerateVideo, onOpenDetail 
           <span className="font-mono text-[0.5625rem] bg-primary/10 text-primary/70 rounded px-[6px] py-[2px] uppercase">
             {t(`mode.${mode}`)}
           </span>
-          <span className="font-mono text-[0.5625rem] text-text-muted ml-auto">{formatTime(created_at)}</span>
+          <span className="font-mono text-[0.5625rem] text-text-muted ml-auto">{formatTime(created_at, locale)}</span>
           {saved && (
             <span className="flex items-center gap-0.5 text-[0.5625rem] text-primary">
               <Bookmark className="w-2.5 h-2.5 fill-current" />
@@ -350,6 +358,7 @@ function CompletedCard({ generation, outputIndex, onGenerateVideo, onOpenDetail 
 export default function ResultCard({ generation, outputIndex = 0, onGenerateVideo, onRetry, onOpenDetail, onDelete }: ResultCardProps) {
   const { status, prompt, model_id, created_at } = generation;
   const t = useTranslations('playground');
+  const locale = useLocale();
   const modelDisplayName = useModelDisplayName();
 
   // ─── PROCESSING STATE ───────────────────────────────────────────────────────
@@ -395,7 +404,7 @@ export default function ResultCard({ generation, outputIndex = 0, onGenerateVide
               {modelDisplayName(model_id)}
             </span>
             <span className="font-mono text-[0.5625rem] text-text-muted">
-              {formatTime(created_at)}
+              {formatTime(created_at, locale)}
             </span>
           </div>
         </div>

@@ -243,31 +243,15 @@ export default function ParameterBar() {
   const qualityDefault = modelParams?.quality?.default ?? qualityOptions[0] ?? 'high';
 
   // Boolean feature flags from model
-  const supportsSeed = modelParams?.seed !== false;
-  const supportsPromptExtend = modelParams?.promptExtend !== false;
-  const supportsWatermark = modelParams?.watermark !== false;
+  const supportsSeed = modelParams?.seed === true;
+  const supportsPromptExtend = modelParams?.promptExtend === true;
+  const supportsWatermark = modelParams?.watermark === true;
   const hasAnyAdvanced = supportsSeed || supportsPromptExtend || supportsWatermark;
 
-  // Materialise video defaults and reset values that the selected mode/model
-  // cannot accept. Image controls retain their established normalization.
+  // Materialise displayed defaults and remove values that the selected
+  // mode/model cannot accept.
   useEffect(() => {
-    if (isVideoMode) {
-      setParameters(getEffectivePlaygroundParameters(mode, modelId, parameters));
-      return;
-    }
-
-    const patches: Record<string, any> = {};
-
-    if (hasSize) {
-      const cur = parameters.size as string | undefined;
-      if (cur && !sizeOptions.includes(cur)) patches.size = sizeDefault;
-    }
-    if (hasQuality) {
-      const cur = parameters.quality as string | undefined;
-      if (cur && !qualityOptions.includes(cur)) patches.quality = qualityDefault;
-    }
-
-    if (Object.keys(patches).length > 0) setParameters({ ...parameters, ...patches });
+    setParameters(getEffectivePlaygroundParameters(mode, modelId, parameters));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, modelId]);
 

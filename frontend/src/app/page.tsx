@@ -356,21 +356,6 @@ export default function Home() {
   const tc = useTranslations("common");
   const tui = useTranslations("ui.workspace");
 
-  const syncProjects = async () => {
-    setIsSyncing(true);
-    try {
-      const backendProjects = await api.getProjects();
-      if (backendProjects && backendProjects.length > 0) {
-        setProjects(backendProjects);
-      }
-    } catch (error) {
-      console.error("Failed to sync projects from backend:", error);
-      toast.error(t("toastProjectsSyncFailed"));
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
   // Sync projects and series from backend on mount
   useEffect(() => {
     if (!routeResolved || currentView !== "home" || workspaceSyncStartedRef.current) return;
@@ -378,7 +363,7 @@ export default function Home() {
     let cancelled = false;
     api.getProjects()
       .then((backendProjects) => {
-        if (!cancelled && backendProjects?.length) setProjects(backendProjects);
+        if (!cancelled) setProjects(backendProjects ?? []);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -416,7 +401,24 @@ export default function Home() {
   }, [currentView, routeResolved, seriesList]);
 
   const syncAll = async () => {
-    await Promise.all([syncProjects(), fetchSeriesList()]);
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const [backendProjects, backendSeries] = await Promise.all([
+        api.getProjects(),
+        api.listSeries(),
+      ]);
+      setProjects(backendProjects ?? []);
+      useProjectStore.setState({ seriesList: backendSeries ?? [] });
+      toast.success(t("toastSyncSuccess"));
+    } catch (error) {
+      console.error("Failed to sync workspace from backend:", error);
+      toast.error(t("toastSyncFailed"), {
+        body: error instanceof Error ? error.message.slice(0, 240) : undefined,
+      });
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleDeleteProject = useCallback(async (id: string) => {
@@ -827,7 +829,7 @@ export default function Home() {
                         {s.title}
                       </button>
                       <span className="font-mono text-[0.625rem] uppercase tracking-wider text-text-muted">
-                        {t("series")} · {t("frames", { count: eps.length })}
+                        {t("series")} · {t("episodes", { count: eps.length })}
                       </span>
                       <span className="atelier-group-line h-px flex-1 bg-glass-border" />
                       <button

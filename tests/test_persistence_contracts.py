@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,6 +13,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from src.apps.comic_gen.models import Script
+from src.apps.comic_gen.pipeline import ComicGenPipeline
 from src.apps.playground import api as playground_api
 from src.apps.playground import storage as storage_module
 from src.apps.playground.models import (
@@ -20,7 +23,10 @@ from src.apps.playground.models import (
     PlaygroundOutput,
     PlaygroundTemplate,
 )
-from src.apps.playground.service import PlaygroundService
+from src.apps.playground.service import (
+    PlaygroundService,
+    UnsupportedPlaygroundLibraryMediaError,
+)
 from src.apps.playground.storage import PlaygroundStorage
 
 
@@ -53,6 +59,164 @@ def _storage(tmp_path, monkeypatch) -> PlaygroundStorage:
         PlaygroundStorage, "TEMPLATES_PATH", str(tmp_path / "playground_templates.json")
     )
     return PlaygroundStorage()
+
+
+def test_disjoint_audio_mix_updates_are_atomic():
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline._save_lock = threading.RLock()
+    pipeline.read_only = False
+    script = Script(
+        id="mix-project",
+        title="Mix",
+        original_text="",
+        bgm_url="presets/bgm/old.mp3",
+        mix_settings={"dialogue": 100, "bgm": 35, "sfx": 60},
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    pipeline.scripts = {script.id: script}
+    first_save_entered = threading.Event()
+    second_update_started = threading.Event()
+    release_first_save = threading.Event()
+    save_count = 0
+
+    def save_data():
+        nonlocal save_count
+        save_count += 1
+        if save_count == 1:
+            first_save_entered.set()
+            assert release_first_save.wait(timeout=5)
+
+    pipeline._save_data = save_data
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            pipeline.update_audio_mix,
+            script.id,
+            {"dialogue_volume": 40},
+        )
+        assert first_save_entered.wait(timeout=5)
+
+        def update_bgm():
+            second_update_started.set()
+            return pipeline.update_audio_mix(
+                script.id,
+                {"bgm_url": "presets/bgm/new.mp3", "bgm_volume": 20},
+            )
+
+        second = executor.submit(update_bgm)
+        assert second_update_started.wait(timeout=5)
+        release_first_save.set()
+        first.result(timeout=5)
+        with pytest.raises(RuntimeError, match="assembly operation is already running"):
+            second.result(timeout=5)
+
+    # A rejected concurrent client can safely retry after the first atomic
+    # mutation completes without losing that first client's disjoint field.
+    pipeline.update_audio_mix(
+        script.id,
+        {"bgm_url": "presets/bgm/new.mp3", "bgm_volume": 20},
+    )
+
+    assert script.bgm_url == "presets/bgm/new.mp3"
+    assert script.mix_settings == {"dialogue": 40, "bgm": 20, "sfx": 60}
+    assert save_count == 2
+
+
+def test_audio_mix_change_invalidates_and_retires_merged_video(tmp_path):
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline._save_lock = threading.RLock()
+    pipeline.read_only = False
+    pipeline.output_root = str(tmp_path)
+    merged_path = tmp_path / "comic_gen" / "mix-project" / "merged.mp4"
+    merged_path.parent.mkdir(parents=True)
+    merged_path.write_bytes(b"old merged video")
+    script = Script(
+        id="mix-project",
+        title="Mix",
+        original_text="",
+        bgm_url="presets/bgm/old.mp3",
+        merged_video_url="comic_gen/mix-project/merged.mp4",
+        mix_settings={"dialogue": 100, "bgm": 35, "sfx": 60},
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    pipeline.scripts = {script.id: script}
+    pipeline._save_data = lambda: None
+
+    updated = pipeline.update_audio_mix(script.id, {"dialogue_volume": 40})
+
+    assert updated.merged_video_url is None
+    assert updated.mix_settings == {"dialogue": 40, "bgm": 35, "sfx": 60}
+    assert updated.updated_at > 1.0
+    assert not merged_path.exists()
+
+
+def test_audio_mix_noop_preserves_current_merged_video(tmp_path):
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline._save_lock = threading.RLock()
+    pipeline.read_only = False
+    pipeline.output_root = str(tmp_path)
+    merged_path = tmp_path / "comic_gen" / "mix-project" / "merged.mp4"
+    merged_path.parent.mkdir(parents=True)
+    merged_path.write_bytes(b"current merged video")
+    script = Script(
+        id="mix-project",
+        title="Mix",
+        original_text="",
+        bgm_url="presets/bgm/current.mp3",
+        merged_video_url="comic_gen/mix-project/merged.mp4",
+        mix_settings={"dialogue": 40, "bgm": 35, "sfx": 60},
+        created_at=1.0,
+        updated_at=2.0,
+    )
+    pipeline.scripts = {script.id: script}
+    pipeline._save_data = lambda: pytest.fail("no-op mix update must not persist")
+
+    updated = pipeline.update_audio_mix(
+        script.id,
+        {
+            "bgm_url": "presets/bgm/current.mp3",
+            "dialogue_volume": 40,
+        },
+    )
+
+    assert updated.merged_video_url == "comic_gen/mix-project/merged.mp4"
+    assert updated.updated_at == 2.0
+    assert merged_path.exists()
+
+
+def test_merge_and_export_share_one_project_operation_lock():
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    script = Script(
+        id="assembly-project",
+        title="Assembly",
+        original_text="",
+        merged_video_url="comic_gen/assembly-project/merged.mp4",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    pipeline.scripts = {script.id: script}
+    export_started = threading.Event()
+    release_export = threading.Event()
+
+    def render_project(_script, _options):
+        export_started.set()
+        assert release_export.wait(timeout=5)
+        return "comic_gen/assembly-project/export.mp4"
+
+    pipeline.export_manager = SimpleNamespace(render_project=render_project)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        export = executor.submit(pipeline.export_project, script.id, {})
+        assert export_started.wait(timeout=5)
+        with pytest.raises(RuntimeError, match="assembly operation is already running"):
+            pipeline.merge_videos(script.id)
+        with pytest.raises(RuntimeError, match="assembly operation is already running"):
+            pipeline.update_audio_mix(script.id, {"dialogue_volume": 25})
+        assert script.mix_settings == {"dialogue": 100, "bgm": 35, "sfx": 60}
+        release_export.set()
+        assert export.result(timeout=5) == "comic_gen/assembly-project/export.mp4"
 
 
 @pytest.mark.parametrize("target_name", ["playground_history.json", "playground_templates.json"])
@@ -342,22 +506,36 @@ def test_save_to_library_persists_output_relative_url_and_propagates_failure(tmp
         )
     )
     storage.add_generation(generation)
+    completed = storage.get_generation(generation.id)
+    assert completed is not None
+    completed.status = "completed"
+    storage.update_generation(completed)
+    terminal_timestamp = storage.get_generation(generation.id).finished_at
+    assert terminal_timestamp
     service = PlaygroundService(storage)
     created = []
 
-    def create_asset(asset_type, payload):
-        created.append((asset_type, payload))
-        return SimpleNamespace(id="prop-1")
+    def create_asset(asset_type, payload, *, asset_id=None):
+        created.append((asset_type, payload, asset_id))
+        return SimpleNamespace(id=asset_id)
 
     monkeypatch.setattr(comic_api.pipeline, "create_library_asset", create_asset)
-    assert service.save_to_library("generation-1", "output-1", "../../escape") is True
+    with pytest.raises(ValueError, match="必须选择"):
+        service.save_to_library("generation-1", "output-1", "../../escape")
+    assert created == []
+    assert service.save_to_library("generation-1", "output-1", "prop") == "prop"
     assert created[0][0] == "prop"
     assert created[0][1]["image_url"].startswith("assets/prop/")
     assert created[0][1]["image_url"].endswith("_fox.png")
     assert not (tmp_path / "escape" / "fox.png").exists()
-    assert storage.get_generation("generation-1").outputs[0].saved_to_library is True
+    saved_output = storage.get_generation("generation-1").outputs[0]
+    assert saved_output.saved_to_library is True
+    assert saved_output.library_category == "prop"
+    assert saved_output.library_asset_id == created[0][2]
+    assert saved_output.library_media_path == created[0][1]["image_url"]
+    assert storage.get_generation(generation.id).finished_at == terminal_timestamp
     saved_files = set((tmp_path / "output" / "assets" / "prop").iterdir())
-    assert service.save_to_library("generation-1", "output-1", "prop") is True
+    assert service.save_to_library("generation-1", "output-1", "scene") == "prop"
     assert set((tmp_path / "output" / "assets" / "prop").iterdir()) == saved_files
     assert len(created) == 1
 
@@ -371,7 +549,7 @@ def test_save_to_library_persists_output_relative_url_and_propagates_failure(tmp
     )
     storage.add_generation(second)
 
-    def fail_create(*_args):
+    def fail_create(*_args, **_kwargs):
         raise OSError("library persistence failed")
 
     monkeypatch.setattr(comic_api.pipeline, "create_library_asset", fail_create)
@@ -379,6 +557,252 @@ def test_save_to_library_persists_output_relative_url_and_propagates_failure(tmp
         service.save_to_library("generation-2", "output-2", "prop")
     assert storage.get_generation("generation-2").outputs[0].saved_to_library is False
     assert set((tmp_path / "output" / "assets" / "prop").iterdir()) == saved_files
+
+
+def test_concurrent_library_save_retries_create_one_asset_and_file(tmp_path, monkeypatch):
+    from src.apps.comic_gen import api as comic_api
+
+    monkeypatch.chdir(tmp_path)
+    storage = _storage(tmp_path, monkeypatch)
+    source = tmp_path / "output" / "playground" / "images" / "harbor.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"image")
+    generation = _generation("concurrent-save")
+    generation.outputs = [
+        PlaygroundOutput(
+            id="output-1",
+            media_path="output/playground/images/harbor.png",
+            media_type="image",
+        )
+    ]
+    storage.add_generation(generation)
+    service = PlaygroundService(storage)
+    created: list[str] = []
+
+    def create_asset(_asset_type, _payload, *, asset_id=None):
+        time.sleep(0.03)
+        created.append(asset_id)
+        return SimpleNamespace(id=asset_id)
+
+    monkeypatch.setattr(comic_api.pipeline, "create_library_asset", create_asset)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: service.save_to_library(
+                    generation.id,
+                    "output-1",
+                    "scene",
+                ),
+                range(2),
+            )
+        )
+
+    assert results == ["scene", "scene"]
+    assert len(created) == 1
+    assert len(list((tmp_path / "output" / "assets" / "scene").iterdir())) == 1
+    persisted = storage.get_generation(generation.id).outputs[0]
+    assert persisted.saved_to_library is True
+    assert persisted.library_category == "scene"
+
+
+def test_library_save_rolls_back_after_final_persistence_failure_and_retries(
+    tmp_path,
+    monkeypatch,
+):
+    from src.apps.comic_gen import api as comic_api
+
+    monkeypatch.chdir(tmp_path)
+    storage = _storage(tmp_path, monkeypatch)
+    source = tmp_path / "output" / "playground" / "images" / "compass.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"image")
+    generation = _generation("rollback-save")
+    generation.outputs = [
+        PlaygroundOutput(
+            id="output-1",
+            media_path="output/playground/images/compass.png",
+            media_type="image",
+        )
+    ]
+    storage.add_generation(generation)
+    service = PlaygroundService(storage)
+    active_assets: dict[str, str] = {}
+    created_ids: list[str] = []
+    deleted_ids: list[str] = []
+
+    def create_asset(asset_type, _payload, *, asset_id=None):
+        created_ids.append(asset_id)
+        active_assets[asset_id] = asset_type
+        return SimpleNamespace(id=asset_id)
+
+    def delete_asset(asset_type, asset_id, *, force=False):
+        assert force is True
+        assert active_assets.pop(asset_id) == asset_type
+        deleted_ids.append(asset_id)
+
+    monkeypatch.setattr(comic_api.pipeline, "create_library_asset", create_asset)
+    monkeypatch.setattr(comic_api.pipeline, "delete_library_asset", delete_asset)
+    original_save_file = storage._save_file
+
+    def fail_final_metadata(path, items):
+        output = items[0].outputs[0] if items and items[0].outputs else None
+        if path == storage.history_path and output and output.saved_to_library:
+            raise OSError("final history persistence failed")
+        return original_save_file(path, items)
+
+    monkeypatch.setattr(storage, "_save_file", fail_final_metadata)
+    with pytest.raises(OSError, match="final history persistence failed"):
+        service.save_to_library(generation.id, "output-1", "prop")
+
+    pending = storage.get_generation(generation.id).outputs[0]
+    assert pending.saved_to_library is False
+    assert pending.library_category == "prop"
+    assert pending.library_asset_id == created_ids[0]
+    assert active_assets == {}
+    assert deleted_ids == [created_ids[0]]
+    assert list((tmp_path / "output" / "assets" / "prop").iterdir()) == []
+
+    monkeypatch.setattr(storage, "_save_file", original_save_file)
+    assert service.save_to_library(generation.id, "output-1", "character") == "prop"
+    assert created_ids == [pending.library_asset_id, pending.library_asset_id]
+    assert active_assets == {pending.library_asset_id: "prop"}
+    assert len(list((tmp_path / "output" / "assets" / "prop").iterdir())) == 1
+
+
+def test_library_save_reconciles_a_crash_window_without_duplicates(tmp_path, monkeypatch):
+    from src.apps.comic_gen import api as comic_api
+
+    monkeypatch.chdir(tmp_path)
+    storage = _storage(tmp_path, monkeypatch)
+    source = tmp_path / "output" / "playground" / "images" / "lantern.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"image")
+    generation = _generation("crash-save")
+    generation.outputs = [
+        PlaygroundOutput(
+            id="output-1",
+            media_path="output/playground/images/lantern.png",
+            media_type="image",
+        )
+    ]
+    storage.add_generation(generation)
+    service = PlaygroundService(storage)
+    asset_id, media_path = service._library_save_identifiers(
+        generation.id,
+        "output-1",
+        "scene",
+        source.name,
+    )
+    assert storage.prepare_output_library_save(
+        generation.id,
+        "output-1",
+        "scene",
+        asset_id,
+        media_path,
+    ) == ("scene", asset_id, media_path)
+    copied = tmp_path / "output" / media_path
+    copied.parent.mkdir(parents=True)
+    copied.write_bytes(source.read_bytes())
+    active_assets = {asset_id: SimpleNamespace(id=asset_id)}
+
+    def create_asset(_asset_type, _payload, *, asset_id=None):
+        return active_assets.setdefault(asset_id, SimpleNamespace(id=asset_id))
+
+    monkeypatch.setattr(comic_api.pipeline, "create_library_asset", create_asset)
+
+    assert service.save_to_library(generation.id, "output-1", "character") == "scene"
+    assert list(active_assets) == [asset_id]
+    assert list(copied.parent.iterdir()) == [copied]
+    persisted = storage.get_generation(generation.id).outputs[0]
+    assert persisted.saved_to_library is True
+    assert persisted.library_category == "scene"
+
+
+def test_save_to_library_api_returns_the_persisted_replay_category(monkeypatch):
+    from src.apps.playground.models import SaveToLibraryRequest
+
+    service = SimpleNamespace(save_to_library=lambda _generation_id, _output_id, _category: "scene")
+    monkeypatch.setattr(playground_api, "_current_service", lambda: service)
+
+    assert playground_api.save_to_library(
+        "generation-1",
+        "output-1",
+        SaveToLibraryRequest(category="prop"),
+    ) == {"ok": True, "category": "scene"}
+
+
+def test_video_output_cannot_be_registered_as_an_image_library_asset(tmp_path, monkeypatch):
+    from src.apps.comic_gen import api as comic_api
+    from src.apps.playground.models import SaveToLibraryRequest
+
+    monkeypatch.chdir(tmp_path)
+    storage = _storage(tmp_path, monkeypatch)
+    source = tmp_path / "output" / "playground" / "videos" / "harbor.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    generation = _generation("video-save")
+    generation.mode = PlaygroundMode.T2V
+    generation.outputs = [
+        PlaygroundOutput(
+            id="output-1",
+            media_path="output/playground/videos/harbor.mp4",
+            media_type="video",
+        )
+    ]
+    storage.add_generation(generation)
+    service = PlaygroundService(storage)
+    created = []
+    monkeypatch.setattr(
+        comic_api.pipeline,
+        "create_library_asset",
+        lambda *_args, **_kwargs: created.append(True),
+    )
+
+    with pytest.raises(
+        UnsupportedPlaygroundLibraryMediaError,
+        match="仅支持保存图像输出",
+    ):
+        service.save_to_library(generation.id, "output-1", "scene")
+    assert created == []
+    assert not (tmp_path / "output" / "assets").exists()
+
+    monkeypatch.setattr(playground_api, "_current_service", lambda: service)
+    with pytest.raises(HTTPException) as exc_info:
+        playground_api.save_to_library(
+            generation.id,
+            "output-1",
+            SaveToLibraryRequest(category="scene"),
+        )
+    assert exc_info.value.status_code == 400
+    assert "仅支持保存图像输出" in str(exc_info.value.detail)
+
+
+def test_delete_upload_preserves_media_referenced_by_persisted_generation(tmp_path):
+    output_root = tmp_path / "output"
+    storage = PlaygroundStorage(output_root=str(output_root))
+    uploaded = output_root / "playground" / "uploads" / "queued-reference.png"
+    uploaded.parent.mkdir(parents=True)
+    uploaded.write_bytes(b"image")
+    generation = _generation("persisted-input")
+    generation.input_media = ["playground/uploads/queued-reference.png"]
+    storage.add_generation(generation)
+
+    assert storage.delete_upload("playground/uploads/queued-reference.png") is False
+    assert uploaded.exists()
+
+
+def test_delete_upload_fails_closed_when_references_cannot_be_scanned(tmp_path, monkeypatch):
+    output_root = tmp_path / "output"
+    storage = PlaygroundStorage(output_root=str(output_root))
+    uploaded = output_root / "playground" / "uploads" / "keep-visible.png"
+    uploaded.parent.mkdir(parents=True)
+    uploaded.write_bytes(b"image")
+    monkeypatch.setattr(storage, "_reclaim_deleted_value", lambda _value: None)
+
+    with pytest.raises(RuntimeError, match="Could not verify workspace references"):
+        storage.delete_upload("playground/uploads/keep-visible.png")
+    assert uploaded.exists()
 
 
 def test_delete_playground_generation_reclaims_only_its_outputs(tmp_path):

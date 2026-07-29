@@ -14,6 +14,14 @@ use sidecar::SidecarRuntime;
 use tauri::Manager;
 use updater::UpdateRuntime;
 
+fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn chinese_macos_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -100,10 +108,7 @@ fn chinese_macos_menu<R: tauri::Runtime>(
 fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -137,6 +142,26 @@ fn main() {
         .expect("failed to build EnMotion desktop application");
 
     application.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        match &event {
+            // Closing the last macOS window should keep the application and
+            // its local sidecar alive. Hiding instead of destroying the sole
+            // webview also guarantees that Dock reopen and second-instance
+            // activation can restore the existing authenticated workspace.
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" => {
+                api.prevent_close();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+            tauri::RunEvent::Reopen { .. } => show_main_window(app),
+            _ => {}
+        }
+
         if matches!(
             event,
             tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }

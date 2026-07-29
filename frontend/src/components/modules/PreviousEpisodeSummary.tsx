@@ -30,9 +30,17 @@ interface SummaryState {
     has_previous: boolean;
     previous_episode_id: string | null;
     previous_episode_title: string | null;
+    script_available?: boolean;
     raw_snippet: string;
     ai_summary: string | null;
     ai_summary_stale: boolean;
+}
+
+export function hasPreviousEpisodeScript(
+    data: Pick<SummaryState, "script_available" | "raw_snippet" | "ai_summary">,
+): boolean {
+    return data.script_available
+        ?? Boolean(data.raw_snippet.trim() || data.ai_summary?.trim());
 }
 
 export default function PreviousEpisodeSummary(props: PreviousEpisodeSummaryProps) {
@@ -58,6 +66,7 @@ function PreviousEpisodeSummaryForScript({ scriptId }: PreviousEpisodeSummaryPro
     const [hookEditing, setHookEditing] = useState(false);
     const [hookDraft, setHookDraft] = useState("");
     const [hookSaving, setHookSaving] = useState(false);
+    const scriptAvailable = data ? hasPreviousEpisodeScript(data) : false;
 
     useEffect(() => {
         if (!scriptId) return;
@@ -187,7 +196,11 @@ function PreviousEpisodeSummaryForScript({ scriptId }: PreviousEpisodeSummaryPro
                                     </span>
                                 )}
                             </div>
-                            {!data.ai_summary ? (
+                            {!scriptAvailable ? (
+                                <p className="rounded-lg border border-glass-border bg-surface-muted px-3.5 py-3 text-[0.78125rem] leading-relaxed text-text-secondary">
+                                    {t("missingScriptContinuity")}
+                                </p>
+                            ) : !data.ai_summary ? (
                                 <WorkflowActionButton
                                     variant="secondary"
                                     size="sm"
@@ -269,7 +282,7 @@ function PreviousEpisodeSummaryForScript({ scriptId }: PreviousEpisodeSummaryPro
                         </section>
 
                         {/* Raw snippet — always shown, zero-cost */}
-                        <section className="space-y-2">
+                        {scriptAvailable && <section className="space-y-2">
                             <h4 className="font-mono text-[0.625rem] font-medium uppercase tracking-[0.18em] text-text-muted">
                                 {t("rawSnippet")}
                             </h4>
@@ -278,7 +291,7 @@ function PreviousEpisodeSummaryForScript({ scriptId }: PreviousEpisodeSummaryPro
                                     …{data.raw_snippet}
                                 </p>
                             </div>
-                        </section>
+                        </section>}
 
                         {/* R2V v2 P2-b — Hook for next episode */}
                         <NextHookSection

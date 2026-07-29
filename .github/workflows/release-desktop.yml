@@ -259,13 +259,18 @@ jobs:
           python3 desktop/scripts/build_sidecar.py --target "${{ matrix.target }}"
           core="desktop/src-tauri/binaries/enmotion-sidecar-runtime/enmotion-sidecar"
           worker="desktop/src-tauri/binaries/enmotion-demucs-worker-${{ matrix.target }}"
-          for binary in "$core" "$worker"; do
+          sign_binary() {
+            binary="$1"
+            identifier="$2"
             codesign --force --timestamp --options runtime \
+              --identifier "$identifier" \
               --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
               "$binary"
             codesign --verify --strict --verbose=2 \
               "$binary"
-          done
+          }
+          sign_binary "$core" "com.enmotion.desktop.sidecar"
+          sign_binary "$worker" "com.enmotion.desktop.demucs-worker"
           smoke_dir="$RUNNER_TEMP/enmotion-sidecar-smoke"
           mkdir -p "$smoke_dir"
           (
@@ -315,6 +320,12 @@ jobs:
           test -n "$app_path"
           test -n "$dmg_path"
           codesign --verify --deep --strict --verbose=2 "$app_path"
+          core_sidecar="$app_path/Contents/Resources/sidecar/enmotion-sidecar"
+          core_identifier="$(
+            codesign -d --verbose=4 "$core_sidecar" 2>&1 \
+              | awk -F= '/^Identifier=/{print $2; exit}'
+          )"
+          test "$core_identifier" = "com.enmotion.desktop.sidecar"
           spctl --assess --type execute --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
           xcrun stapler validate "$dmg_path"

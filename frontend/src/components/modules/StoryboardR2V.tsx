@@ -40,6 +40,16 @@ import { useModelDisplayName } from "@/lib/useModelDisplayName";
 import { clipFrameType, clipImageId } from "@/lib/clipStartFrame";
 import type { AssetRef } from "@/components/assets/assetEditorTypes";
 
+export function resolveStoryboardVideoModel(
+    projectModel?: string | null,
+    cachedModel?: string | null,
+): string {
+    const candidate = projectModel || cachedModel || DEFAULT_I2V_MODEL_ID;
+    return VIDEO_I2V_MODELS.some((model) => model.id === candidate)
+        ? candidate
+        : DEFAULT_I2V_MODEL_ID;
+}
+
 export default function StoryboardR2V() {
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
@@ -75,19 +85,19 @@ export default function StoryboardR2V() {
             ?? null;
         const projectI2v = currentProject?.model_settings?.video_model
             || currentProject?.model_settings?.i2v_model
-            || DEFAULT_I2V_MODEL_ID;
+            || null;
 
         // A cached model may have been removed from the approved list.
         // Normalize stale values to the explicit New API default.
-        const i2vCandidate = savedI2v || projectI2v;
-        const i2vOk = VIDEO_I2V_MODELS.find(m => m.id === i2vCandidate);
-        const i2vModelId = i2vOk ? i2vCandidate : DEFAULT_I2V_MODEL_ID;
-        if (!i2vOk && savedI2v) {
+        const i2vModelId = resolveStoryboardVideoModel(projectI2v, savedI2v);
+        const savedI2vIsValid = !savedI2v
+            || VIDEO_I2V_MODELS.some((model) => model.id === savedI2v);
+        if (!savedI2vIsValid) {
             removeWorkspaceItem('storyboard-r2v-model');
             removeWorkspaceItem('storyboard-newapi-video-model');
             debugLog.warn(
                 "Studio",
-                `Cached I2V model "${i2vCandidate}" is no longer in the visible I2V list; ` +
+                `Cached I2V model "${savedI2v}" is no longer in the visible I2V list; ` +
                 `falling back to "${DEFAULT_I2V_MODEL_ID}".`,
             );
         }
@@ -104,6 +114,36 @@ export default function StoryboardR2V() {
             duration: defaultDuration,
         };
     });
+    const effectiveProjectVideoModel = currentProject?.model_settings?.video_model
+        || currentProject?.model_settings?.i2v_model
+        || null;
+
+    // Backend project payloads contain the live project -> Series -> global
+    // resolution. Refreshes or project switches must replace any device-local
+    // recovery value; the cache is only a fallback when no project value exists.
+    useEffect(() => {
+        if (!effectiveProjectVideoModel) return;
+        const model = resolveStoryboardVideoModel(effectiveProjectVideoModel);
+        let cancelled = false;
+        queueMicrotask(() => {
+            if (cancelled) return;
+            setVideoConfig((current) => {
+                if (current.model === model) return current;
+                const config = VIDEO_I2V_MODELS.find((item) => item.id === model);
+                const duration = config?.duration;
+                return {
+                    ...current,
+                    model,
+                    duration: duration
+                        ? (duration.type === "fixed" ? duration.value : duration.default)
+                        : current.duration,
+                };
+            });
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [effectiveProjectVideoModel]);
 
     // Modal & drawer state (configModalOpen retired with the gear; the
     // old VideoConfigModal mount is gone, replaced by per-shot

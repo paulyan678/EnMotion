@@ -15,7 +15,7 @@ import {
   publishAssetMutation,
   subscribeToAssetLibraryChanges,
 } from "@/lib/assetLibrarySync";
-import { isServerModeEnabled } from "@/lib/serverMode";
+import { isHybridModeEnabled, isServerModeEnabled } from "@/lib/serverMode";
 import { toast } from "@/store/toastStore";
 
 import {
@@ -27,16 +27,32 @@ import {
   type EditableAsset,
 } from "./assetEditorTypes";
 
-type TaskMarker = {
+export type AssetTaskMarker = {
   task_id?: string;
   _task_id?: string;
   asset?: EditableAsset;
   _editor_context?: AssetEditorContext;
 };
 
+export type AssetTaskPollingTarget =
+  | { kind: "durable"; taskId: string }
+  | { kind: "local"; taskId: string }
+  | null;
+
+export function resolveAssetTaskPollingTarget(
+  marker: AssetTaskMarker,
+): AssetTaskPollingTarget {
+  const hybridMode = isHybridModeEnabled();
+  if (marker.task_id && isServerModeEnabled() && !hybridMode) {
+    return { kind: "durable", taskId: marker.task_id };
+  }
+  const localTaskId = marker._task_id ?? (hybridMode ? marker.task_id : undefined);
+  return localTaskId ? { kind: "local", taskId: localTaskId } : null;
+}
+
 function responseAsset(value: unknown): EditableAsset | null {
   if (!value || typeof value !== "object") return null;
-  const response = value as TaskMarker & Partial<EditableAsset>;
+  const response = value as AssetTaskMarker & Partial<EditableAsset>;
   const candidate = response.asset ?? response;
   return typeof candidate.id === "string" ? (candidate as EditableAsset) : null;
 }
@@ -180,15 +196,15 @@ export function useAssetEditorController({
   }, [assetRef, t]);
 
   const waitForGeneration = useCallback(async (response: unknown) => {
-    const marker = (response ?? {}) as TaskMarker;
-    if (marker.task_id && isServerModeEnabled()) {
-      await waitForDurableJob(marker.task_id);
+    const target = resolveAssetTaskPollingTarget((response ?? {}) as AssetTaskMarker);
+    if (!target) return;
+    if (target.kind === "durable") {
+      await waitForDurableJob(target.taskId);
       return;
     }
-    if (!marker._task_id) return;
     for (let attempts = 0; attempts < 900; attempts += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      const status = await api.getTaskStatus(marker._task_id);
+      const status = await api.getTaskStatus(target.taskId);
       if (status?.status === "completed") return;
       if (status?.status === "failed" || status?.status === "canceled") {
         throw new Error(status.error || t("genFailed"));
@@ -302,7 +318,7 @@ export function useAssetEditorController({
         },
       );
       await waitForGeneration(response);
-      const marker = (response ?? {}) as TaskMarker;
+      const marker = (response ?? {}) as AssetTaskMarker;
       const finalResponse = marker.task_id || marker._task_id ? (await reload()).response : response;
       applyServerAsset(finalResponse);
       toast.update(toastId, {
@@ -352,7 +368,7 @@ export function useAssetEditorController({
         },
       );
       await waitForGeneration(response);
-      const marker = (response ?? {}) as TaskMarker;
+      const marker = (response ?? {}) as AssetTaskMarker;
       const finalResponse = marker.task_id || marker._task_id ? (await reload()).response : response;
       applyServerAsset(finalResponse);
       toast.update(toastId, {

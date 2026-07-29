@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -13,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 _KEYRING_SERVICE = "com.enmotion.desktop"
 _KEYRING_ACCOUNT = "control-plane-refresh-token"
+_KEYRING_READ_TIMEOUT_SECONDS = 2.0
+_NO_PENDING_KEYRING_WRITE = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,13 +60,35 @@ class LocalSession:
     user: HybridUser
 
 
+@dataclass(slots=True)
+class _KeyringReadTask:
+    completed: threading.Event
+    started_at: float
+    value: str | None = None
+    error: BaseException | None = None
+    timeout_reported: bool = False
+
+
 class SessionVault:
     """Own one active employee identity and fail closed across account switches."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        keyring_timeout_seconds: float = _KEYRING_READ_TIMEOUT_SECONDS,
+    ) -> None:
+        if keyring_timeout_seconds <= 0:
+            raise ValueError("credential-store timeout must be positive")
         self._lock = threading.RLock()
         self._local_sessions: dict[str, LocalSession] = {}
         self._remote: RemoteSession | None = None
+        self._keyring_timeout_seconds = keyring_timeout_seconds
+        self._keyring_call_lock = threading.Lock()
+        self._keyring_read_lock = threading.Lock()
+        self._keyring_read_task: _KeyringReadTask | None = None
+        self._keyring_write_lock = threading.Lock()
+        self._pending_keyring_write: tuple[Any, str | None] | object = _NO_PENDING_KEYRING_WRITE
+        self._keyring_writer_running = False
 
     @staticmethod
     def _keyring():
@@ -73,16 +98,100 @@ class SessionVault:
             return None
         return keyring
 
+    def _start_keyring_read(self, keyring: Any) -> _KeyringReadTask:
+        """Return the single in-flight credential read, starting it if needed."""
+
+        with self._keyring_read_lock:
+            current = self._keyring_read_task
+            if current is not None and not current.completed.is_set():
+                return current
+
+            task = _KeyringReadTask(
+                completed=threading.Event(),
+                started_at=time.monotonic(),
+            )
+            self._keyring_read_task = task
+
+            def read() -> None:
+                try:
+                    with self._keyring_call_lock:
+                        task.value = keyring.get_password(
+                            _KEYRING_SERVICE,
+                            _KEYRING_ACCOUNT,
+                        )
+                except BaseException as exc:
+                    task.error = exc
+                    logger.warning(
+                        "Credential store read failed (%s)",
+                        type(exc).__name__,
+                    )
+                finally:
+                    task.completed.set()
+                    with self._keyring_read_lock:
+                        if self._keyring_read_task is task:
+                            self._keyring_read_task = None
+
+            threading.Thread(
+                target=read,
+                name="enmotion-keyring-read",
+                daemon=True,
+            ).start()
+            return task
+
     def persisted_refresh_token(self) -> str | None:
         keyring = self._keyring()
         if keyring is None:
             return None
-        try:
-            value = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-        except Exception as exc:
-            logger.warning("Credential store read failed (%s)", type(exc).__name__)
+        task = self._start_keyring_read(keyring)
+        remaining = max(
+            0.0,
+            self._keyring_timeout_seconds - (time.monotonic() - task.started_at),
+        )
+        if not task.completed.wait(remaining):
+            with self._keyring_read_lock:
+                if not task.timeout_reported:
+                    task.timeout_reported = True
+                    logger.warning(
+                        "Credential store read timed out after %.1f seconds",
+                        self._keyring_timeout_seconds,
+                    )
             return None
+        if task.error is not None:
+            return None
+        value = task.value
         return value.strip() if value and value.strip() else None
+
+    def _drain_keyring_writes(self) -> None:
+        """Persist only the latest desired credential state off the request path."""
+
+        while True:
+            with self._keyring_write_lock:
+                pending = self._pending_keyring_write
+                if pending is _NO_PENDING_KEYRING_WRITE:
+                    self._keyring_writer_running = False
+                    return
+                self._pending_keyring_write = _NO_PENDING_KEYRING_WRITE
+
+            assert isinstance(pending, tuple)
+            keyring, value = pending
+            try:
+                with self._keyring_call_lock:
+                    if value:
+                        keyring.set_password(
+                            _KEYRING_SERVICE,
+                            _KEYRING_ACCOUNT,
+                            value,
+                        )
+                    else:
+                        keyring.delete_password(
+                            _KEYRING_SERVICE,
+                            _KEYRING_ACCOUNT,
+                        )
+            except BaseException as exc:
+                logger.warning(
+                    "Credential store update failed (%s)",
+                    type(exc).__name__,
+                )
 
     def _persist_refresh_token(self, value: str | None) -> None:
         keyring = self._keyring()
@@ -92,16 +201,17 @@ class SessionVault:
                     "No OS credential-store backend is available; login will not persist"
                 )
             return
-        try:
-            if value:
-                keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, value)
-            else:
-                try:
-                    keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-                except Exception:
-                    pass
-        except Exception as exc:
-            logger.warning("Credential store update failed (%s)", type(exc).__name__)
+
+        with self._keyring_write_lock:
+            self._pending_keyring_write = (keyring, value)
+            if self._keyring_writer_running:
+                return
+            self._keyring_writer_running = True
+        threading.Thread(
+            target=self._drain_keyring_writes,
+            name="enmotion-keyring-writer",
+            daemon=True,
+        ).start()
 
     def start(
         self,

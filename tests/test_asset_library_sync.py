@@ -149,6 +149,7 @@ def test_reparse_reconciles_fresh_entities_and_rewrites_references(tmp_path):
 
     extracted = _script(
         "preview-id",
+        original_text="updated text",
         characters=[Character(id="fresh-char", name="hero", description="Fresh description")],
         scenes=[Scene(id="fresh-scene", name="Kitchen", description="Kitchen")],
         props=[Prop(id="fresh-prop", name="Spoon", description="Spoon")],
@@ -170,9 +171,10 @@ def test_reparse_reconciles_fresh_entities_and_rewrites_references(tmp_path):
             )
         ],
     )
-    pipeline._extraction_cache[original.id] = (time.time(), extracted)
+    revision = "reviewed-revision"
+    pipeline._extraction_cache[original.id] = (time.time(), revision, extracted)
 
-    result = pipeline.reparse_project(original.id, "updated text")
+    result = pipeline.reparse_project(original.id, "updated text", revision)
 
     assert result.characters == []
     assert result.scenes == []
@@ -1310,6 +1312,29 @@ def test_exact_source_asset_patch_persists_metadata_and_prompts(tmp_path):
     assert reloaded_global.name == "Global plaza"
     assert reloaded_global.time_of_day == "Dawn"
     assert reloaded_global.image_prompt == "Wide dawn plaza establishing shot"
+
+
+def test_global_asset_impact_counts_only_series_episodes(tmp_path):
+    pipeline = _pipeline(tmp_path)
+    shared_scene = pipeline.create_library_asset(
+        "scene",
+        {"name": "Shared plaza", "description": "A reusable location"},
+    )
+    pipeline.scripts["episode-1"] = _script(
+        "episode-1",
+        series_id="series-1",
+        episode_number=1,
+    )
+    pipeline.scripts["standalone"] = _script("standalone")
+
+    payload = pipeline.source_asset_response_payload(
+        "global",
+        "global",
+        "scene",
+        shared_scene.id,
+    )
+
+    assert payload["_editor_context"]["affectedEpisodeCount"] == 1
 
 
 def test_source_asset_variant_actions_persist_to_global_owner(tmp_path):

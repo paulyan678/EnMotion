@@ -10,12 +10,15 @@ from typing import Optional
 from ...utils import get_logger
 from ...utils.newapi_models import IMAGE, VIDEO, resolve_model_api_key
 from ...utils.system_check import get_ffmpeg_path
+from ..web_runtime.file_lock import interprocess_lock
 from .models import (
+    DEFAULT_IMAGE_PARAMETERS,
     DEFAULT_VIDEO_PARAMETERS,
     GenerateRequest,
     PlaygroundGeneration,
     PlaygroundMode,
     PlaygroundOutput,
+    normalize_playground_image_parameters,
     normalize_playground_video_parameters,
 )
 from .storage import PlaygroundStorage
@@ -25,6 +28,15 @@ logger = get_logger(__name__)
 GENERATION_FAILED_MESSAGE = "生成失败，请稍后重试。"
 IMAGE_GENERATION_FAILED_MESSAGE = "图像生成失败，请稍后重试。"
 VIDEO_GENERATION_FAILED_MESSAGE = "视频生成失败，请稍后重试。"
+
+
+class _SaveTargetDisappeared(RuntimeError):
+    """Internal signal used to roll back before returning a not-found result."""
+
+
+class UnsupportedPlaygroundLibraryMediaError(ValueError):
+    """Raised when a Playground output cannot be represented by the asset library."""
+
 
 # ---------------------------------------------------------------------------
 # Output directories
@@ -57,6 +69,7 @@ class PlaygroundService:
         persist it via storage, and return it."""
         capability = IMAGE if request.mode in {PlaygroundMode.T2I, PlaygroundMode.I2I} else VIDEO
         resolve_model_api_key(request.model_id, capability)
+        now = datetime.now(timezone.utc).isoformat()
         gen = PlaygroundGeneration(
             id=generation_id or str(uuid.uuid4()),
             mode=request.mode,
@@ -69,7 +82,8 @@ class PlaygroundService:
             outputs=[],
             status="pending",
             error=None,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=now,
+            updated_at=now,
         )
         self.storage.add_generation(gen)
         return gen
@@ -109,14 +123,37 @@ class PlaygroundService:
         self.storage.update_generation(gen)
 
     def save_to_library(
-        self, generation_id: str, output_id: str, category: str = "general"
-    ) -> bool:
+        self,
+        generation_id: str,
+        output_id: str,
+        category: str,
+    ) -> Optional[str]:
         """Copy a generated output to ``output/assets/{category}/`` and flag
-        :pyattr:`PlaygroundOutput.saved_to_library` = True."""
+        :pyattr:`PlaygroundOutput.saved_to_library` = True.
+
+        The workspace lock covers the complete read/copy/register/persist
+        operation. It is re-entrant with server middleware/storage locking and
+        also serializes desktop retries that otherwise could create duplicate
+        assets.
+        """
+        asset_type = self._category_to_asset_type(category)
+        with interprocess_lock(self.storage.workspace_lock_path):
+            return self._save_to_library_locked(
+                generation_id,
+                output_id,
+                asset_type,
+            )
+
+    def _save_to_library_locked(
+        self,
+        generation_id: str,
+        output_id: str,
+        asset_type: str,
+    ) -> Optional[str]:
         gen = self.storage.get_generation(generation_id)
         if gen is None:
             logger.warning("save_to_library: generation %s not found", generation_id)
-            return False
+            return None
 
         target_output: Optional[PlaygroundOutput] = None
         for out in gen.outputs:
@@ -127,11 +164,15 @@ class PlaygroundService:
             logger.warning(
                 "save_to_library: output %s not found in generation %s", output_id, generation_id
             )
-            return False
+            return None
+        if target_output.media_type != "image":
+            raise UnsupportedPlaygroundLibraryMediaError(
+                "当前资产库仅支持保存图像输出，请先下载视频文件。"
+            )
         if target_output.saved_to_library:
             # The operation is idempotent. Replaying a successful request must
             # not create another full copy of the same potentially large file.
-            return True
+            return target_output.library_category or "prop"
 
         # media_path is stored as e.g. "output/playground/images/t2i_xxx_0.png"
         # Normalise: try as-is first, then strip leading "output/" and re-join
@@ -142,35 +183,55 @@ class PlaygroundService:
                 src_path = alt
         if not os.path.isfile(src_path):
             logger.error("save_to_library: source file not found: %s", target_output.media_path)
-            return False
+            return None
 
-        # Canonicalizing before constructing a path prevents arbitrary category
-        # strings from escaping the asset directory.
-        asset_type = self._category_to_asset_type(category)
-        dest_dir = os.path.join(self.output_root, "assets", asset_type)
-        os.makedirs(dest_dir, exist_ok=True)
+        # Journal stable identities before the first side effect. If the
+        # process exits after copy/registration, a retry reconciles the same
+        # path and asset rather than allocating duplicates. A conflicting
+        # retry also honors the category recorded by the original attempt.
+        intended_category = target_output.library_category or asset_type
+        deterministic_asset_id, deterministic_media_path = self._library_save_identifiers(
+            generation_id,
+            output_id,
+            intended_category,
+            os.path.basename(src_path),
+        )
+        intent = self.storage.prepare_output_library_save(
+            generation_id,
+            output_id,
+            intended_category,
+            deterministic_asset_id,
+            deterministic_media_path,
+        )
+        if intent is None:
+            return None
+        asset_type, asset_id, relative_image_url = intent
+        expected_asset_id, expected_media_path = self._library_save_identifiers(
+            generation_id,
+            output_id,
+            asset_type,
+            os.path.basename(src_path),
+        )
+        if asset_id != expected_asset_id or relative_image_url != expected_media_path:
+            raise RuntimeError("资产库保存记录包含无效的目标标识")
+        dest_path = os.path.join(self.output_root, *relative_image_url.split("/"))
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
-        # Always create a distinct library file. This avoids overwriting an
-        # existing asset with a coincidentally identical provider filename and
-        # lets a failed downstream registration clean up only its own copy.
-        dest_filename = f"{uuid.uuid4().hex}_{os.path.basename(src_path)}"
-        dest_path = os.path.join(dest_dir, dest_filename)
-        self._ensure_server_capacity(os.path.getsize(src_path))
-        shutil.copy2(src_path, dest_path)
-        self._enforce_server_file_quota(dest_path)
-        logger.info("Saved output %s to library: %s", output_id, dest_path)
-
-        # Wave A (shared asset pool): besides copying the file, register a real
-        # global library asset record so the output is curatable through the
-        # /library/assets CRUD. category -> asset_type mapping; anything
-        # unknown (incl. the "general" default) falls back to "prop".
-        prompt_text = (gen.prompt or "").strip()
-        asset_name = prompt_text[:40] or os.path.splitext(os.path.basename(dest_path))[0]
-        # New library records use the frontend's canonical
-        # /files/<path-relative-to-output> contract. The resolver still accepts
-        # older "output/..." records for backward compatibility.
-        relative_image_url = os.path.relpath(dest_path, self.output_root).replace(os.sep, "/")
+        comic_pipeline = None
+        asset_registered = False
         try:
+            source_size = os.path.getsize(src_path)
+            existing_size = os.path.getsize(dest_path) if os.path.isfile(dest_path) else 0
+            self._ensure_server_capacity(max(0, source_size - existing_size))
+            shutil.copy2(src_path, dest_path)
+            self._enforce_server_file_quota(dest_path)
+            logger.info("Saved output %s to library: %s", output_id, dest_path)
+
+            # Wave A (shared asset pool): besides copying the file, register a
+            # real global library asset record so the output is immediately
+            # curatable under the user's explicit classification.
+            prompt_text = (gen.prompt or "").strip()
+            asset_name = prompt_text[:40] or os.path.splitext(os.path.basename(dest_path))[0]
             # Deferred import: comic_gen.api owns the live ComicGenPipeline
             # singleton -- the same instance that backs the /library/assets
             # CRUD endpoints, so the new asset is immediately visible there.
@@ -187,27 +248,62 @@ class PlaygroundService:
                     # Point the library record at the freshly-copied file.
                     "image_url": relative_image_url,
                 },
+                asset_id=asset_id,
             )
+            registered_asset_id = str(getattr(asset, "id", "") or "").strip()
+            if registered_asset_id != asset_id:
+                raise RuntimeError("资产库未返回已保存资产的标识")
+            asset_registered = True
             logger.info(
                 "save_to_library: created global %s asset %s from output %s",
                 asset_type,
-                getattr(asset, "id", "?"),
+                asset_id,
                 output_id,
             )
-        except Exception:
+            persisted_category = self.storage.mark_output_saved(
+                generation_id,
+                output_id,
+                asset_type,
+            )
+            if persisted_category is None:
+                raise _SaveTargetDisappeared(
+                    "Playground generation or output disappeared during save"
+                )
+        except Exception as exc:
             logger.exception(
-                "save_to_library: failed to register global library asset for output %s",
+                "save_to_library: rolling back failed library save for output %s",
                 output_id,
             )
-            try:
-                os.unlink(dest_path)
-            except FileNotFoundError:
-                pass
+            asset_rolled_back = not asset_registered
+            if comic_pipeline is not None and asset_registered:
+                try:
+                    comic_pipeline.delete_library_asset(
+                        asset_type,
+                        asset_id,
+                        force=True,
+                    )
+                    asset_rolled_back = True
+                except Exception:
+                    logger.exception(
+                        "save_to_library: failed to roll back global %s asset %s",
+                        asset_type,
+                        asset_id,
+                    )
+            if asset_rolled_back:
+                try:
+                    os.unlink(dest_path)
+                except FileNotFoundError:
+                    pass
+            else:
+                logger.error(
+                    "save_to_library: preserving %s because asset %s still references it",
+                    dest_path,
+                    asset_id,
+                )
+            if isinstance(exc, _SaveTargetDisappeared):
+                return None
             raise
-
-        target_output.saved_to_library = True
-        self.storage.update_generation(gen)
-        return True
+        return persisted_category
 
     # ------------------------------------------------------------------
     # Image generation (t2i / i2i)
@@ -248,11 +344,12 @@ class PlaygroundService:
         if self._newapi_image_model is None:
             self._newapi_image_model = NewAPIImageModel({})
 
-        params = gen.parameters
+        params = normalize_playground_image_parameters(gen.parameters)
+        gen.parameters = params
         kwargs = {
             "model_id": gen.model_id,
-            "size": params.get("size", "1024x1024"),
-            "quality": params.get("quality", "high"),
+            "size": params.get("size", DEFAULT_IMAGE_PARAMETERS["size"]),
+            "quality": params.get("quality", DEFAULT_IMAGE_PARAMETERS["quality"]),
             "n": 1,
         }
 
@@ -454,15 +551,33 @@ class PlaygroundService:
 
     @staticmethod
     def _category_to_asset_type(category: Optional[str]) -> str:
-        """Map a Playground save category to a global-library asset_type.
-
-        Known categories (``character`` / ``scene`` / ``prop``) pass through;
-        everything else -- including the ``"general"`` default, empty string,
-        or ``None`` -- falls back to ``"prop"``."""
+        """Validate an explicit Playground library classification."""
         normalized = (category or "").strip().lower()
         if normalized in ("character", "scene", "prop"):
             return normalized
-        return "prop"
+        raise ValueError("保存到资产库前必须选择角色、场景或道具分类")
+
+    @staticmethod
+    def _library_save_identifiers(
+        generation_id: str,
+        output_id: str,
+        asset_type: str,
+        source_filename: str,
+    ) -> tuple[str, str]:
+        """Return stable asset and media identities for crash-safe retries."""
+
+        token = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"enmotion-playground-library:{generation_id}:{output_id}",
+        ).hex
+        prefix = {
+            "character": "char",
+            "scene": "scene",
+            "prop": "prop",
+        }[asset_type]
+        asset_id = f"{prefix}_{token[:12]}"
+        media_path = f"assets/{asset_type}/{token}_{os.path.basename(source_filename)}"
+        return asset_id, media_path
 
     @staticmethod
     def _ensure_server_capacity(reserve_bytes: int) -> None:

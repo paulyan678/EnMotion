@@ -6,7 +6,11 @@ import { useTranslations } from 'next-intl';
 import { playgroundApi } from '@/lib/api';
 import { getAssetUrl } from '@/lib/utils';
 import PreviewImage from '@/components/shared/preview/PreviewImage';
-import { usePlaygroundStore, type PlaygroundMode } from './usePlaygroundStore';
+import {
+  isPlaygroundMediaReferencedByQueue,
+  usePlaygroundStore,
+  type PlaygroundMode,
+} from './usePlaygroundStore';
 import AssetPickerModal from './AssetPickerModal';
 import { toast } from '@/store/toastStore';
 
@@ -29,15 +33,15 @@ const MODE_CONFIG: Partial<Record<PlaygroundMode, ModeConfig>> = {
     accept: 'image/*',
     hintKey: 't2i',
     multiple: true,
-    maxFiles: 9,
+    maxFiles: 16,
     icon: 'image',
   },
   i2i: {
     labelKey: 'compose.mediaReference',
     accept: 'image/*',
     hintKey: 'i2i',
-    multiple: false,
-    maxFiles: 1,
+    multiple: true,
+    maxFiles: 16,
     icon: 'image',
   },
   i2v: {
@@ -76,7 +80,7 @@ function isVideoPath(path: string): boolean {
 
 function isOwnedPlaygroundUpload(path: string): boolean {
   if (/^(https?:|data:|blob:)/i.test(path)) return false;
-  return /(^|\/)playground\/uploads\//.test(path);
+  return /^(?:output\/)?playground\/uploads\/[^/]/.test(path.replace(/\\/g, '/'));
 }
 
 async function deleteOwnedPlaygroundUpload(path: string): Promise<void> {
@@ -169,6 +173,7 @@ function SingleRefPreview({
 export default function MediaInput() {
   const mode = usePlaygroundStore((s) => s.mode);
   const inputMedia = usePlaygroundStore((s) => s.inputMedia);
+  const setMode = usePlaygroundStore((s) => s.setMode);
   const setInputMedia = usePlaygroundStore((s) => s.setInputMedia);
   const t = useTranslations('playground');
 
@@ -185,6 +190,16 @@ export default function MediaInput() {
 
   const hasMedia = inputMedia.length > 0;
   const canAddMore = config.multiple && inputMedia.length < config.maxFiles;
+
+  const commitInputMedia = (nextMedia: string[]) => {
+    if (mode === 't2i' && nextMedia.length > 0) {
+      // A reference image changes the operation contract from generation to
+      // image editing. Reflect that immediately instead of silently rewriting
+      // the request only after the user presses Generate.
+      setMode('i2i');
+    }
+    setInputMedia(nextMedia);
+  };
 
   // -------------------------------------------------------------------------
   // Upload handler
@@ -209,13 +224,17 @@ export default function MediaInput() {
       }
 
       if (config.multiple) {
-        setInputMedia([...inputMedia, ...newPaths]);
+        commitInputMedia([...inputMedia, ...newPaths]);
       } else {
         const previousPath = inputMedia[0];
-        if (previousPath && isOwnedPlaygroundUpload(previousPath)) {
+        if (
+          previousPath
+          && isOwnedPlaygroundUpload(previousPath)
+          && !isPlaygroundMediaReferencedByQueue(previousPath)
+        ) {
           await deleteOwnedPlaygroundUpload(previousPath);
         }
-        setInputMedia(newPaths);
+        commitInputMedia(newPaths);
       }
     } catch (err) {
       console.error('[MediaInput] upload failed:', err);
@@ -276,7 +295,11 @@ export default function MediaInput() {
       const hasAnotherLocalReference = latestMedia.some(
         (candidate, candidateIndex) => candidate === path && candidateIndex !== index,
       );
-      if (isOwnedPlaygroundUpload(path) && !hasAnotherLocalReference) {
+      if (
+        isOwnedPlaygroundUpload(path)
+        && !hasAnotherLocalReference
+        && !isPlaygroundMediaReferencedByQueue(path)
+      ) {
         await deleteOwnedPlaygroundUpload(path);
       }
       const currentMedia = usePlaygroundStore.getState().inputMedia;
@@ -302,15 +325,19 @@ export default function MediaInput() {
 
   const handleAssetSelect = async (path: string) => {
     if (config.multiple) {
-      if (inputMedia.length < config.maxFiles) setInputMedia([...inputMedia, path]);
+      if (inputMedia.length < config.maxFiles) commitInputMedia([...inputMedia, path]);
       return;
     }
     const previousPath = inputMedia[0];
     try {
-      if (previousPath && isOwnedPlaygroundUpload(previousPath)) {
+      if (
+        previousPath
+        && isOwnedPlaygroundUpload(previousPath)
+        && !isPlaygroundMediaReferencedByQueue(previousPath)
+      ) {
         await deleteOwnedPlaygroundUpload(previousPath);
       }
-      setInputMedia([path]);
+      commitInputMedia([path]);
     } catch (err) {
       console.error('[MediaInput] replacement cleanup failed:', err);
       toast.error(t('media.deleteFailed'));

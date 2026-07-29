@@ -43,12 +43,12 @@ class FakeLLM:
         self.messages = None
         self.response_format = None
 
-    def require_configured(self):
+    def require_configured(self, model=None):
         if self.config_error:
             raise self.config_error
-        return "chat-model"
+        return model or "chat-model"
 
-    def chat(self, *, messages, response_format):
+    def chat(self, *, messages, response_format, model=None):
         self.chat_called = True
         self.messages = messages
         self.response_format = response_format
@@ -163,3 +163,37 @@ def test_style_analysis_api_returns_valid_provider_recommendations(client, monke
     assert len(recommendations) == 3
     assert all(item["id"].startswith("ai-rec-") for item in recommendations)
     assert not any(item["id"].startswith("mock-") for item in recommendations)
+
+
+def test_style_analysis_api_uses_effective_series_prompt(client, monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        comic_api.pipeline,
+        "_effective_prompt_override",
+        lambda prompt_type, _script: (
+            "series style analysis" if prompt_type == "style_analysis" else ""
+        ),
+    )
+
+    def analyze(script_text, custom_style_prompt="", model=""):
+        captured.update(
+            script_text=script_text,
+            custom_style_prompt=custom_style_prompt,
+            model=model,
+        )
+        return VALID_RECOMMENDATIONS
+
+    monkeypatch.setattr(
+        comic_api.pipeline.script_processor,
+        "analyze_script_for_styles",
+        analyze,
+    )
+
+    response = client.post(
+        "/projects/project-1/art_direction/analyze",
+        json={"script_text": "script"},
+    )
+
+    assert response.status_code == 200
+    assert captured["custom_style_prompt"] == "series style analysis"

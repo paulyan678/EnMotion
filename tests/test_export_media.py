@@ -12,7 +12,10 @@ from src.apps.comic_gen import api as comic_api
 from src.apps.comic_gen import pipeline as pipeline_module
 from src.apps.comic_gen.export import ExportManager
 from src.apps.comic_gen.models import Script, StoryboardFrame, VideoTask
-from src.apps.comic_gen.pipeline import ComicGenPipeline
+from src.apps.comic_gen.pipeline import (
+    AssemblyMutationConflictError,
+    ComicGenPipeline,
+)
 from src.utils.system_check import get_ffmpeg_path
 
 
@@ -316,6 +319,211 @@ def test_merge_videos_concatenates_real_media(tmp_path, media_tools, monkeypatch
     assert not (tmp_path / "output/merge_list_project-1.txt").exists()
 
 
+@pytest.mark.parametrize(
+    ("dubbed_task_id", "expected_filename"),
+    [
+        ("take-a", "selected.mp4"),
+        ("take-b", "dubbed.mp4"),
+    ],
+)
+def test_merge_uses_dub_only_for_the_selected_take(
+    tmp_path,
+    monkeypatch,
+    dubbed_task_id,
+    expected_filename,
+):
+    monkeypatch.chdir(tmp_path)
+    video_dir = tmp_path / "output/video"
+    video_dir.mkdir(parents=True)
+    (video_dir / "selected.mp4").write_bytes(b"selected")
+    (video_dir / "dubbed.mp4").write_bytes(b"dubbed")
+    script = _script(merged_video_url=None)
+    script.frames[0].selected_video_id = "take-b"
+    script.frames[0].dubbed_video_task_id = dubbed_task_id
+    script.frames[0].dubbed_video_url = "video/dubbed.mp4"
+    if dubbed_task_id == "take-a":
+        # Applied A -> selected B -> previewed B, but Apply has not happened.
+        # Preview provenance must not make merge pair A's applied bytes with B.
+        script.frames[0].preview_video_task_id = "take-b"
+        script.frames[0].preview_video_url = "video/preview-b.mp4"
+        (video_dir / "preview-b.mp4").write_bytes(b"preview")
+    script.video_tasks = [
+        VideoTask(
+            id="take-b",
+            project_id=script.id,
+            frame_id="frame-1",
+            image_url="",
+            prompt="",
+            status="completed",
+            video_url="video/selected.mp4",
+        )
+    ]
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline._save_data = lambda: None
+    manifests = []
+
+    def fake_run(command, **_kwargs):
+        if "-version" in command:
+            return SimpleNamespace(returncode=0, stdout="ffmpeg test", stderr="")
+        manifest_path = Path(command[command.index("-i") + 1])
+        manifests.append(manifest_path.read_text(encoding="utf-8"))
+        Path(command[-1]).write_bytes(b"merged")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(pipeline_module, "get_ffmpeg_path", lambda: "/fake/ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_run,
+            CalledProcessError=subprocess.CalledProcessError,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            SubprocessError=subprocess.SubprocessError,
+        ),
+    )
+
+    pipeline.merge_videos(script.id)
+
+    assert len(manifests) == 1
+    assert expected_filename in manifests[0]
+    unexpected = "dubbed.mp4" if expected_filename == "selected.mp4" else "selected.mp4"
+    assert unexpected not in manifests[0]
+    assert "preview-b.mp4" not in manifests[0]
+
+
+def test_dub_preview_cache_hit_keeps_cached_background_audio(tmp_path, monkeypatch):
+    output_root = tmp_path / "output"
+    video_path = output_root / "video/source.mp4"
+    dialogue_path = output_root / "audio/dialogue.mp3"
+    background_path = output_root / "audio/background.wav"
+    video_path.parent.mkdir(parents=True)
+    dialogue_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    dialogue_path.write_bytes(b"d" * 1_001)
+    background_path.write_bytes(b"background")
+
+    script = _script(merged_video_url=None)
+    script.frames[0].audio_url = "audio/dialogue.mp3"
+    script.frames[0].selected_video_id = "take-1"
+    script.frames[0].dubbed_video_task_id = "take-applied"
+    script.frames[0].dubbed_video_url = "video/applied-a.mp4"
+    script.frames[0].bg_audio_url = "audio/background.wav"
+    script.frames[0].bg_audio_source_video = "video/source.mp4"
+    script.video_tasks = [
+        VideoTask(
+            id="take-1",
+            project_id=script.id,
+            frame_id="frame-1",
+            image_url="",
+            prompt="",
+            status="completed",
+            video_url="video/source.mp4",
+        )
+    ]
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.output_root = str(output_root)
+    pipeline.scripts = {script.id: script}
+    pipeline._save_data = lambda: None
+
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"generated")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(pipeline_module, "get_ffmpeg_path", lambda: "/fake/ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_run,
+            CalledProcessError=subprocess.CalledProcessError,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            SubprocessError=subprocess.SubprocessError,
+        ),
+    )
+
+    pipeline.preview_dub(script.id, script.frames[0].id, "take-1")
+
+    assert background_path.exists()
+    assert script.frames[0].bg_audio_url == "audio/background.wav"
+    assert script.frames[0].preview_video_task_id == "take-1"
+    assert script.frames[0].dubbed_video_task_id == "take-applied"
+    assert script.frames[0].dubbed_video_url == "video/applied-a.mp4"
+
+
+def test_dub_preview_revalidates_live_take_and_retires_stale_output(tmp_path, monkeypatch):
+    output_root = tmp_path / "output"
+    video_dir = output_root / "video"
+    audio_dir = output_root / "audio"
+    video_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+    (video_dir / "a.mp4").write_bytes(b"take a")
+    (video_dir / "b.mp4").write_bytes(b"take b")
+    (audio_dir / "dialogue.mp3").write_bytes(b"d" * 1_001)
+    (audio_dir / "background.wav").write_bytes(b"background")
+
+    script = _script(merged_video_url=None)
+    frame = script.frames[0]
+    frame.audio_url = "audio/dialogue.mp3"
+    frame.selected_video_id = "take-a"
+    frame.bg_audio_url = "audio/background.wav"
+    frame.bg_audio_source_video = "video/a.mp4"
+    script.video_tasks = [
+        VideoTask(
+            id="take-a",
+            project_id=script.id,
+            frame_id=frame.id,
+            image_url="",
+            prompt="",
+            status="completed",
+            video_url="video/a.mp4",
+        ),
+        VideoTask(
+            id="take-b",
+            project_id=script.id,
+            frame_id=frame.id,
+            image_url="",
+            prompt="",
+            status="completed",
+            video_url="video/b.mp4",
+        ),
+    ]
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.output_root = str(output_root)
+    pipeline.scripts = {script.id: script}
+    pipeline._save_data = lambda: None
+    switched = False
+
+    def fake_run(command, **_kwargs):
+        nonlocal switched
+        if not switched:
+            switched = True
+            pipeline.select_video_for_frame(script.id, frame.id, "take-b")
+        Path(command[-1]).write_bytes(b"generated")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(pipeline_module, "get_ffmpeg_path", lambda: "/fake/ffmpeg")
+    monkeypatch.setattr(
+        pipeline_module,
+        "subprocess",
+        SimpleNamespace(
+            run=fake_run,
+            CalledProcessError=subprocess.CalledProcessError,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            SubprocessError=subprocess.SubprocessError,
+        ),
+    )
+
+    with pytest.raises(AssemblyMutationConflictError, match="changed while the preview"):
+        pipeline.preview_dub(script.id, frame.id, "take-a")
+
+    assert frame.selected_video_id == "take-b"
+    assert frame.preview_video_url is None
+    assert frame.preview_video_task_id is None
+    assert not list(video_dir.glob("preview_*.mp4"))
+    assert (audio_dir / "background.wav").exists()
+
+
 def test_failed_merge_removes_manifest_and_partial_output(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     source_path = tmp_path / "output/video/broken.mp4"
@@ -365,6 +573,112 @@ def test_failed_merge_removes_manifest_and_partial_output(tmp_path, monkeypatch)
 
     assert not (tmp_path / "output/merge_list_project-1.txt").exists()
     assert not list((tmp_path / "output/video").glob("merged_*.mp4"))
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "message"),
+    [
+        ("nonzero", "BGM FFmpeg failed with exit code 7"),
+        ("timeout", "BGM FFmpeg timed out after 300 seconds"),
+        ("missing-output", "mixed output was not created"),
+    ],
+)
+def test_merge_with_configured_bgm_never_succeeds_silently(
+    tmp_path,
+    monkeypatch,
+    failure_mode,
+    message,
+):
+    monkeypatch.chdir(tmp_path)
+    video_dir = tmp_path / "output/video"
+    bgm_dir = tmp_path / "output/presets/bgm"
+    video_dir.mkdir(parents=True)
+    bgm_dir.mkdir(parents=True)
+    (video_dir / "source.mp4").write_bytes(b"source")
+    stale_output = video_dir / "previous.mp4"
+    stale_output.write_bytes(b"stale")
+    (bgm_dir / "selected.wav").write_bytes(b"music")
+
+    script = _script(merged_video_url="videos/previous.mp4")
+    script.bgm_url = "presets/bgm/selected.wav"
+    script.frames[0].selected_video_id = "take-1"
+    script.video_tasks = [
+        VideoTask(
+            id="take-1",
+            project_id=script.id,
+            frame_id="frame-1",
+            image_url="",
+            prompt="",
+            status="completed",
+            video_url="video/source.mp4",
+        )
+    ]
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    saved_urls = []
+    pipeline._save_data = lambda: saved_urls.append(script.merged_video_url)
+    monkeypatch.setattr(pipeline, "_video_has_audio_stream", lambda *_args: False)
+
+    def fake_run(command, **_kwargs):
+        if "-version" in command:
+            return SimpleNamespace(returncode=0, stdout="ffmpeg test", stderr="")
+        if "concat" in command:
+            Path(command[-1]).write_bytes(b"silent concat output")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        mixed_output = Path(command[-1])
+        if failure_mode == "nonzero":
+            mixed_output.write_bytes(b"partial mix")
+            raise subprocess.CalledProcessError(
+                7,
+                command,
+                output=b"",
+                stderr=b"forced BGM failure",
+            )
+        if failure_mode == "timeout":
+            mixed_output.write_bytes(b"partial mix")
+            raise subprocess.TimeoutExpired(command, 300)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(pipeline_module, "get_ffmpeg_path", lambda: "/fake/ffmpeg")
+    monkeypatch.setattr(pipeline_module.subprocess, "run", fake_run)
+
+    with pytest.raises(
+        ValueError,
+        match=f"Background music could not be applied: .*{message}",
+    ):
+        pipeline.merge_videos(script.id)
+
+    assert script.merged_video_url == "videos/previous.mp4"
+    assert saved_urls == []
+    assert stale_output.read_bytes() == b"stale"
+    assert not (tmp_path / "output/merge_list_project-1.txt").exists()
+    assert not list(video_dir.glob("merged_project-1_*.mp4"))
+    assert not list(video_dir.glob("*_mixed.mp4"))
+
+
+def test_bgm_mux_returns_none_only_when_no_track_is_configured(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.output_root = str(tmp_path)
+    script = _script()
+    script.bgm_url = None
+    monkeypatch.setattr(
+        pipeline_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("FFmpeg must not run without BGM"),
+    )
+
+    assert (
+        pipeline._maybe_apply_bgm_mux(
+            script,
+            str(tmp_path / "video.mp4"),
+            "/fake/ffmpeg",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("source_has_audio", [False, True])
@@ -456,3 +770,58 @@ def test_export_route_preserves_missing_project_404(monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Script not found"
+
+
+def test_export_route_reports_project_operation_conflict(monkeypatch):
+    def fake_export(*_args, **_kwargs):
+        raise pipeline_module.AssemblyOperationInProgressError(
+            pipeline_module.ASSEMBLY_OPERATION_BUSY_MESSAGE
+        )
+
+    monkeypatch.setattr(comic_api.pipeline, "export_project", fake_export)
+
+    response = TestClient(comic_api.app).post(
+        "/projects/project-1/export",
+        json={},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == pipeline_module.ASSEMBLY_OPERATION_BUSY_MESSAGE
+
+
+@pytest.mark.parametrize(
+    ("pipeline_method", "path", "payload"),
+    [
+        (
+            "analyze_text_to_frames",
+            "/projects/project-1/storyboard/analyze",
+            {"text": "story"},
+        ),
+        (
+            "refine_frame",
+            "/projects/project-1/frames/frame-1/refine",
+            None,
+        ),
+        (
+            "preview_dub",
+            "/projects/project-1/frames/frame-1/dub/preview",
+            {"video_task_id": "take-1", "offset_ms": 0},
+        ),
+    ],
+)
+def test_provider_commit_conflicts_are_reported_as_409(
+    monkeypatch,
+    pipeline_method,
+    path,
+    payload,
+):
+    def conflict(*_args, **_kwargs):
+        raise AssemblyMutationConflictError("provider inputs changed")
+
+    monkeypatch.setattr(comic_api.pipeline, pipeline_method, conflict)
+    monkeypatch.setattr(comic_api, "server_mode_enabled", lambda: False)
+
+    response = TestClient(comic_api.app).post(path, json=payload)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "provider inputs changed"

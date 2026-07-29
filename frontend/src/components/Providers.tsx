@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
 import { useSettingsStore, THEME_PRESETS } from '@/store/settingsStore';
 import { APP_LOCALE, getMessages } from '@/lib/i18n';
+import { APP_TIME_ZONE } from '@/lib/dateTime';
 import { LightboxProvider } from '@/components/shared/preview/LightboxProvider';
 import ToastContainer from '@/components/shared/ToastContainer';
 import { MotionConfig } from 'framer-motion';
@@ -35,7 +36,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }, [messages]);
 
     return (
-        <NextIntlClientProvider locale={APP_LOCALE} messages={messages} timeZone="Asia/Shanghai">
+        <NextIntlClientProvider locale={APP_LOCALE} messages={messages} timeZone={APP_TIME_ZONE}>
             <UpdaterProvider>
                 <AuthProvider>
                     {/* MotionConfig: respect OS prefers-reduced-motion ("user"); when the

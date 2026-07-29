@@ -58,6 +58,8 @@ interface AdminUserResponse {
   balance?: AccountBalance;
 }
 
+const SESSION_PROBE_TIMEOUT_MS = 3_000;
+
 interface CreditLedgerResponse {
   available_after: number;
   reserved_after: number;
@@ -108,7 +110,9 @@ async function readSession(request: Promise<{ data: AuthPayload }>): Promise<Aut
 export const authApi = {
   session: async (): Promise<AuthSessionState | null> => {
     try {
-      return await readSession(apiClient.get(`${API_URL}/auth/session`));
+      return await readSession(apiClient.get(`${API_URL}/auth/session`, {
+        timeout: SESSION_PROBE_TIMEOUT_MS,
+      }));
     } catch (error) {
       if (axiosLibrary.isAxiosError(error) && error.response?.status === 401) return null;
       throw error;
