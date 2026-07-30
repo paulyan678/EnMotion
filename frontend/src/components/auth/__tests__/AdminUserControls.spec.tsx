@@ -60,10 +60,10 @@ describe("AdminUserControls", () => {
         managedUser.id,
         "Abc123",
       );
+      expect(input).toHaveValue("");
+      expect(
+        screen.getByText("Temporary password updated."),
+      ).toBeInTheDocument();
     });
-    expect(input).toHaveValue("");
-    expect(
-      screen.getByText("Temporary password updated."),
-    ).toBeInTheDocument();
   });
 });
