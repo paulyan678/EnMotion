@@ -50,6 +50,8 @@ INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE = (
 RATE_CARD_MISSING_ERROR_CODE = "rate_card_missing"
 RATE_CARD_MISSING_PUBLIC_MESSAGE = "当前模型尚未配置计费规则，请联系管理员在管理中心添加后重试。"
 _PHASE_LABELS = {
+    "image submission": "提交图像任务",
+    "image request": "请求图像服务",
     "video generation": "视频生成",
     "video submission": "提交视频任务",
     "video request": "请求视频服务",
@@ -291,6 +293,7 @@ def _request(
     url: str,
     *,
     max_attempts: Optional[int] = None,
+    phase: str = "request",
     **kwargs,
 ) -> requests.Response:
     """Issue a request with bounded, idempotency-aware retries.
@@ -347,7 +350,7 @@ def _request(
                 request_id=(
                     _response_request_id(response) or _request_id_from_text(provider_message)
                 ),
-                phase=("video submission" if normalized_method == "POST" else "video request"),
+                phase=phase,
             )
             if classified is not None:
                 raise classified
@@ -976,6 +979,7 @@ class NewAPIImageModel(ImageGenModel):
                 response = _request(
                     "POST",
                     f"{base_url}/images/edits",
+                    phase="image submission",
                     headers=headers,
                     files=files,
                     data={
@@ -991,6 +995,7 @@ class NewAPIImageModel(ImageGenModel):
             response = _request(
                 "POST",
                 f"{base_url}/images/generations",
+                phase="image submission",
                 headers={**headers, "Content-Type": "application/json"},
                 json={
                     "model": model,
@@ -1114,6 +1119,7 @@ class NewAPIVideoModel(VideoGenModel):
         response = _request(
             "POST",
             f"{base_url}/video/generations",
+            phase="video submission",
             headers=headers,
             json=body,
             timeout=120,
@@ -1217,6 +1223,7 @@ class NewAPIVideoModel(VideoGenModel):
                 poll = _request(
                     "GET",
                     f"{base_url}/video/generations/{task_id}",
+                    phase="video processing",
                     headers=_auth_headers(model, VIDEO),
                     timeout=30,
                     max_attempts=8,

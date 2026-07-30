@@ -498,6 +498,9 @@ describe("API Calls dashboard", () => {
     const card = await screen.findByRole("button", { name: "Open details for Video generation" });
     fireEvent.keyDown(card, { key: "Enter" });
     const dialog = screen.getByRole("dialog", { name: "Video generation" });
+    const overlay = screen.getByTestId("api-call-detail-overlay");
+    expect(overlay.parentElement).toBe(document.body);
+    expect(overlay).toHaveClass("z-[220]");
     expect(within(dialog).getByText("Processing timeline")).toBeInTheDocument();
     expect(within(dialog).getByText("A paper boat crossing a moonlit harbor")).toBeInTheDocument();
     expect(within(dialog).getByText("Seedance 2.0 Fast")).toBeInTheDocument();

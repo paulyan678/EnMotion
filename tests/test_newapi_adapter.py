@@ -114,6 +114,8 @@ class TestNewAPIImageModel:
         assert exc_info.value.error_code == RATE_CARD_MISSING_ERROR_CODE
         assert str(exc_info.value) == RATE_CARD_MISSING_PUBLIC_MESSAGE
         assert "no active rate card" not in str(exc_info.value)
+        assert "阶段：提交图像任务" in exc_info.value.diagnostic
+        assert "提交视频任务" not in exc_info.value.diagnostic
 
     def test_provider_error_redacts_configured_model_key(self, monkeypatch, tmp_path):
         configured_key = "image-test-token"
