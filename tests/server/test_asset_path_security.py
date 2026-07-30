@@ -7,6 +7,11 @@ import pytest
 from src.apps.comic_gen.assets import AssetGenerator
 from src.apps.comic_gen.models import Character, Prop, Scene, Script
 from src.apps.comic_gen.pipeline import ComicGenPipeline, InvalidAssetAttributesError
+from src.models.newapi import (
+    RATE_CARD_MISSING_ERROR_CODE,
+    RATE_CARD_MISSING_PUBLIC_MESSAGE,
+    NewAPIProviderError,
+)
 
 
 def _asset(asset_type: str, asset_id: str):
@@ -79,6 +84,39 @@ def test_asset_generator_rejects_output_directory_outside_workspace(tmp_path):
         generator._asset_output_path("props", "safe.png")
 
     assert not outside.exists()
+
+
+def test_asset_batch_preserves_actionable_provider_error(tmp_path, monkeypatch):
+    generator = AssetGenerator({"output_root": str(tmp_path / "output")})
+    provider_error = NewAPIProviderError(
+        RATE_CARD_MISSING_PUBLIC_MESSAGE,
+        error_code=RATE_CARD_MISSING_ERROR_CODE,
+        http_status=503,
+        phase="image submission",
+    )
+
+    class MissingRateCardModel:
+        def generate(self, *_args, **_kwargs):
+            raise provider_error
+
+    monkeypatch.setattr(
+        generator, "_get_model_for", lambda _name: MissingRateCardModel()
+    )
+    character = Character(
+        id="character-1",
+        name="Tower Keeper",
+        description="An elderly fictional guardian",
+    )
+
+    with pytest.raises(NewAPIProviderError) as exc_info:
+        generator.generate_character(
+            character,
+            generation_type="reference_sheet",
+            model_name="gpt-image-2",
+        )
+
+    assert exc_info.value is provider_error
+    assert exc_info.value.error_code == RATE_CARD_MISSING_ERROR_CODE
 
 
 def test_allowlisted_asset_attributes_still_update(tmp_path):

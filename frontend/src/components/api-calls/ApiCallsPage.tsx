@@ -37,6 +37,7 @@ import {
 } from "@/lib/api";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
+import ModalPortal from "@/components/common/ModalPortal";
 import GlobalPageTitle from "@/components/layout/GlobalPageTitle";
 import { appDateTimeFormatter, parseApiTimestamp } from "@/lib/dateTime";
 
@@ -655,8 +656,6 @@ function JobDetailDrawer({
   onDownload: (job: ApiCallActivity, output: ApiCallMedia) => Promise<void>;
 }) {
   const t = useTranslations("apiCalls");
-  const drawerRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
   const isBilling = job.activity_kind === "billing";
   const billingStatusLabel = isBilling
     ? t(`billing.statuses.${billingStatusKey(job.billing_status)}`)
@@ -669,39 +668,6 @@ function JobDetailDrawer({
         ? job.error
         : t("errors.requestFailed");
 
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
-    const handleKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !drawerRef.current) return;
-      const focusable = Array.from(
-        drawerRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      previouslyFocused?.focus();
-    };
-  }, [onClose]);
-
   const navigateToSource = () => {
     const route = job.source_context?.route;
     if (!route) return;
@@ -709,14 +675,21 @@ function JobDetailDrawer({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex justify-end bg-black/65 backdrop-blur-sm" onMouseDown={onClose}>
-      <div
-        ref={drawerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="api-call-detail-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        className="flex h-full w-full max-w-2xl flex-col border-l border-glass-border bg-surface shadow-2xl"
+    <ModalPortal isOpen onClose={onClose}>
+      {(dialogRef) => (
+        <div
+          data-testid="api-call-detail-overlay"
+          className="fixed inset-0 z-[220] flex justify-end bg-black/65 backdrop-blur-sm"
+          onMouseDown={onClose}
+        >
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="api-call-detail-title"
+            tabIndex={-1}
+            onMouseDown={(event) => event.stopPropagation()}
+            className="flex h-full w-full max-w-2xl flex-col border-l border-glass-border bg-surface shadow-2xl"
       >
         <header className="flex shrink-0 items-start justify-between gap-4 border-b border-glass-border px-5 pb-5 pt-[max(1.25rem,env(safe-area-inset-top))] sm:px-6 sm:pb-6 sm:pt-[max(1.5rem,env(safe-area-inset-top))]">
           <div className="min-w-0">
@@ -736,7 +709,7 @@ function JobDetailDrawer({
             </div>
             <p className="mt-1 font-mono text-[0.6875rem] text-text-muted">{job.id}</p>
           </div>
-          <button ref={closeRef} type="button" onClick={onClose} aria-label={t("closeDetails")} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-glass-border text-text-muted hover:text-foreground">
+          <button type="button" onClick={onClose} aria-label={t("closeDetails")} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-glass-border text-text-muted hover:text-foreground">
             <X className="h-4 w-4" />
           </button>
         </header>
@@ -900,8 +873,10 @@ function JobDetailDrawer({
             ) : null}
           </div>
         </footer>
-      </div>
-    </div>
+          </div>
+        </div>
+      )}
+    </ModalPortal>
   );
 }
 

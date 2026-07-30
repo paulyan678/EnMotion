@@ -2,11 +2,11 @@ import os
 import uuid
 import time
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from urllib.parse import quote
 from .models import Character, Scene, Prop, GenerationStatus, ImageAsset, ImageVariant, MAX_VARIANTS_PER_ASSET
 from ...models.base import ImageGenModel
-from ...models.newapi import NewAPIImageModel
+from ...models.newapi import NewAPIImageModel, NewAPIProviderError
 from ...utils import get_logger
 from ...utils.newapi_models import IMAGE, get_model_spec, get_selected_model
 from ...utils.oss_utils import authoritative_media_reference, is_object_key
@@ -45,6 +45,17 @@ def cleanup_old_variants(image_asset: ImageAsset) -> None:
     # Rebuild variants list: favorited first, then non-favorited (newest first)
     non_favorited.reverse()  # Newest first
     image_asset.variants = favorited + non_favorited
+
+
+def _raise_generation_failure(
+    last_error: str, last_exception: Optional[Exception]
+) -> None:
+    """Keep actionable provider failures intact after all batch attempts fail."""
+
+    if isinstance(last_exception, NewAPIProviderError):
+        raise last_exception
+    raise RuntimeError(f"生成失败：{last_error}") from last_exception
+
 
 # Aspect ratio to image size mapping
 ASPECT_RATIO_TO_SIZE = {
@@ -138,6 +149,7 @@ class AssetGenerator:
 
                 successful_generations = 0
                 last_error = ""
+                last_exception: Optional[Exception] = None
                 for i in range(batch_size):
                     try:
                         variant_id = str(uuid.uuid4())
@@ -193,11 +205,12 @@ class AssetGenerator:
                             time.sleep(1)
                     except Exception as e:
                         last_error = str(e)
+                        last_exception = e
                         logger.error(f"Failed to generate reference sheet variant {i+1}/{batch_size}: {e}")
                         continue
 
                 if successful_generations == 0:
-                    raise RuntimeError(f"生成失败：{last_error}")
+                    _raise_generation_failure(last_error, last_exception)
 
                 character.status = GenerationStatus.COMPLETED
                 return character
@@ -269,6 +282,7 @@ class AssetGenerator:
                 # Batch Generation Loop
                 successful_generations = 0
                 last_error = ""
+                last_exception = None
                 for i in range(batch_size):
                     try:
                         variant_id = str(uuid.uuid4())
@@ -324,6 +338,7 @@ class AssetGenerator:
                             time.sleep(1)
                     except Exception as e:
                         last_error = str(e)
+                        last_exception = e
                         logger.error(f"Failed to generate full body variant {i+1}/{batch_size}: {e}")
                         continue
 
@@ -347,7 +362,7 @@ class AssetGenerator:
                 character.full_body_updated_at = time.time()
 
                 if successful_generations == 0:
-                    raise RuntimeError(f"生成失败：{last_error}")
+                    _raise_generation_failure(last_error, last_exception)
 
                 # Mark downstream as inconsistent if generating only full body
                 if generation_type == "full_body":
@@ -435,6 +450,7 @@ class AssetGenerator:
 
                 successful_generations = 0
                 last_error = ""
+                last_exception = None
                 for i in range(batch_size):
                     try:
                         variant_id = str(uuid.uuid4())
@@ -474,6 +490,7 @@ class AssetGenerator:
                             time.sleep(1)
                     except Exception as e:
                         last_error = str(e)
+                        last_exception = e
                         logger.error(f"Failed to generate three view variant {i+1}/{batch_size}: {e}")
                         continue
 
@@ -500,7 +517,7 @@ class AssetGenerator:
 
                 # Raise exception if all variants failed
                 if successful_generations == 0:
-                    raise RuntimeError(f"生成失败：{last_error}")
+                    _raise_generation_failure(last_error, last_exception)
 
             # 3. Headshot (Derived)
             if generation_type in ["all", "headshot"]:
@@ -518,6 +535,7 @@ class AssetGenerator:
 
                 successful_generations = 0
                 last_error = ""
+                last_exception = None
                 for i in range(batch_size):
                     try:
                         variant_id = str(uuid.uuid4())
@@ -557,6 +575,7 @@ class AssetGenerator:
                             time.sleep(1)
                     except Exception as e:
                         last_error = str(e)
+                        last_exception = e
                         logger.error(f"Failed to generate headshot variant {i+1}/{batch_size}: {e}")
                         continue
 
@@ -583,7 +602,7 @@ class AssetGenerator:
 
                 # Raise exception if all variants failed
                 if successful_generations == 0:
-                    raise RuntimeError(f"生成失败：{last_error}")
+                    _raise_generation_failure(last_error, last_exception)
 
             # Update consistency status (Legacy support, but also useful for quick checks)
             if generation_type == "all":
