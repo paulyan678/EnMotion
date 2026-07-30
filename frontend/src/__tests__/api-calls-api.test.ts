@@ -113,6 +113,7 @@ describe("central API activity client", () => {
           }],
         });
       }
+      if (config.url?.includes("/activity/history")) return response(config, []);
       return response(config, [{
         id: "generation-1",
         mode: "t2v",
@@ -162,6 +163,10 @@ describe("central API activity client", () => {
       failingSource: "Playground",
       shouldFail: (url: string) => url.includes("/playground/history"),
     },
+    {
+      failingSource: "workspace activity",
+      shouldFail: (url: string) => url.includes("/activity/history"),
+    },
   ])("rejects incomplete hybrid history when $failingSource fails", async ({ shouldFail }) => {
     vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
     apiClient.defaults.adapter = async (config) => {
@@ -191,6 +196,7 @@ describe("central API activity client", () => {
           }],
         });
       }
+      if (config.url?.includes("/activity/history")) return response(config, []);
       return response(config, [{
         id: "older-generation",
         mode: "t2i",
@@ -218,6 +224,7 @@ describe("central API activity client", () => {
       if (config.url?.includes("/account/usage")) {
         return response(config, { items: [] });
       }
+      if (config.url?.includes("/activity/history")) return response(config, []);
       const generation = (
         id: string,
         createdAt: string,
@@ -323,6 +330,49 @@ describe("central API activity client", () => {
       billing_status: "cancelled",
       status: "canceled",
     });
+  });
+
+  it("merges identifiable hybrid asset activity with bounded source requests", async () => {
+    vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
+    const requests: InternalAxiosRequestConfig[] = [];
+    apiClient.defaults.adapter = async (config) => {
+      requests.push(config);
+      if (config.url?.includes("/account/usage")) {
+        return response(config, { items: [] });
+      }
+      if (config.url?.includes("/playground/history")) {
+        return response(config, []);
+      }
+      return response(config, [{
+        id: "hybrid:asset-task",
+        task_id: "asset-task",
+        type: "series_asset",
+        status: "completed",
+        category: "image",
+        source: "workspace",
+        progress: 100,
+        detail: "守塔人",
+        prompt: "全身角色设定图",
+        model_name: "gpt-image-2",
+        attempts: 1,
+        created_at: "2026-07-30T01:00:00Z",
+        updated_at: "2026-07-30T01:01:00Z",
+        finished_at: "2026-07-30T01:01:00Z",
+        managed_read_only: true,
+        activity_kind: "generation",
+      }]);
+    };
+
+    const activities = await apiCallsApi.list();
+
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      id: "hybrid:asset-task",
+      detail: "守塔人",
+      prompt: "全身角色设定图",
+    });
+    expect(requests).toHaveLength(3);
+    expect(requests.every((request) => request.timeout === 15_000)).toBe(true);
   });
 
   it("downloads hybrid Playground output through authenticated media fetch", async () => {

@@ -4,7 +4,15 @@ import uuid
 
 from sqlalchemy import select
 
-from app.models import AuditEvent, CreditLedger, LoginSession, RateCard, User
+from app.models import (
+    AuditEvent,
+    CreditLedger,
+    LoginSession,
+    RateCard,
+    UsageRequest,
+    User,
+)
+from app.services.ledger import _matching_rate_card
 from tests.conftest import login
 
 
@@ -351,3 +359,98 @@ def test_updating_an_older_rate_card_allocates_the_next_global_version(
             .order_by(RateCard.version)
         ).all()
     assert versions == [2, 3]
+
+
+def test_equal_priority_rate_cards_use_the_newest_matching_version(
+    app_env,
+    admin_token,
+):
+    client, app = app_env
+    headers = bearer(admin_token)
+    payload = {
+        "operation": "chat.completions",
+        "model": "qwen3.7-max",
+        "unit_cost": 5,
+        "selectors": {},
+        "priority": 7,
+        "active": True,
+    }
+    first = client.post("/api/v1/admin/rate-cards", headers=headers, json=payload)
+    second = client.post(
+        "/api/v1/admin/rate-cards",
+        headers=headers,
+        json={**payload, "unit_cost": 9},
+    )
+    assert first.status_code == second.status_code == 201
+
+    with app.state.db.session() as session:
+        selected = _matching_rate_card(
+            session,
+            operation="chat.completions",
+            model="qwen3.7-max",
+            context={},
+        )
+        assert selected.id == second.json()["id"]
+        assert selected.unit_cost == 9
+
+
+def test_deleting_a_rate_card_hides_it_but_preserves_historical_usage(
+    app_env,
+    admin_token,
+):
+    client, app = app_env
+    headers = bearer(admin_token)
+    created = client.post(
+        "/api/v1/admin/rate-cards",
+        headers=headers,
+        json={
+            "operation": "chat.completions",
+            "model": "qwen3.7-max",
+            "unit_cost": 4,
+            "selectors": {},
+            "priority": 0,
+            "active": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    card_id = created.json()["id"]
+
+    with app.state.db.session() as session:
+        employee = session.scalar(select(User).where(User.normalized_username == "employee"))
+        assert employee is not None
+        usage = UsageRequest(
+            user_id=employee.id,
+            idempotency_key=f"delete-test:{uuid.uuid4().hex}",
+            request_fingerprint="f" * 64,
+            operation="chat.completions",
+            model="qwen3.7-max",
+            rate_card_id=card_id,
+            status="settled",
+            reserved_units=4,
+            settled_units=4,
+        )
+        session.add(usage)
+        session.flush()
+        usage_id = usage.id
+
+    deleted = client.delete(f"/api/v1/admin/rate-cards/{card_id}", headers=headers)
+    assert deleted.status_code == 204, deleted.text
+    listed = client.get("/api/v1/admin/rate-cards", headers=headers)
+    assert listed.status_code == 200
+    assert card_id not in {row["id"] for row in listed.json()}
+
+    with app.state.db.session() as session:
+        card = session.get(RateCard, card_id)
+        assert card is not None
+        assert card.active is False
+        assert card.deleted_at is not None
+        assert session.get(UsageRequest, usage_id) is not None
+        audit = session.scalar(
+            select(AuditEvent)
+            .where(AuditEvent.action == "admin.rate_card_deleted")
+            .where(AuditEvent.target_id == card_id)
+        )
+        assert audit is not None
+
+    repeated = client.delete(f"/api/v1/admin/rate-cards/{card_id}", headers=headers)
+    assert repeated.status_code == 404

@@ -76,6 +76,7 @@ const AUDIT_ACTION_LABELS = Object.freeze({
   "admin.credit_adjustment_replayed": "重复提交额度调整",
   "admin.rate_card_created": "创建计费规则",
   "admin.rate_card_updated": "更新计费规则",
+  "admin.rate_card_deleted": "删除计费规则",
   "admin.provider_config_updated": "更新共享 API 配置",
   "admin.usage_settled": "确认用量扣款",
   "admin.usage_settlement_replayed": "重复确认用量扣款",
@@ -478,11 +479,23 @@ async function loadUsers() {
 
 async function loadRates() {
   const rows = await api("/admin/rate-cards");
-  $("#rates-body").innerHTML = rows.map((card) => `
+  const effectiveSignatures = new Set();
+  $("#rates-body").innerHTML = rows.map((card) => {
+    const selectorSignature = JSON.stringify(
+      Object.fromEntries(Object.entries(card.selectors || {}).sort(([left], [right]) => left.localeCompare(right))),
+    );
+    const signature = `${card.operation}\u0000${card.model}\u0000${selectorSignature}`;
+    const effective = card.active && !effectiveSignatures.has(signature);
+    if (effective) effectiveSignatures.add(signature);
+    const statusText = !card.active ? "已停用" : effective ? "当前生效" : "已启用 · 同条件已被覆盖";
+    return `
     <tr><td>${escapeText(operationLabel(card.operation))}</td><td>${escapeText(card.model)}</td>
     <td>${fmt(card.unit_cost)}</td><td><code>${escapeText(JSON.stringify(card.selectors))}</code></td>
-    <td>${card.active ? "已启用" : "已停用"} · 版本 ${card.version}</td></tr>
-  `).join("");
+    <td><span class="status ${card.active ? "" : "off"}">${statusText}</span><br>
+      <small>优先级 ${fmt(card.priority)} · 版本 ${card.version}</small></td>
+    <td><button class="secondary danger" data-rate-action="delete" data-rate-id="${escapeText(card.id)}">删除</button></td></tr>
+  `;
+  }).join("");
 }
 
 async function loadLedger() {
@@ -629,6 +642,24 @@ $("#rate-form").addEventListener("submit", async (event) => {
     showNotice("计费规则已添加");
   } catch (error) { showNotice(error.message, true); }
   finally { endFormSubmit(form); }
+});
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-rate-action]");
+  if (!button || button.dataset.rateAction !== "delete") return;
+  const cardId = button.dataset.rateId;
+  if (!cardId || !confirm("确定删除此计费规则吗？删除后新请求不会再使用它，已有额度记录仍会保留。")) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await api(`/admin/rate-cards/${encodeURIComponent(cardId)}`, { method: "DELETE" });
+    await Promise.all([loadRates(), loadAudit()]);
+    showNotice("计费规则已删除");
+  } catch (error) {
+    showNotice(error.message, true);
+    button.disabled = false;
+  }
 });
 
 document.addEventListener("click", async (event) => {

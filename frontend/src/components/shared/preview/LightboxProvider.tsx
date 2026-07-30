@@ -21,7 +21,7 @@ import React, {
     createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { X, ChevronLeft, ChevronRight, Copy, Check, ExternalLink } from "lucide-react";
+import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { getAssetUrl } from "@/lib/utils";
 
@@ -72,7 +72,6 @@ export function LightboxProvider({ children }: LightboxProviderProps) {
     const [activeIndex, setActiveIndex] = useState(0);
     /** Single-item open path stores in this slot (no group). */
     const [singleItem, setSingleItem] = useState<LightboxItem | null>(null);
-    const [copied, setCopied] = useState(false);
 
     const isOpen = !!singleItem || !!activeGroup;
     const currentItem: LightboxItem | null = singleItem
@@ -83,7 +82,6 @@ export function LightboxProvider({ children }: LightboxProviderProps) {
         setSingleItem(null);
         setActiveGroup(null);
         setActiveIndex(0);
-        setCopied(false);
     }, []);
 
     const registerGroup = useCallback((id: string, items: LightboxItem[]) => {
@@ -115,14 +113,12 @@ export function LightboxProvider({ children }: LightboxProviderProps) {
         setSingleItem(item);
         setActiveGroup(null);
         setActiveIndex(0);
-        setCopied(false);
     }, []);
 
     const openInGroup = useCallback((groupId: string, index: number) => {
         setSingleItem(null);
         setActiveGroup(groupId);
         setActiveIndex(Math.max(0, index));
-        setCopied(false);
     }, []);
 
     // Keyboard handlers — ESC close, ← → navigate (when in group)
@@ -145,17 +141,6 @@ export function LightboxProvider({ children }: LightboxProviderProps) {
         return () => window.removeEventListener("keydown", onKey);
     }, [isOpen, activeGroup, groups, close]);
 
-    const handleCopyUrl = useCallback(async () => {
-        if (!currentItem) return;
-        try {
-            await navigator.clipboard.writeText(getAssetUrl(currentItem.src));
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
-        } catch {
-            /* clipboard blocked — silently fail */
-        }
-    }, [currentItem]);
-
     const value = useMemo<LightboxContextValue>(() => ({
         open, openInGroup, registerGroup, unregisterGroup,
     }), [open, openInGroup, registerGroup, unregisterGroup]);
@@ -177,8 +162,6 @@ export function LightboxProvider({ children }: LightboxProviderProps) {
                         const len = groups[activeGroup!]?.length ?? 0;
                         if (len > 1) setActiveIndex((idx) => (idx + 1) % len);
                     } : null}
-                    copied={copied}
-                    onCopyUrl={handleCopyUrl}
                 />
             ) : null}
         </LightboxContext.Provider>
@@ -192,12 +175,10 @@ interface LightboxPortalProps {
     onClose: () => void;
     onPrev: (() => void) | null;
     onNext: (() => void) | null;
-    copied: boolean;
-    onCopyUrl: () => void;
 }
 
 function LightboxPortal({
-    item, groupCount, groupIndex, onClose, onPrev, onNext, copied, onCopyUrl,
+    item, groupCount, groupIndex, onClose, onPrev, onNext,
 }: LightboxPortalProps) {
     const t = useTranslations("preview");
     const resolved = getAssetUrl(item.src);
@@ -227,24 +208,6 @@ function LightboxPortal({
             >
                 {/* Top-right toolbar */}
                 <div className="absolute right-4 top-4 z-[62] flex items-center gap-1">
-                    <button
-                        type="button"
-                        onClick={onCopyUrl}
-                        title={t("copyUrl")}
-                        className="inline-flex h-9 items-center gap-1.5 rounded-md border border-foreground/15 bg-black/55 px-3 font-mono text-chrome-sm font-medium text-foreground backdrop-blur transition-colors duration-fast ease-out-quart hover:bg-black/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55"
-                    >
-                        {copied ? <Check size={13} /> : <Copy size={13} />}
-                        {copied ? t("copied") : t("copyUrl")}
-                    </button>
-                    <a
-                        href={resolved}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={t("openInNewTab")}
-                        className="grid h-9 w-9 place-items-center rounded-md border border-foreground/15 bg-black/55 text-foreground backdrop-blur transition-colors duration-fast ease-out-quart hover:bg-black/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/55"
-                    >
-                        <ExternalLink size={14} />
-                    </a>
                     <button
                         type="button"
                         onClick={onClose}

@@ -1,9 +1,12 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from src.apps.hybrid.client import ControlPlaneClient, ControlPlaneError, RemoteLogin
 from src.apps.hybrid.config import (
@@ -12,13 +15,22 @@ from src.apps.hybrid.config import (
     hybrid_mode_enabled,
     workspace_isolation_enabled,
 )
+from src.apps.hybrid.middleware import HybridAuthMiddleware
 from src.apps.hybrid.provider import provider_gateway_base_url
 from src.apps.hybrid.router import router as hybrid_router
 from src.apps.hybrid.session import (
     HybridUser,
+    LocalSession,
     SessionVault,
     StalePersistedCredentialError,
+    session_vault,
 )
+from src.apps.web_runtime.file_lock import (
+    acquire_lock_file,
+    interprocess_lock,
+    release_lock_file,
+)
+from src.apps.web_runtime.pipeline_registry import WorkspacePipelineRegistry
 
 
 def _user(identifier: str) -> HybridUser:
@@ -38,6 +50,71 @@ def test_hybrid_mode_enables_workspace_isolation_without_server_mode() -> None:
 
     assert hybrid_mode_enabled(environment)
     assert workspace_isolation_enabled(environment)
+
+
+def test_authenticated_hybrid_read_does_not_wait_for_busy_workspace_writer(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    workspace_root = tmp_path / "workspaces"
+    monkeypatch.setenv("ENMOTION_WORKSPACE_ROOT", str(workspace_root))
+    settings = HybridSettings(
+        enabled=True,
+        control_plane_url="http://127.0.0.1:8123",
+    )
+    local = LocalSession(
+        token="local-session",
+        csrf_token="csrf-token",
+        user=_user("nonblocking-read"),
+    )
+    monkeypatch.setattr(session_vault, "get_local", lambda _token: local)
+    app = FastAPI()
+    app.add_middleware(HybridAuthMiddleware, settings=settings)
+
+    @app.get("/protected/atomic-snapshot")
+    def atomic_snapshot():
+        lock_path = workspace_root / local.user.workspace_id / ".workspace.lock"
+        with interprocess_lock(lock_path):
+            return {"workspace_id": local.user.workspace_id}
+
+    lock_path = workspace_root / local.user.workspace_id / ".workspace.lock"
+    descriptor, _canonical = acquire_lock_file(lock_path)
+    try:
+        with TestClient(app, base_url="http://testserver") as client:
+            client.cookies.set(settings.session_cookie_name, local.token)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    client.get,
+                    "/protected/atomic-snapshot",
+                )
+                try:
+                    response = future.result(timeout=1.0)
+                except TimeoutError:  # pragma: no cover - regression guard
+                    pytest.fail("authenticated hybrid GET blocked on the workspace writer")
+    finally:
+        release_lock_file(descriptor)
+
+    assert response.status_code == 200
+    assert response.json() == {"workspace_id": local.user.workspace_id}
+    assert response.headers["x-enmotion-workspace-id"] == local.user.workspace_id
+
+
+def test_hybrid_task_status_reads_the_cached_writer_without_its_provider_lock(
+    tmp_path,
+) -> None:
+    class Pipeline:
+        @staticmethod
+        def get_asset_generation_task_status(task_id: str):
+            return {"task_id": task_id, "status": "processing", "progress": 50}
+
+    registry = WorkspacePipelineRegistry(str(tmp_path / "workspaces"))
+    registry._writer_pipelines["workspace-alice"] = (Pipeline(), ())
+
+    assert registry.transient_task_status("workspace-alice", "task-1") == {
+        "task_id": "task-1",
+        "status": "processing",
+        "progress": 50,
+    }
 
 
 def test_remote_control_plane_requires_https() -> None:

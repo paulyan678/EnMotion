@@ -22,7 +22,6 @@ import {
   Image as ImageIcon,
   Loader2,
   PauseCircle,
-  RefreshCw,
   RotateCcw,
   Trash2,
   Video,
@@ -212,22 +211,19 @@ export default function ApiCallsPage() {
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionJobId, setActionJobId] = useState<string | null>(null);
   const [downloadKey, setDownloadKey] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const requestInFlight = useRef(false);
   const hasLiveJobsRef = useRef(false);
   const mutationVersion = useRef(0);
   const closeDetails = useCallback(() => setSelectedJobId(null), []);
 
-  const loadJobs = useCallback(async (quiet = false) => {
+  const loadJobs = useCallback(async () => {
     if (requestInFlight.current) return;
     requestInFlight.current = true;
     const versionAtStart = mutationVersion.current;
-    if (!quiet) setRefreshing(true);
     try {
       const next = await apiCallsApi.list();
       if (versionAtStart !== mutationVersion.current) return;
@@ -236,14 +232,12 @@ export default function ApiCallsPage() {
       );
       setJobs(next);
       setError(null);
-      setLastUpdated(Date.now());
     } catch {
       if (versionAtStart !== mutationVersion.current) return;
       setError(t("loadError"));
     } finally {
       requestInFlight.current = false;
       setLoading(false);
-      if (!quiet) setRefreshing(false);
     }
   }, [t]);
 
@@ -262,16 +256,16 @@ export default function ApiCallsPage() {
         : IDLE_POLL_INTERVAL_MS;
       const jittered = Math.round(base * (0.9 + Math.random() * 0.2));
       timer = window.setTimeout(async () => {
-        if (document.visibilityState === "visible") await loadJobs(true);
+        if (document.visibilityState === "visible") await loadJobs();
         schedule();
       }, jittered);
     };
     const refreshWhenVisible = () => {
       if (document.visibilityState !== "visible") return;
       if (timer !== null) window.clearTimeout(timer);
-      void loadJobs(true).finally(schedule);
+      void loadJobs().finally(schedule);
     };
-    void loadJobs(true).finally(schedule);
+    void loadJobs().finally(schedule);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       stopped = true;
@@ -322,7 +316,6 @@ export default function ApiCallsPage() {
         setJobs((current) => current.filter((item) => item.id !== job.id));
         setSelectedJobId((current) => current === job.id ? null : current);
       }
-      setLastUpdated(Date.now());
     } catch {
       setError(t("actionError"));
     } finally {
@@ -369,27 +362,8 @@ export default function ApiCallsPage() {
   return (
     <section className="min-h-full px-7 py-5">
       <div className="flex w-full flex-col gap-5">
-        <header className="flex flex-col gap-4 border-b border-glass-border pb-5 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <GlobalPageTitle>{t("title")}</GlobalPageTitle>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-text-secondary">{t("subtitle")}</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted">
-            <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/[0.06] px-3 py-1.5 text-emerald-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 motion-safe:animate-pulse" />
-              {t("live")}
-            </span>
-            {lastUpdated ? <span>{t("updated", { time: dateFormatter.format(lastUpdated) })}</span> : null}
-            <button
-              type="button"
-              onClick={() => void loadJobs(false)}
-              disabled={refreshing}
-              className="inline-flex items-center gap-2 rounded-lg border border-glass-border bg-glass px-3 py-2 font-medium text-text-secondary transition-colors hover:border-primary/40 hover:text-foreground disabled:cursor-wait disabled:opacity-50"
-            >
-              <RefreshCw className={clsx("h-4 w-4", refreshing && "animate-spin")} aria-hidden="true" />
-              {t("refresh")}
-            </button>
-          </div>
+        <header className="border-b border-glass-border pb-5">
+          <GlobalPageTitle>{t("title")}</GlobalPageTitle>
         </header>
 
         {error ? (
@@ -404,26 +378,45 @@ export default function ApiCallsPage() {
           </div>
         ) : null}
 
-        <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label={t("filterAria")}>
+        <div
+          className="atelier-pill-tabs inline-flex max-w-full overflow-x-auto rounded-full bg-surface-inset p-[3px]"
+          role="tablist"
+          aria-label={t("filterAria")}
+          onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const current = filters.indexOf(filter);
+            const next = event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? filters.length - 1
+                : event.key === "ArrowRight"
+                  ? (current + 1) % filters.length
+                  : (current - 1 + filters.length) % filters.length;
+            setFilter(filters[next]);
+            event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+          }}
+        >
           {filters.map((status) => (
             <button
               key={status}
               type="button"
               role="tab"
               aria-selected={filter === status}
+              tabIndex={filter === status ? 0 : -1}
               onClick={() => setFilter(status)}
               className={clsx(
-                "inline-flex min-w-max items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-semibold transition-colors",
+                "inline-flex min-w-max items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[0.6875rem] font-semibold transition-colors",
                 filter === status
-                  ? status === "all" ? "border-primary/40 bg-primary/10 text-primary" : STATUS_TONES[status]
-                  : "border-glass-border bg-glass text-text-muted hover:border-primary/30 hover:text-foreground",
+                  ? "atelier-pill-tab-active bg-surface text-foreground shadow-sm"
+                  : "text-text-muted hover:text-foreground",
               )}
             >
-              {status === "all"
-                ? <Activity className="h-3.5 w-3.5" aria-hidden="true" />
-                : <StatusIcon status={status} className="h-3.5 w-3.5" />}
               {t(`filters.${status}`)}
-              <span className="rounded-full bg-black/20 px-1.5 py-0.5 font-mono text-[0.625rem]">{counts[status]}</span>
+              <span className={clsx(
+                "font-mono text-[0.59375rem]",
+                filter === status ? "text-text-secondary" : "text-text-muted",
+              )}>{counts[status]}</span>
             </button>
           ))}
         </div>
@@ -752,6 +745,7 @@ function JobDetailDrawer({
           <section aria-labelledby="request-summary-title">
             <h3 id="request-summary-title" className="text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">{t("requestDetails")}</h3>
             <dl className="mt-3 grid grid-cols-1 gap-3 rounded-xl border border-glass-border bg-glass p-4 text-sm sm:grid-cols-2">
+              {job.detail ? <Detail label={t("requestNameLabel")} value={job.detail} /> : null}
               <Detail label={t("statusLabel")} value={t(`status.${job.status}`)} />
               <Detail label={t("typeLabel")} value={t(`category.${job.category}`)} />
               <Detail label={t("sourceLabel")} value={t(`sources.${job.source}`)} />

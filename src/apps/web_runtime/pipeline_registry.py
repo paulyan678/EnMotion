@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from contextlib import contextmanager
@@ -14,9 +15,10 @@ from ..hybrid.config import workspace_isolation_enabled
 from ..server.config import server_mode_enabled
 from .context import get_tenant
 from .file_lock import interprocess_lock, nonblocking_read_active
-from .workspace_snapshot import resolve_workspace_snapshot
+from .workspace_snapshot import publish_workspace_snapshot, resolve_workspace_snapshot
 
 _SAFE_WORKSPACE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+logger = logging.getLogger(__name__)
 
 
 class WorkspacePipelineRegistry:
@@ -174,11 +176,30 @@ class WorkspacePipelineRegistry:
         """Yield a freshly synchronized pipeline under the workspace lock."""
 
         safe_id = self.validate_workspace_id(workspace_id)
-        with interprocess_lock(self.lock_path_for(safe_id)):
+        lock_path = self.lock_path_for(safe_id)
+        read_only = nonblocking_read_active(lock_path)
+        before = self._fingerprint(safe_id)
+        succeeded = False
+        with interprocess_lock(lock_path):
             pipeline = self.get(safe_id)
             try:
                 yield pipeline
+                succeeded = True
             finally:
+                after = self._fingerprint(safe_id)
+                if succeeded and not read_only and after != before:
+                    try:
+                        # Hybrid desktop mutations do not pass through the
+                        # server transaction middleware. Publish here while
+                        # the writer lock is still held so non-blocking GETs
+                        # immediately advance to one coherent revision after
+                        # both request and background-task mutations.
+                        publish_workspace_snapshot(safe_id)
+                    except Exception:
+                        logger.exception(
+                            "Could not publish committed workspace read model workspace=%s",
+                            safe_id,
+                        )
                 # Pipeline methods atomically replace metadata files while also
                 # retaining transient task maps in memory. Refreshing the
                 # cached fingerprint here prevents the next status poll from
@@ -192,6 +213,22 @@ class WorkspacePipelineRegistry:
         with self._lock:
             self._writer_pipelines.pop(safe_id, None)
             self._reader_pipelines.pop(safe_id, None)
+
+    def transient_task_status(self, workspace_id: str, task_id: str) -> dict[str, Any] | None:
+        """Read one in-memory task without waiting for its provider-call lock.
+
+        Hybrid background jobs keep their lifecycle in the writer pipeline.
+        The provider call mutates only primitive fields in that task dictionary,
+        so taking a bounded snapshot is safe under CPython's object semantics and
+        avoids blocking the status poll on the same multi-minute workspace lock.
+        """
+
+        safe_id = self.validate_workspace_id(workspace_id)
+        with self._lock:
+            cached = self._writer_pipelines.get(safe_id)
+        if cached is None:
+            return None
+        return cached[0].get_asset_generation_task_status(task_id)
 
 
 class PipelineProxy:

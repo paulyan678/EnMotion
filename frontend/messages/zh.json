@@ -490,6 +490,7 @@
     "providerProgress": "服务商进度 {progress}%",
     "indeterminateProgress": "正在等待有效的进度更新",
     "requestDetails": "请求详情",
+    "requestNameLabel": "生成项目",
     "statusLabel": "状态",
     "typeLabel": "类型",
     "sourceLabel": "来源",

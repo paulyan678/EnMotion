@@ -38,5 +38,7 @@ def test_fresh_database_migrates_to_head_and_can_reapply_provider_config(
             column["name"] for column in database.get_columns("provider_tasks")
         }
         assert "provider_config_version" in provider_task_columns
+        rate_card_columns = {column["name"] for column in database.get_columns("rate_cards")}
+        assert "deleted_at" in rate_card_columns
     finally:
         engine.dispose()

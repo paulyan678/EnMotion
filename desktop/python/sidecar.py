@@ -661,6 +661,13 @@ def configure_core_application(config: RuntimeConfig) -> tuple[Any, Any]:
         ComicGenPipeline.__init__ = original_initializer
 
     report_startup_phase("api-module-imported")
+    # The core application is mounted behind the desktop shell instead of
+    # owning the process lifespan, so its standalone startup handlers are not
+    # invoked by Starlette. Bootstrap immutable read models explicitly before
+    # the first hybrid GET; otherwise an upgraded workspace with live metadata
+    # but no prior snapshot would render as unavailable until its next write.
+    api_module._initialize_workspace_read_models()
+    report_startup_phase("workspace-read-models-initialized")
     core_app = api_module.app
     report_startup_phase("core-application-configured")
     return core_app, api_module

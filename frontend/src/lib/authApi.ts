@@ -148,9 +148,14 @@ export const authApi = {
     return data;
   },
 
-  accountUsage: async (limit = 30, cursor?: string): Promise<AccountUsagePage> => {
+  accountUsage: async (
+    limit = 30,
+    cursor?: string,
+    timeout?: number,
+  ): Promise<AccountUsagePage> => {
     const { data } = await apiClient.get<AccountUsagePage>(`${API_URL}/account/usage`, {
       params: { limit, ...(cursor ? { cursor } : {}) },
+      timeout,
     });
     return data;
   },

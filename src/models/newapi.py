@@ -47,6 +47,8 @@ INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE = (
     "视频服务商拒绝了所选参考图，因为图片可能包含真人形象。"
     "请选择或生成明显为虚构角色的图片后重试。"
 )
+RATE_CARD_MISSING_ERROR_CODE = "rate_card_missing"
+RATE_CARD_MISSING_PUBLIC_MESSAGE = "当前模型尚未配置计费规则，请联系管理员在管理中心添加后重试。"
 _PHASE_LABELS = {
     "video generation": "视频生成",
     "video submission": "提交视频任务",
@@ -125,14 +127,31 @@ def _classified_provider_error(
     """Map known provider failures to stable, non-technical application errors."""
 
     normalized = f"{code} {message}".casefold().replace("_", "")
+    if "no active rate card" in normalized:
+        logger.warning(
+            "账号服务缺少计费规则：阶段=%s HTTP=%s 请求ID=%s",
+            phase,
+            http_status,
+            redact_newapi_secrets(request_id)[:200],
+        )
+        return NewAPIProviderError(
+            RATE_CARD_MISSING_PUBLIC_MESSAGE,
+            error_code=RATE_CARD_MISSING_ERROR_CODE,
+            provider_code=code,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
     is_input_privacy = INPUT_IMAGE_PRIVACY_PROVIDER_CODE.casefold() in normalized or (
         "inputimage" in normalized and "privacyinformation" in normalized
     )
     if not is_input_privacy:
         return None
     logger.warning(
-        "AI 服务请求被拒绝：阶段=%s HTTP=%s 错误代码=%s "
-        "请求ID=%s 任务ID=%s 服务商消息=%s",
+        "AI 服务请求被拒绝：阶段=%s HTTP=%s 错误代码=%s " "请求ID=%s 任务ID=%s 服务商消息=%s",
         phase,
         http_status,
         redact_newapi_secrets(code)[:200],
@@ -201,9 +220,7 @@ def normalize_newapi_image_size(value: Optional[str]) -> str:
     try:
         return IMAGE_SIZE_ALIASES[normalized]
     except KeyError as exc:
-        raise ValueError(
-            "GPT Image 2 尺寸必须是 1024x1024、1024x1536 或 1536x1024"
-        ) from exc
+        raise ValueError("GPT Image 2 尺寸必须是 1024x1024、1024x1536 或 1536x1024") from exc
 
 
 def newapi_image_configured(model_id: Optional[str] = None) -> bool:

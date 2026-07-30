@@ -387,6 +387,32 @@ def test_read_only_pipeline_from_snapshot_creates_or_changes_no_workspace_file(
     assert inventory() == before
 
 
+def test_writer_mutation_publishes_snapshot_for_nonblocking_hybrid_reads(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "workspaces"
+    monkeypatch.setenv("ENMOTION_WORKSPACE_ROOT", str(root))
+    registry = WorkspacePipelineRegistry(str(root))
+    output = registry.output_root_for("workspace-a")
+
+    with registry.locked("workspace-a"):
+        _write_metadata(output, "committed")
+
+    assert _item_names("workspace-a") == {
+        "committed project",
+        "committed series",
+        "committed global",
+    }
+    token = bind_nonblocking_read(registry.lock_path_for("workspace-a"))
+    try:
+        reader = registry.get("workspace-a")
+        assert set(reader.scripts) == {"standalone"}
+        assert set(reader.series_store) == {"series"}
+    finally:
+        reset_nonblocking_read(token)
+
+
 def test_cold_reload_in_one_workspace_does_not_block_another(tmp_path, monkeypatch):
     started = threading.Event()
     release = threading.Event()

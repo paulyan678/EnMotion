@@ -10,6 +10,27 @@ function renderPreview(ui: React.ReactElement) {
 }
 
 describe("PreviewImage responsive media", () => {
+    it("keeps only the close action in the fullscreen preview toolbar", () => {
+        renderPreview(
+            <PreviewImage
+                src="/files/assets/hero.png"
+                alt="角色预览"
+                clickToLightbox
+                alwaysShowMagnify
+            />,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "放大查看" }));
+
+        expect(screen.getByRole("dialog", { name: "角色预览" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "关闭" })).toHaveAttribute(
+            "title",
+            "关闭（退出键）",
+        );
+        expect(screen.queryByRole("button", { name: "复制地址" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "在新标签打开" })).not.toBeInTheDocument();
+    });
+
     it("renders a typed srcset with stable geometry and keeps loaded state across re-signing", async () => {
         const common = {
             alt: "Hero",
