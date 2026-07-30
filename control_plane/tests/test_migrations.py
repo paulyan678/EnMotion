@@ -27,7 +27,7 @@ def test_fresh_database_migrates_to_head_and_can_reapply_provider_config(
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     command.upgrade(config, "head")
-    command.downgrade(config, "0003_one_time_release_grants")
+    command.downgrade(config, "0002_release_grants")
     command.upgrade(config, "head")
 
     engine = create_engine(f"sqlite:///{database_path}")

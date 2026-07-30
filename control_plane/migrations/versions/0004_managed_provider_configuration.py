@@ -52,7 +52,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("provider_tasks")}
     if "provider_config_version" in columns:
-        op.drop_column("provider_tasks", "provider_config_version")
+        # Batch mode rebuilds the table on SQLite versions that predate native
+        # DROP COLUMN support.
+        with op.batch_alter_table("provider_tasks") as batch_op:
+            batch_op.drop_column("provider_config_version")
     op.drop_index(
         "ix_provider_configurations_created",
         table_name="provider_configurations",

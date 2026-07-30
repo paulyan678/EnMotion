@@ -26,4 +26,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("rate_cards")}
     if "deleted_at" in columns:
-        op.drop_column("rate_cards", "deleted_at")
+        # SQLite versions before 3.35 do not support ALTER TABLE ... DROP COLUMN.
+        # Alembic's batch mode rebuilds the table and works on both older
+        # production SQLite releases and newer development environments.
+        with op.batch_alter_table("rate_cards") as batch_op:
+            batch_op.drop_column("deleted_at")
