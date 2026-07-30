@@ -27,5 +27,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("release_grants", "download_consumed_at")
-    op.drop_column("release_grants", "manifest_consumed_at")
+    # Batch mode keeps rollback compatible with SQLite versions before 3.35,
+    # which cannot execute ALTER TABLE ... DROP COLUMN directly.
+    with op.batch_alter_table("release_grants") as batch_op:
+        batch_op.drop_column("download_consumed_at")
+        batch_op.drop_column("manifest_consumed_at")
