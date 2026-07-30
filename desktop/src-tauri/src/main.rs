@@ -133,7 +133,7 @@ fn main() {
                 if let Err(error) = sidecar::launch(handle.clone()).await {
                     handle.state::<SidecarRuntime>().stop();
                     eprintln!("EnMotion startup failed: {error}");
-                    sidecar::show_runtime_error(&handle);
+                    sidecar::show_startup_error(&handle, &error);
                 }
             });
             Ok(())

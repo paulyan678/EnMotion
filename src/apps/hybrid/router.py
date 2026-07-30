@@ -9,7 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .client import ControlPlaneClient, ControlPlaneError
 from .config import HybridSettings
-from .session import HybridUser, LocalSession, RemoteSession, session_vault
+from .session import (
+    HybridUser,
+    LocalSession,
+    RemoteSession,
+    StalePersistedCredentialError,
+    session_vault,
+)
 
 router = APIRouter()
 
@@ -120,20 +126,23 @@ def login(payload: LoginRequest, response: Response) -> dict[str, str]:
 
 
 def _restore_session(response: Response) -> LocalSession | None:
-    refresh_token = session_vault.persisted_refresh_token()
-    if not refresh_token:
+    persisted = session_vault.persisted_refresh_token_snapshot()
+    if persisted is None:
         return None
     try:
-        remote = _client().refresh(refresh_token)
+        remote = _client().refresh(persisted.value)
         local = session_vault.start(
             user=remote.user,
             access_token=remote.access_token,
             refresh_token=remote.refresh_token,
             expires_in=remote.expires_in,
+            expected_credential_generation=persisted.generation,
         )
+    except StalePersistedCredentialError:
+        return None
     except ControlPlaneError as exc:
         if exc.status_code in {401, 403}:
-            session_vault.clear()
+            session_vault.clear_if_credential_generation(persisted.generation)
             return None
         _raise_control_error(exc)
     _set_local_cookies(response, local)

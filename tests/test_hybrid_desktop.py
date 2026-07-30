@@ -14,7 +14,11 @@ from src.apps.hybrid.config import (
 )
 from src.apps.hybrid.provider import provider_gateway_base_url
 from src.apps.hybrid.router import router as hybrid_router
-from src.apps.hybrid.session import HybridUser, SessionVault
+from src.apps.hybrid.session import (
+    HybridUser,
+    SessionVault,
+    StalePersistedCredentialError,
+)
 
 
 def _user(identifier: str) -> HybridUser:
@@ -133,6 +137,169 @@ def test_keyring_read_times_out_without_blocking_session_restore(monkeypatch) ->
     while vault._keyring_read_task is not None and time.monotonic() < deadline:
         time.sleep(0.005)
     assert vault.persisted_refresh_token() == "persisted-refresh-token"
+
+
+def test_stuck_keyring_read_does_not_block_set_or_delete(monkeypatch) -> None:
+    read_entered = threading.Event()
+    release_read = threading.Event()
+    set_finished = threading.Event()
+    delete_finished = threading.Event()
+    operations: list[tuple[str, str | None]] = []
+
+    class BlockingReadKeyring:
+        @staticmethod
+        def get_password(_service: str, _account: str) -> str:
+            read_entered.set()
+            release_read.wait(timeout=1)
+            return "persisted-refresh-token"
+
+        @staticmethod
+        def set_password(_service: str, _account: str, value: str) -> None:
+            operations.append(("set", value))
+            set_finished.set()
+
+        @staticmethod
+        def delete_password(_service: str, _account: str) -> None:
+            operations.append(("delete", None))
+            delete_finished.set()
+
+    vault = SessionVault(keyring_timeout_seconds=0.02)
+    monkeypatch.setattr(vault, "_keyring", lambda: BlockingReadKeyring)
+
+    try:
+        assert vault.persisted_refresh_token() is None
+        assert read_entered.wait(timeout=0.5)
+        assert not release_read.is_set()
+
+        vault.start(
+            user=_user("read-does-not-starve-writes"),
+            access_token="access",
+            refresh_token="refresh",
+            expires_in=900,
+        )
+        assert set_finished.wait(timeout=0.5)
+
+        vault.clear()
+        assert delete_finished.wait(timeout=0.5)
+        assert operations == [("set", "refresh"), ("delete", None)]
+        assert not release_read.is_set()
+    finally:
+        release_read.set()
+
+
+@pytest.mark.parametrize("mutation", ["login", "logout"])
+def test_stale_keyring_read_is_discarded_after_credential_mutation(
+    monkeypatch,
+    mutation: str,
+) -> None:
+    read_entered = threading.Event()
+    release_read = threading.Event()
+    write_finished = threading.Event()
+    result: list[object] = []
+
+    class SnapshotKeyring:
+        value: str | None = "stale-refresh"
+
+        @classmethod
+        def get_password(cls, _service: str, _account: str) -> str | None:
+            captured = cls.value
+            read_entered.set()
+            release_read.wait(timeout=1)
+            return captured
+
+        @classmethod
+        def set_password(cls, _service: str, _account: str, value: str) -> None:
+            cls.value = value
+            write_finished.set()
+
+        @classmethod
+        def delete_password(cls, _service: str, _account: str) -> None:
+            cls.value = None
+            write_finished.set()
+
+    vault = SessionVault(keyring_timeout_seconds=0.5)
+    monkeypatch.setattr(vault, "_keyring", lambda: SnapshotKeyring)
+    reader = threading.Thread(
+        target=lambda: result.append(vault.persisted_refresh_token_snapshot())
+    )
+    reader.start()
+    assert read_entered.wait(timeout=0.5)
+
+    if mutation == "login":
+        vault.start(
+            user=_user("replacement-login"),
+            access_token="replacement-access",
+            refresh_token="replacement-refresh",
+            expires_in=900,
+        )
+    else:
+        vault.clear()
+    assert write_finished.wait(timeout=0.5)
+
+    release_read.set()
+    reader.join(timeout=0.5)
+    assert not reader.is_alive()
+    assert result == [None]
+
+
+def test_restore_cannot_overwrite_a_newer_credential_state(monkeypatch) -> None:
+    class ImmediateKeyring:
+        @staticmethod
+        def get_password(_service: str, _account: str) -> str:
+            return "persisted-refresh"
+
+        @staticmethod
+        def set_password(_service: str, _account: str, _value: str) -> None:
+            return None
+
+        @staticmethod
+        def delete_password(_service: str, _account: str) -> None:
+            return None
+
+    vault = SessionVault()
+    monkeypatch.setattr(vault, "_keyring", lambda: ImmediateKeyring)
+    persisted = vault.persisted_refresh_token_snapshot()
+    assert persisted is not None
+
+    vault.clear()
+
+    with pytest.raises(StalePersistedCredentialError):
+        vault.start(
+            user=_user("stale-restore"),
+            access_token="stale-access",
+            refresh_token="stale-refresh",
+            expires_in=900,
+            expected_credential_generation=persisted.generation,
+        )
+    with pytest.raises(RuntimeError):
+        vault.remote_for_user("stale-restore")
+
+
+def test_invalid_restore_cannot_clear_a_newer_login(monkeypatch) -> None:
+    class ImmediateKeyring:
+        @staticmethod
+        def get_password(_service: str, _account: str) -> str:
+            return "persisted-refresh"
+
+        @staticmethod
+        def set_password(_service: str, _account: str, _value: str) -> None:
+            return None
+
+    vault = SessionVault()
+    monkeypatch.setattr(vault, "_keyring", lambda: ImmediateKeyring)
+    persisted = vault.persisted_refresh_token_snapshot()
+    assert persisted is not None
+
+    local = vault.start(
+        user=_user("newer-login"),
+        access_token="newer-access",
+        refresh_token="newer-refresh",
+        expires_in=900,
+    )
+
+    assert not vault.clear_if_credential_generation(persisted.generation)
+    assert vault.get_local(local.token) == local
+    assert vault.remote_for_user("newer-login").refresh_token == "newer-refresh"
 
 
 def test_keyring_update_timeout_does_not_block_login(monkeypatch) -> None:
