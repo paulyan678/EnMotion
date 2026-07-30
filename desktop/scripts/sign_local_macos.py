@@ -15,6 +15,7 @@ import plistlib
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 APP_IDENTIFIER = "com.enmotion.desktop"
 CORE_IDENTIFIER = f"{APP_IDENTIFIER}.sidecar"
@@ -22,7 +23,7 @@ WORKER_IDENTIFIER = f"{APP_IDENTIFIER}.demucs-worker"
 CODESIGN = "/usr/bin/codesign"
 
 
-def bundle_paths(app: Path) -> tuple[Path, Path]:
+def bundle_paths(app: Path) -> tuple[Path, Path, Path]:
     if platform.system() != "Darwin":
         raise SystemExit("local ad-hoc application signing is supported only on macOS")
     if app.suffix != ".app" or not app.is_dir():
@@ -40,12 +41,45 @@ def bundle_paths(app: Path) -> tuple[Path, Path]:
             f"expected {APP_IDENTIFIER!r}"
         )
 
+    main = app / "Contents" / "MacOS" / "enmotion"
     core = app / "Contents" / "Resources" / "sidecar" / "enmotion-sidecar"
     worker = app / "Contents" / "MacOS" / "enmotion-demucs-worker"
-    missing = [path for path in (core, worker) if not path.is_file()]
+    missing = [path for path in (main, core, worker) if not path.is_file()]
     if missing:
-        raise SystemExit(f"packaged sidecar is missing: {missing[0]}")
-    return core, worker
+        raise SystemExit(f"packaged executable is missing: {missing[0]}")
+    return main, core, worker
+
+
+def normalize_control_plane_url(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise SystemExit("expected control-plane URL must use HTTPS or loopback HTTP")
+    if (
+        not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise SystemExit("expected control-plane URL must be a credential-free origin")
+    return normalized
+
+
+def ensure_embedded_control_plane(main: Path, expected_url: str) -> str:
+    normalized = normalize_control_plane_url(expected_url)
+    try:
+        executable = main.read_bytes()
+    except OSError as error:
+        raise SystemExit(f"cannot inspect packaged executable {main}: {error}")
+    if normalized.encode("utf-8") not in executable:
+        raise SystemExit(
+            "expected control-plane origin is not embedded in the application; "
+            "rebuild with ENMOTION_CONTROL_PLANE_URL set"
+        )
+    return normalized
 
 
 def signing_commands(app: Path, core: Path, worker: Path) -> list[list[str]]:
@@ -141,10 +175,11 @@ def ensure_local_signature(app: Path) -> None:
         )
 
 
-def sign_local_app(app: Path) -> None:
+def sign_local_app(app: Path, expected_control_plane_url: str) -> None:
     app = app.expanduser().resolve()
     ensure_local_environment()
-    core, worker = bundle_paths(app)
+    main, core, worker = bundle_paths(app)
+    control_plane_url = ensure_embedded_control_plane(main, expected_control_plane_url)
     ensure_local_signature(app)
 
     # PyInstaller's embedded Python is ad-hoc signed. A Hardened Runtime
@@ -192,7 +227,10 @@ def sign_local_app(app: Path) -> None:
             timeout=180,
         )
 
-    print(f"local EnMotion bundle signed and smoke-tested: {app}")
+    print(
+        f"local EnMotion bundle signed and smoke-tested: {app} "
+        f"(control plane: {control_plane_url})"
+    )
 
 
 def main() -> int:
@@ -203,8 +241,13 @@ def main() -> int:
         type=Path,
         help="path to the freshly built EnMotion.app",
     )
+    parser.add_argument(
+        "--expected-control-plane-url",
+        required=True,
+        help="compile-time account/control-plane origin expected in the app",
+    )
     args = parser.parse_args()
-    sign_local_app(args.app)
+    sign_local_app(args.app, args.expected_control_plane_url)
     return 0
 
 

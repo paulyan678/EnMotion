@@ -70,12 +70,14 @@ python3 -m pip install -r requirements-desktop.txt "pyinstaller==6.21.0"
 python3 desktop/scripts/build_sidecar.py --target aarch64-apple-darwin
 python3 desktop/scripts/validate.py --staged
 cd desktop
-npx --yes @tauri-apps/cli@2.11.4 build \
+ENMOTION_CONTROL_PLANE_URL=https://enmotion.tianen123.xyz:9443 \
+  npx --yes @tauri-apps/cli@2.11.4 build \
   --target aarch64-apple-darwin \
   --config src-tauri/tauri.macos.conf.json
 cd ..
 python3 desktop/scripts/sign_local_macos.py \
-  --app desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EnMotion.app
+  --app desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EnMotion.app \
+  --expected-control-plane-url https://enmotion.tianen123.xyz:9443
 ```
 
 Use the Intel or Windows target only on a matching native runner. PyInstaller
@@ -93,9 +95,11 @@ codecs satisfy the applicable LGPL/GPL notice and source-offer obligations.
 The final signing helper is only for a fresh local macOS validation build. It
 ad-hoc signs the PyInstaller launchers without Hardened Runtime library
 validation, re-seals the outer Tauri app, and runs the packaged sidecar smoke
-test. It refuses to replace a Developer ID or other distribution signature.
-Official release builds keep the fully hardened Developer ID signing and
-notarization workflow in GitHub Actions.
+test. It also verifies that the intended account/control-plane origin was
+compiled into the release-profile executable; a runtime environment override is
+deliberately ignored by production builds. The helper refuses to replace a
+Developer ID or other distribution signature. Official release builds keep the
+fully hardened Developer ID signing and notarization workflow in GitHub Actions.
 
 The launch-critical Python sidecar is packaged as a pre-expanded runtime so the
 desktop app does not unpack it again on every launch. Demucs and PyTorch remain

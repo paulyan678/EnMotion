@@ -25,6 +25,7 @@ class SignLocalMacOSTests(unittest.TestCase):
             plistlib.dump({"CFBundleIdentifier": bundle_identifier}, handle)
         (app / "Contents" / "Resources" / "sidecar" / "enmotion-sidecar").touch()
         (app / "Contents" / "MacOS" / "enmotion-demucs-worker").touch()
+        (app / "Contents" / "MacOS" / "enmotion").touch()
         return app
 
     def setUp(self) -> None:
@@ -36,13 +37,30 @@ class SignLocalMacOSTests(unittest.TestCase):
     @mock.patch.object(sign_local_macos.platform, "system", return_value="Darwin")
     def test_bundle_paths_accept_only_enmotion(self, _system: mock.Mock) -> None:
         app = self.make_app()
-        core, worker = sign_local_macos.bundle_paths(app)
+        main, core, worker = sign_local_macos.bundle_paths(app)
+        self.assertEqual(main.name, "enmotion")
         self.assertEqual(core.name, "enmotion-sidecar")
         self.assertEqual(worker.name, "enmotion-demucs-worker")
 
         wrong = self.make_app("com.example.other")
         with self.assertRaisesRegex(SystemExit, "refusing to sign bundle identifier"):
             sign_local_macos.bundle_paths(wrong)
+
+    def test_embedded_control_plane_must_match_expected_origin(self) -> None:
+        main = Path(self.temporary.name) / "enmotion"
+        main.write_bytes(b"prefix-http://127.0.0.1:18787-suffix")
+        self.assertEqual(
+            sign_local_macos.ensure_embedded_control_plane(main, "http://127.0.0.1:18787/"),
+            "http://127.0.0.1:18787",
+        )
+        with self.assertRaisesRegex(SystemExit, "is not embedded"):
+            sign_local_macos.ensure_embedded_control_plane(main, "https://accounts.example.com")
+
+    def test_control_plane_origin_rejects_credentials_and_public_http(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "credential-free origin"):
+            sign_local_macos.normalize_control_plane_url("https://user:secret@example.com")
+        with self.assertRaisesRegex(SystemExit, "HTTPS or loopback HTTP"):
+            sign_local_macos.normalize_control_plane_url("http://accounts.example.com")
 
     def test_only_outer_app_keeps_hardened_runtime(self) -> None:
         app = Path("/tmp/EnMotion.app")
