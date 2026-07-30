@@ -73,6 +73,9 @@ cd desktop
 npx --yes @tauri-apps/cli@2.11.4 build \
   --target aarch64-apple-darwin \
   --config src-tauri/tauri.macos.conf.json
+cd ..
+python3 desktop/scripts/sign_local_macos.py \
+  --app desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/EnMotion.app
 ```
 
 Use the Intel or Windows target only on a matching native runner. PyInstaller
@@ -86,6 +89,13 @@ script verifies it and embeds it in the sidecar. The build deliberately fails
 if it is absent, and release SBOMs record the exact FFmpeg version. Before
 distributing installers, confirm that the selected FFmpeg build and its enabled
 codecs satisfy the applicable LGPL/GPL notice and source-offer obligations.
+
+The final signing helper is only for a fresh local macOS validation build. It
+ad-hoc signs the PyInstaller launchers without Hardened Runtime library
+validation, re-seals the outer Tauri app, and runs the packaged sidecar smoke
+test. It refuses to replace a Developer ID or other distribution signature.
+Official release builds keep the fully hardened Developer ID signing and
+notarization workflow in GitHub Actions.
 
 The launch-critical Python sidecar is packaged as a pre-expanded runtime so the
 desktop app does not unpack it again on every launch. Demucs and PyTorch remain
