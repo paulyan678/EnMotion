@@ -1,7 +1,8 @@
 use std::{
-    io::{Read, Write},
+    fs::OpenOptions,
+    io::{ErrorKind, Read, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU16, Ordering},
         Mutex,
@@ -28,6 +29,29 @@ const NONCE_HEADER: &str = "X-EnMotion-Desktop-Nonce";
 const HYBRID_SESSION_COOKIE: &str = "enmotion_session";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
+const OUTPUT_ACCESS_TIMEOUT: Duration = Duration::from_secs(30);
+const OUTPUT_ACCESS_DENIED: &str = "enmotion-output-access-denied";
+const OUTPUT_ACCESS_FAILED: &str = "enmotion-output-access-failed";
+const OUTPUT_ACCESS_TIMED_OUT: &str = "enmotion-output-access-timed-out";
+const GENERIC_RUNTIME_ERROR_MESSAGE: &str =
+    "EnMotion 无法启动本地服务。请重新启动应用；如果问题持续，请联系管理员。";
+#[cfg(target_os = "macos")]
+const OUTPUT_ACCESS_FAILED_MESSAGE: &str =
+    "EnMotion 无法准备输出文件夹。请确认磁盘可用且“文稿/enmotion-output”可读写，然后重新启动应用。";
+#[cfg(target_os = "windows")]
+const OUTPUT_ACCESS_FAILED_MESSAGE: &str =
+    "EnMotion 无法准备输出文件夹。请确认磁盘可用且“文档/enmotion-output”可读写，然后重新启动应用。";
+#[cfg(target_os = "macos")]
+const OUTPUT_ACCESS_PERMISSION_MESSAGE: &str =
+    "EnMotion 无法访问“文稿/enmotion-output”。请在 macOS“系统设置 > 隐私与安全性 > 文件与文件夹”中允许 EnMotion 访问“文稿”文件夹，然后重新启动应用。";
+#[cfg(target_os = "windows")]
+const OUTPUT_ACCESS_PERMISSION_MESSAGE: &str =
+    "EnMotion 无法访问“文档/enmotion-output”。请检查 Windows 安全中心的“受控文件夹访问”设置和文件夹权限，然后重新启动应用。";
+#[cfg(target_os = "macos")]
+const OUTPUT_ACCESS_TIMED_OUT_MESSAGE: &str = OUTPUT_ACCESS_PERMISSION_MESSAGE;
+#[cfg(target_os = "windows")]
+const OUTPUT_ACCESS_TIMED_OUT_MESSAGE: &str =
+    "EnMotion 无法在 30 秒内确认“文档/enmotion-output”可用。请检查该文件夹以及 OneDrive 或网络磁盘状态，然后重新启动应用。";
 
 #[derive(Clone, Debug)]
 pub struct Endpoint {
@@ -197,8 +221,13 @@ pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         .join("enmotion-output");
     std::fs::create_dir_all(&data_dir)
         .map_err(|error| format!("cannot create EnMotion data directory: {error}"))?;
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|error| format!("cannot create EnMotion output directory: {error}"))?;
+    report_startup_phase(
+        &app,
+        "output-access",
+        output_access_status_message(),
+        startup_started,
+    );
+    verify_output_directory_access(output_dir.clone()).await?;
 
     let endpoint = Endpoint { port, nonce };
     let control_plane_url = control_plane_url()?;
@@ -297,9 +326,7 @@ fn report_startup_phase<R: Runtime>(
         return;
     };
     if let Ok(serialized) = serde_json::to_string(message) {
-        let _ = window.eval(format!(
-            "window.enmotionDesktopBootStatus?.({serialized})"
-        ));
+        let _ = window.eval(format!("window.enmotionDesktopBootStatus?.({serialized})"));
     }
 }
 
@@ -378,7 +405,15 @@ pub fn create_update_session<R: Runtime>(
         .map_err(|_| "EnMotion sidecar returned an invalid update session".to_string())
 }
 
+pub fn show_startup_error<R: Runtime>(app: &AppHandle<R>, error: &str) {
+    show_runtime_error_message(app, startup_error_message(error));
+}
+
 pub fn show_runtime_error<R: Runtime>(app: &AppHandle<R>) {
+    show_runtime_error_message(app, GENERIC_RUNTIME_ERROR_MESSAGE);
+}
+
+fn show_runtime_error_message<R: Runtime>(app: &AppHandle<R>, message: &'static str) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -393,10 +428,96 @@ pub fn show_runtime_error<R: Runtime>(app: &AppHandle<R>) {
     let _ = window.show();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        let _ = window.eval(
-            "window.enmotionDesktopBootError?.('EnMotion 无法启动本地服务。请重新启动应用；如果问题持续，请联系管理员。')",
-        );
+        let serialized = serde_json::to_string(message)
+            .unwrap_or_else(|_| "\"EnMotion 无法启动。\"".to_string());
+        let _ = window.eval(format!("window.enmotionDesktopBootError?.({serialized})"));
     });
+}
+
+fn startup_error_message(error: &str) -> &'static str {
+    if error.starts_with(OUTPUT_ACCESS_DENIED) {
+        OUTPUT_ACCESS_PERMISSION_MESSAGE
+    } else if error.starts_with(OUTPUT_ACCESS_TIMED_OUT) {
+        OUTPUT_ACCESS_TIMED_OUT_MESSAGE
+    } else if error.starts_with(OUTPUT_ACCESS_FAILED) {
+        OUTPUT_ACCESS_FAILED_MESSAGE
+    } else {
+        GENERIC_RUNTIME_ERROR_MESSAGE
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn output_access_status_message() -> &'static str {
+    "正在等待 macOS 确认“文稿”文件夹访问权限…"
+}
+
+#[cfg(target_os = "windows")]
+fn output_access_status_message() -> &'static str {
+    "正在确认“文档”输出文件夹访问权限…"
+}
+
+fn output_access_error(operation: &str, error: std::io::Error) -> String {
+    let category = if error.kind() == ErrorKind::PermissionDenied {
+        OUTPUT_ACCESS_DENIED
+    } else {
+        OUTPUT_ACCESS_FAILED
+    };
+    format!("{category}: {operation}: {error}")
+}
+
+struct OutputAccessProbe(PathBuf);
+
+impl Drop for OutputAccessProbe {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+async fn verify_output_directory_access(output_dir: PathBuf) -> Result<(), String> {
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        verify_output_directory_access_blocking(&output_dir)
+    });
+    match tokio::time::timeout(OUTPUT_ACCESS_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!(
+            "{OUTPUT_ACCESS_FAILED}: access task failed: {error}"
+        )),
+        Err(_) => Err(format!(
+            "{OUTPUT_ACCESS_TIMED_OUT}: no permission decision within {} seconds",
+            OUTPUT_ACCESS_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+fn verify_output_directory_access_blocking(output_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(output_dir)
+        .map_err(|error| output_access_error("create output directory", error))?;
+
+    // Apple allows an app to access files that the app itself creates in
+    // Documents without consent. Enumerating pre-existing contents is the
+    // read that deliberately exercises the permission needed for older
+    // EnMotion workspaces after an app update or signing-identity change.
+    let mut entries = std::fs::read_dir(output_dir)
+        .map_err(|error| output_access_error("read existing output directory", error))?;
+    if let Some(entry) = entries.next() {
+        entry.map_err(|error| output_access_error("read existing output entry", error))?;
+    }
+
+    // Also verify that new output can be created. The random probe is removed
+    // immediately, with a drop guard as a best-effort cleanup if removal fails.
+    let mut suffix = [0_u8; 8];
+    OsRng.fill_bytes(&mut suffix);
+    let probe = output_dir.join(format!(".enmotion-access-{}.tmp", hex::encode(suffix)));
+    let handle = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&probe)
+        .map_err(|error| output_access_error("create output probe", error))?;
+    let _cleanup = OutputAccessProbe(probe.clone());
+    drop(handle);
+    std::fs::remove_file(&probe)
+        .map_err(|error| output_access_error("remove output probe", error))?;
+    Ok(())
 }
 
 fn reserve_loopback_port() -> Result<u16, String> {
@@ -643,5 +764,54 @@ mod tests {
         let value = control_plane_url().unwrap();
         assert!(value.starts_with("https://"));
         assert!(!value.ends_with('/'));
+    }
+
+    #[test]
+    fn output_access_probe_is_removed_after_success() {
+        let root = std::env::temp_dir().join(format!("enmotion-output-probe-{}", random_nonce()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("existing-workspace.json"), b"{}").unwrap();
+
+        verify_output_directory_access_blocking(&root).unwrap();
+
+        let remaining = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0], "existing-workspace.json");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn output_access_errors_have_actionable_copy() {
+        assert_eq!(
+            startup_error_message("enmotion-output-access-denied: permission denied"),
+            OUTPUT_ACCESS_PERMISSION_MESSAGE,
+        );
+        assert_eq!(
+            startup_error_message("enmotion-output-access-timed-out: pending prompt"),
+            OUTPUT_ACCESS_TIMED_OUT_MESSAGE,
+        );
+        assert_eq!(
+            startup_error_message("enmotion-output-access-failed: disk full"),
+            OUTPUT_ACCESS_FAILED_MESSAGE,
+        );
+        assert_eq!(
+            startup_error_message("sidecar exited"),
+            GENERIC_RUNTIME_ERROR_MESSAGE,
+        );
+    }
+
+    #[test]
+    fn output_access_error_preserves_failure_category() {
+        assert!(
+            output_access_error("probe", std::io::Error::from(ErrorKind::PermissionDenied))
+                .starts_with(OUTPUT_ACCESS_DENIED)
+        );
+        assert!(
+            output_access_error("probe", std::io::Error::from(ErrorKind::Other))
+                .starts_with(OUTPUT_ACCESS_FAILED)
+        );
     }
 }

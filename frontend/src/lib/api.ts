@@ -11,6 +11,9 @@ import { readWorkspaceItem } from "@/lib/workspaceStorage";
 export { API_URL } from "@/lib/apiUrl";
 
 export const SERIES_MODEL_SETTINGS_TIMEOUT_MS = 30_000;
+/** Metadata-only workspace operations must never strand their UI controls. */
+export const SERIES_CREATE_TIMEOUT_MS = 30_000;
+export const WORKSPACE_LIST_TIMEOUT_MS = 15_000;
 
 export interface EnvConfigPayload {
     NEWAPI_BASE_URL?: string;
@@ -502,7 +505,9 @@ export const api = {
     },
 
     getProjects: async () => {
-        const res = await axios.get(`${API_URL}/projects/`);
+        const res = await axios.get(`${API_URL}/projects/`, {
+            timeout: WORKSPACE_LIST_TIMEOUT_MS,
+        });
         return res.data.map((p: any) => ({ ...p, originalText: p.original_text }));
     },
 
@@ -1260,6 +1265,8 @@ export const api = {
             default_generation_mode: opts.default_generation_mode ?? "i2v",
             model_settings: workspaceDefaultModelSettings(),
             prompt_config: workspaceDefaultPromptConfig(),
+        }, {
+            timeout: SERIES_CREATE_TIMEOUT_MS,
         });
         return response.data;
     },
@@ -1271,11 +1278,15 @@ export const api = {
             workflow_mode: workflowMode,
             model_settings: workspaceDefaultModelSettings(),
             prompt_config: workspaceDefaultPromptConfig(),
+        }, {
+            timeout: SERIES_CREATE_TIMEOUT_MS,
         });
         return response.data;
     },
     listSeries: async () => {
-        const response = await axios.get(`${API_URL}/series`);
+        const response = await axios.get(`${API_URL}/series`, {
+            timeout: WORKSPACE_LIST_TIMEOUT_MS,
+        });
         return response.data;
     },
     /** Core 全局/共享资产池（跨系列/项目聚合）。后端：GET /library/assets → {characters, scenes, props}。 */
@@ -1663,7 +1674,9 @@ export const api = {
 
     // Series Episodes
     getSeriesEpisodes: async (seriesId: string) => {
-        const response = await axios.get(`${API_URL}/series/${seriesId}/episodes`);
+        const response = await axios.get(`${API_URL}/series/${seriesId}/episodes`, {
+            timeout: WORKSPACE_LIST_TIMEOUT_MS,
+        });
         return response.data;
     },
     addEpisodeToSeries: async (seriesId: string, scriptId: string, episodeNumber?: number) => {

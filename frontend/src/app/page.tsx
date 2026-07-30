@@ -32,7 +32,7 @@ const PlaygroundPage = dynamic(() => import("@/components/modules/playground/Pla
 const ApiCallsPage = dynamic(() => import("@/components/api-calls/ApiCallsPage"), { ssr: false });
 
 // ── Create Series Dialog ──
-function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+export function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   // Series content can still be scripted or freeform; generation always uses I2V.
@@ -47,10 +47,21 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const onCloseRef = useRef(onClose);
+  const isCreatingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const requestGenerationRef = useRef(0);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestGenerationRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -65,7 +76,7 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onCloseRef.current();
+        if (!isCreatingRef.current) onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !dialogRef.current) return;
@@ -98,8 +109,15 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
 
   if (!isOpen) return null;
 
+  const requestClose = () => {
+    if (!isCreatingRef.current) onClose();
+  };
+
   const handleCreate = async () => {
     if (!title.trim()) return;
+    const requestGeneration = requestGenerationRef.current + 1;
+    requestGenerationRef.current = requestGeneration;
+    isCreatingRef.current = true;
     setIsCreating(true);
     try {
       // Use the v2 createSeriesV2 API directly so we can pass content_mode
@@ -110,20 +128,50 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
         content_mode: contentMode,
         default_generation_mode: "i2v",
       });
+      if (
+        !mountedRef.current
+        || requestGeneration !== requestGenerationRef.current
+      ) return;
       setTitle("");
       setDescription("");
       setContentMode("scripted");
+      isCreatingRef.current = false;
+      setIsCreating(false);
       onClose();
       window.location.hash = `#/series/${series.id}`;
     } catch (error) {
+      if (
+        !mountedRef.current
+        || requestGeneration !== requestGenerationRef.current
+      ) return;
       console.error("Failed to create series:", error);
+      const response = (
+        error
+        && typeof error === "object"
+        && "response" in error
+      ) ? (error as { response?: { status?: unknown } }).response : undefined;
+      const status = typeof response?.status === "number" ? response.status : 0;
+      const definitiveHttpFailure = status >= 400 && status < 500;
+      toast.error(t(definitiveHttpFailure
+        ? "toastSeriesCreateRejected"
+        : "toastSeriesCreateFailed"), {
+        body: t(definitiveHttpFailure
+          ? "toastSeriesCreateRejectedBody"
+          : "toastSeriesCreateFailedBody"),
+      });
     } finally {
-      setIsCreating(false);
+      if (
+        mountedRef.current
+        && requestGeneration === requestGenerationRef.current
+      ) {
+        isCreatingRef.current = false;
+        setIsCreating(false);
+      }
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay backdrop-blur-sm" onClick={requestClose}>
       <motion.div
         ref={dialogRef}
         role="dialog"
@@ -136,7 +184,12 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
       >
         <div className="flex items-center justify-between mb-6">
           <h2 id={titleId} className="text-2xl font-display font-bold text-foreground">{t("newSeries")}</h2>
-          <button onClick={onClose} aria-label={tc("close")} className="p-2 rounded-lg hover:bg-hover-bg transition-colors">
+          <button
+            onClick={requestClose}
+            disabled={isCreating}
+            aria-label={tc("close")}
+            className="p-2 rounded-lg hover:bg-hover-bg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
             <X size={20} className="text-text-secondary" />
           </button>
         </div>
@@ -147,9 +200,10 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
             <input
               type="text"
               value={title}
+              disabled={isCreating}
               onChange={(e) => setTitle(e.target.value)}
               placeholder={t("seriesTitlePlaceholder")}
-              className="glass-input w-full"
+              className="glass-input w-full disabled:opacity-60 disabled:cursor-not-allowed"
             />
           </div>
 
@@ -159,8 +213,9 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
+                disabled={isCreating}
                 onClick={() => setContentMode("scripted")}
-                className={`relative p-4 rounded-xl border-2 text-left transition-all ${
+                className={`relative p-4 rounded-xl border-2 text-left transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                   contentMode === "scripted"
                     ? "border-primary bg-primary/10"
                     : "border-border bg-surface hover:border-text-muted"
@@ -178,8 +233,9 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
               </button>
               <button
                 type="button"
+                disabled={isCreating}
                 onClick={() => setContentMode("freeform")}
-                className={`relative p-4 rounded-xl border-2 text-left transition-all ${
+                className={`relative p-4 rounded-xl border-2 text-left transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                   contentMode === "freeform"
                     ? "border-primary bg-primary/10"
                     : "border-border bg-surface hover:border-text-muted"
@@ -197,24 +253,27 @@ function CreateSeriesDialog({ isOpen, onClose }: { isOpen: boolean; onClose: () 
             <label className="block text-sm font-medium text-foreground mb-2">{t("description")}</label>
             <textarea
               value={description}
+              disabled={isCreating}
               onChange={(e) => setDescription(e.target.value)}
               placeholder={t("descriptionPlaceholder")}
               rows={4}
-              className="glass-input w-full resize-none"
+              className="glass-input w-full resize-none disabled:opacity-60 disabled:cursor-not-allowed"
             />
           </div>
         </div>
 
         <div className="flex gap-3 pt-6">
           <button
-            onClick={onClose}
-            className="flex-1 glass-button"
+            onClick={requestClose}
+            disabled={isCreating}
+            className="flex-1 glass-button disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {tc("cancel")}
           </button>
           <button
             onClick={handleCreate}
             disabled={!title.trim() || isCreating}
+            aria-busy={isCreating}
             className="flex-1 bg-primary hover:bg-primary/90 text-foreground px-6 py-3 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isCreating ? t("creating") : t("createSeries")}
@@ -368,9 +427,21 @@ export default function Home() {
       .catch((error) => {
         if (cancelled) return;
         console.error("Failed to sync projects from backend:", error);
-        toast.error(t("toastProjectsSyncFailed"));
+        toast.error(t("toastProjectsSyncFailed"), {
+          body: t("toastSyncFailedBody"),
+        });
       });
-    void fetchSeriesList();
+    api.listSeries()
+      .then((backendSeries) => {
+        if (!cancelled) useProjectStore.setState({ seriesList: backendSeries ?? [] });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("Failed to sync series from backend:", error);
+        toast.error(t("toastSeriesSyncFailed"), {
+          body: t("toastSyncFailedBody"),
+        });
+      });
     return () => { cancelled = true; };
     // Initial loading has no user-visible sync spinner; manual refresh uses
     // syncProjects/syncAll and owns isSyncing.
@@ -414,7 +485,7 @@ export default function Home() {
     } catch (error) {
       console.error("Failed to sync workspace from backend:", error);
       toast.error(t("toastSyncFailed"), {
-        body: error instanceof Error ? error.message.slice(0, 240) : undefined,
+        body: t("toastSyncFailedBody"),
       });
     } finally {
       setIsSyncing(false);
@@ -635,11 +706,12 @@ export default function Home() {
             <button
               onClick={syncAll}
               disabled={isSyncing || !online}
+              aria-busy={isSyncing}
               title={!online ? tc("offlineTooltip") : undefined}
               className="glass-button flex items-center gap-2 text-[0.8125rem] font-semibold disabled:opacity-50"
             >
               <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
-              {tc("sync")}
+              {isSyncing ? t("syncing") : tc("sync")}
             </button>
             <button
               onClick={() => setIsImportDialogOpen(true)}
@@ -791,11 +863,13 @@ export default function Home() {
               </div>
               <button
                 onClick={syncAll}
-                disabled={isSyncing}
+                disabled={isSyncing || !online}
+                aria-busy={isSyncing}
+                title={!online ? tc("offlineTooltip") : undefined}
                 className="mt-5 glass-button flex items-center gap-2 text-[0.8125rem] font-semibold disabled:opacity-50"
               >
                 <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
-                {t("syncFromBackend")}
+                {isSyncing ? t("syncing") : t("syncFromBackend")}
               </button>
             </motion.div>
           ) : wsFiltering && wsVisibleCount === 0 ? (
@@ -980,10 +1054,12 @@ export default function Home() {
       />
 
       {/* Create Series Dialog */}
-      <CreateSeriesDialog
-        isOpen={isSeriesDialogOpen}
-        onClose={() => setIsSeriesDialogOpen(false)}
-      />
+      {isSeriesDialogOpen && (
+        <CreateSeriesDialog
+          isOpen
+          onClose={() => setIsSeriesDialogOpen(false)}
+        />
+      )}
 
       {/* Environment Configuration Dialog (kept for EnvConfigChecker) */}
       <EnvConfigDialog
