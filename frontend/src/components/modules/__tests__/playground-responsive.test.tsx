@@ -51,6 +51,8 @@ describe("playground responsive layout", () => {
     expect(title.parentElement?.previousElementSibling).toBeNull();
     expect(screen.queryByText("自由创作工作室")).not.toBeInTheDocument();
     expect(screen.queryByText("结果画廊")).not.toBeInTheDocument();
+    expect(screen.queryByText("自由生成 · 不绑定项目")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^\d+\s+结果$/)).not.toBeInTheDocument();
     expect(screen.getByTestId("playground-split-layout")).toHaveClass(
       "flex-col",
       "overflow-y-auto",

@@ -180,6 +180,9 @@ describe("API Calls dashboard", () => {
     expect(screen.getAllByText("A lantern-lit alley in the rain")).toHaveLength(3);
     expect(screen.getAllByRole("tab")).toHaveLength(6);
     expect(screen.getAllByRole("tablist")).toHaveLength(1);
+    expect(screen.queryByText("Live updates")).not.toBeInTheDocument();
+    expect(screen.queryByText("Track generation requests from the Playground, Workspace, and other tools in one place.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
     expect(apiCallsApi.list).toHaveBeenCalledWith();
   });
 
@@ -286,7 +289,7 @@ describe("API Calls dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await within(card as HTMLElement).findByText("Queued")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent(document, new Event("visibilitychange"));
     await waitFor(() => expect(apiCallsApi.list).toHaveBeenCalledTimes(2));
     fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Cancel" }));
     expect(await within(card as HTMLElement).findByText("Failed")).toBeInTheDocument();
@@ -312,8 +315,36 @@ describe("API Calls dashboard", () => {
     expect(title).toHaveAttribute("data-global-page-title");
     expect(title).toHaveClass("text-[1.625rem]", "md:text-[2.125rem]");
     expect(screen.queryByText("接口活动 · 实时监控")).not.toBeInTheDocument();
+    expect(screen.queryByText("集中查看创作台、工作区及其他功能发起的所有生成请求。")).not.toBeInTheDocument();
+    expect(screen.queryByText("实时更新")).not.toBeInTheDocument();
     expect(await screen.findByText("这里还没有接口调用")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新" })).not.toBeInTheDocument();
+    const tabs = screen.getByRole("tablist", { name: "按状态筛选接口调用" });
+    expect(tabs).toHaveClass("atelier-pill-tabs", "bg-surface-inset", "rounded-full");
+    expect(screen.getByRole("tab", { name: "全部 0" })).toHaveClass(
+      "atelier-pill-tab-active",
+      "bg-surface",
+    );
+  });
+
+  it("shows the generated asset name in local hybrid activity", async () => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([{
+      ...running,
+      id: "hybrid:asset-task",
+      task_id: "asset-task",
+      type: "series_asset",
+      detail: "守塔人",
+      prompt: "全身角色设定图",
+      model_name: "gpt-image-2",
+    }]);
+    renderWithIntl(<ApiCallsPage />, { locale: "zh" });
+
+    expect(await screen.findByText("守塔人")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开系列资产生成的详情" }));
+    const dialog = screen.getByRole("dialog", { name: "系列资产生成" });
+    expect(within(dialog).getByText("生成项目")).toBeInTheDocument();
+    expect(within(dialog).getByText("守塔人")).toBeInTheDocument();
+    expect(within(dialog).getByText("全身角色设定图")).toBeInTheDocument();
   });
 
   it("localizes provider privacy failures and hides diagnostics until expanded", async () => {

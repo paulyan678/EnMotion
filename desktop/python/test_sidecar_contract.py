@@ -22,6 +22,14 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertNotIn("from starlette.requests import Request", source.splitlines())
         self.assertIn('globals()["Request"] = StarletteRequest', source)
 
+    def test_desktop_bootstraps_workspace_read_models_before_serving_core(self) -> None:
+        source = Path(sidecar.__file__).read_text(encoding="utf-8")
+        self.assertIn("api_module._initialize_workspace_read_models()", source)
+        self.assertLess(
+            source.index("api_module._initialize_workspace_read_models()"),
+            source.index("core_app = api_module.app"),
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)

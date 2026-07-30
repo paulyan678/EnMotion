@@ -14,6 +14,8 @@ export const SERIES_MODEL_SETTINGS_TIMEOUT_MS = 30_000;
 /** Metadata-only workspace operations must never strand their UI controls. */
 export const SERIES_CREATE_TIMEOUT_MS = 30_000;
 export const WORKSPACE_LIST_TIMEOUT_MS = 15_000;
+/** The activity panel must fail visibly instead of spinning forever. */
+export const API_ACTIVITY_SOURCE_TIMEOUT_MS = 15_000;
 
 export interface EnvConfigPayload {
     NEWAPI_BASE_URL?: string;
@@ -2005,13 +2007,23 @@ function playgroundActivity(item: PlaygroundGenerationResponse): ApiCallActivity
 export const apiCallsApi = {
   list: async (limit = 200): Promise<ApiCallActivity[]> => {
     if (isHybridModeEnabled()) {
-      const [billing, playground] = await Promise.all([
-        authApi.accountUsage(Math.min(limit, 100)),
+      const [billing, playground, localActivity] = await Promise.all([
+        authApi.accountUsage(
+          Math.min(limit, 100),
+          undefined,
+          API_ACTIVITY_SOURCE_TIMEOUT_MS,
+        ),
         axios.get<PlaygroundGenerationResponse[]>(`${API_URL}/playground/history`, {
           params: { limit, offset: 0 },
+          timeout: API_ACTIVITY_SOURCE_TIMEOUT_MS,
+        }),
+        axios.get<ApiCallActivity[]>(`${API_URL}/activity/history`, {
+          params: { limit },
+          timeout: API_ACTIVITY_SOURCE_TIMEOUT_MS,
         }),
       ]);
       const activities = [
+        ...localActivity.data,
         ...playground.data.map(playgroundActivity),
         ...billing.items.map(accountUsageActivity),
       ];

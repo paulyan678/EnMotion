@@ -3,6 +3,7 @@
 import { Check, Loader2, Save, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { useModalFocusTrap } from "@/components/common/useModalFocusTrap";
 
@@ -43,7 +44,9 @@ export default function AssetEditorShell({
   const t = useTranslations("library");
   const dialogRef = useModalFocusTrap<HTMLDivElement>(onRequestClose);
 
-  return (
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
     <div
       ref={dialogRef}
       role="dialog"
@@ -120,6 +123,7 @@ export default function AssetEditorShell({
           </aside>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

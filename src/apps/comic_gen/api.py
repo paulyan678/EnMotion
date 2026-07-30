@@ -81,7 +81,8 @@ from ...utils.uploads import (
     read_upload_bytes,
     save_upload_file,
 )
-from ..hybrid import include_hybrid_mode, workspace_isolation_enabled
+from ..hybrid import hybrid_mode_enabled, include_hybrid_mode, workspace_isolation_enabled
+from ..hybrid.activity import record_asset_activity, update_asset_activity
 from ..server import include_server_mode, server_mode_enabled
 from ..web_runtime.asset_library_feed import (
     AssetLibraryFeedResponse,
@@ -455,6 +456,164 @@ pipeline = PipelineProxy(
     lambda: ComicGenPipeline({"recover_orphan_tasks": not server_mode_enabled()}),
     _workspace_pipelines,
 )
+
+
+def _hybrid_asset_source_route(
+    source_kind: str,
+    source_id: str,
+    *,
+    series_id: str | None = None,
+) -> str:
+    if source_kind == "global":
+        return "#/library"
+    if source_kind == "series":
+        return f"#/series/{source_id}"
+    if series_id:
+        return f"#/series/{series_id}/episode/{source_id}"
+    return f"#/project/{source_id}"
+
+
+def _process_hybrid_asset_activity(
+    task_id: str,
+    workspace_id: str,
+    target_asset: Any,
+    existing_variant_ids: frozenset[str],
+) -> None:
+    """Run one local asset job and mirror its public lifecycle atomically."""
+
+    try:
+        update_asset_activity(workspace_id, task_id, status="running")
+        pipeline.process_asset_generation_task(task_id)
+        status = pipeline.get_asset_generation_task_status(task_id) or {}
+        if status.get("status") == "completed":
+            update_asset_activity(
+                workspace_id,
+                task_id,
+                status="completed",
+                outputs=_hybrid_asset_outputs(target_asset, existing_variant_ids),
+            )
+            return
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="failed",
+            error=str(status.get("error") or "素材生成失败，请稍后重试。"),
+        )
+    except Exception:
+        logger.exception("Managed desktop asset task failed task_id=%s", task_id)
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="failed",
+            error="素材生成失败，请稍后重试。",
+        )
+
+
+def _asset_image_variants(target_asset: Any) -> list[Any]:
+    variants: list[Any] = []
+    seen: set[str] = set()
+    for field_name in (
+        "reference_sheet",
+        "full_body",
+        "three_views",
+        "head_shot",
+        "image_asset",
+        "full_body_asset",
+        "three_view_asset",
+        "headshot_asset",
+    ):
+        container = getattr(target_asset, field_name, None)
+        if container is None:
+            continue
+        values = getattr(container, "image_variants", None)
+        if values is None:
+            values = getattr(container, "variants", None)
+        for variant in values or []:
+            variant_id = str(getattr(variant, "id", "") or "")
+            if variant_id and variant_id not in seen:
+                variants.append(variant)
+                seen.add(variant_id)
+    return variants
+
+
+def _hybrid_asset_outputs(
+    target_asset: Any,
+    existing_variant_ids: frozenset[str],
+) -> list[dict[str, Any]]:
+    outputs: list[dict[str, Any]] = []
+    for variant in _asset_image_variants(target_asset):
+        variant_id = str(getattr(variant, "id", "") or "")
+        media_path = str(getattr(variant, "url", "") or "")
+        if not variant_id or variant_id in existing_variant_ids or not media_path:
+            continue
+        outputs.append(
+            {
+                "id": variant_id,
+                "media_type": "image",
+                "media_path": media_path,
+                "thumbnail_path": media_path,
+                "filename": media_path.rsplit("/", 1)[-1],
+            }
+        )
+    return outputs
+
+
+def _schedule_local_asset_generation(
+    background_tasks: BackgroundTasks,
+    *,
+    task_id: str,
+    source_kind: str,
+    source_id: str,
+    target_asset: Any,
+    request: "GenerateAssetRequest",
+    series_id: str | None = None,
+) -> None:
+    """Queue desktop work and persist an API Calls entry in hybrid mode."""
+
+    if not hybrid_mode_enabled():
+        background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
+        return
+
+    tenant = get_tenant(required=True)
+    assert tenant is not None
+    job_type = {
+        "project": "project_asset",
+        "series": "series_asset",
+        "global": "global_asset",
+    }[source_kind]
+    source = "library" if source_kind == "global" else "workspace"
+    existing_variant_ids = frozenset(
+        str(getattr(variant, "id", "") or "")
+        for variant in _asset_image_variants(target_asset)
+        if getattr(variant, "id", None)
+    )
+    record_asset_activity(
+        tenant.workspace_id,
+        task_id=task_id,
+        job_type=job_type,
+        source=source,
+        source_route=_hybrid_asset_source_route(
+            source_kind,
+            source_id,
+            series_id=series_id,
+        ),
+        source_id=source_id,
+        series_id=series_id,
+        asset_id=request.asset_id,
+        asset_type=request.asset_type,
+        asset_name=str(getattr(target_asset, "name", "") or request.asset_id),
+        prompt=request.prompt,
+        model_name=request.model_name or get_selected_model(IMAGE),
+        batch_size=request.batch_size,
+        aspect_ratio=request.aspect_ratio,
+    )
+    background_tasks.add_task(
+        _process_hybrid_asset_activity,
+        task_id,
+        tenant.workspace_id,
+        target_asset,
+        existing_variant_ids,
+    )
 
 
 def current_output_root() -> str:
@@ -1661,7 +1820,14 @@ def generate_series_asset(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_asset_generation_task(task_id)
         else:
-            background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
+            _schedule_local_asset_generation(
+                background_tasks,
+                task_id=task_id,
+                source_kind="series",
+                source_id=series_id,
+                target_asset=target_asset,
+                request=request,
+            )
         response_data = series.dict()
         response_data["_task_id"] = task_id
         return signed_response(response_data)
@@ -2743,7 +2909,16 @@ def generate_source_asset(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_asset_generation_task(task_id)
         else:
-            background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
+            project = pipeline.get_script(source_id) if source_kind == "project" else None
+            _schedule_local_asset_generation(
+                background_tasks,
+                task_id=task_id,
+                source_kind=source_kind,
+                source_id=source_id,
+                target_asset=target_asset,
+                request=request,
+                series_id=getattr(project, "series_id", None),
+            )
         response = pipeline.source_asset_response_payload(
             source_kind, source_id, asset_type, asset_id
         )
@@ -4914,7 +5089,15 @@ def generate_single_asset(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_asset_generation_task(task_id)
         else:
-            background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
+            _schedule_local_asset_generation(
+                background_tasks,
+                task_id=task_id,
+                source_kind="project",
+                source_id=script_id,
+                target_asset=target_asset,
+                request=request,
+                series_id=getattr(script, "series_id", None),
+            )
 
         # Return script with task_id for frontend polling
         response_data = script.model_dump() if hasattr(script, "model_dump") else script.dict()
@@ -4957,7 +5140,12 @@ def get_task_status(task_id: str):
                 status["script"] = signed_response(script).body.decode("utf-8")
         return status
 
-    status = pipeline.get_asset_generation_task_status(task_id)
+    if hybrid_mode_enabled():
+        tenant = get_tenant(required=True)
+        assert tenant is not None
+        status = _workspace_pipelines.transient_task_status(tenant.workspace_id, task_id)
+    else:
+        status = pipeline.get_asset_generation_task_status(task_id)
     if not status:
         raise HTTPException(status_code=404, detail="Task not found")
 

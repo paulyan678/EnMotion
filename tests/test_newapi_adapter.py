@@ -10,6 +10,8 @@ import requests
 from src.apps.comic_gen.llm_adapter import LLMAdapter
 from src.models.newapi import (
     INPUT_IMAGE_PRIVACY_ERROR_CODE,
+    RATE_CARD_MISSING_ERROR_CODE,
+    RATE_CARD_MISSING_PUBLIC_MESSAGE,
     NewAPIImageModel,
     NewAPIProviderError,
     NewAPIVideoModel,
@@ -91,6 +93,28 @@ class TestNewAPIChatAdapter:
 
 
 class TestNewAPIImageModel:
+    def test_missing_rate_card_has_an_actionable_public_error(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_GPT_IMAGE_2_API_KEY", "image-test-token")
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda *_args, **_kwargs: FakeResponse(
+                {"detail": "no active rate card for images.generations/gpt-image-2"},
+                status=503,
+            ),
+        )
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            NewAPIImageModel({}).generate(
+                "draw a fox",
+                str(tmp_path / "result.png"),
+                model_id="gpt-image-2",
+            )
+
+        assert exc_info.value.error_code == RATE_CARD_MISSING_ERROR_CODE
+        assert str(exc_info.value) == RATE_CARD_MISSING_PUBLIC_MESSAGE
+        assert "no active rate card" not in str(exc_info.value)
+
     def test_provider_error_redacts_configured_model_key(self, monkeypatch, tmp_path):
         configured_key = "image-test-token"
 

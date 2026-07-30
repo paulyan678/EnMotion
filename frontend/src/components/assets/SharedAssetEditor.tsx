@@ -3,6 +3,7 @@
 import { AlertTriangle, Loader2, RefreshCw, Share2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import CharacterWorkbench from "@/components/modules/CharacterWorkbench";
 import ScenePropWorkbench from "@/components/modules/ScenePropWorkbench";
@@ -245,7 +246,8 @@ function EditorStateDialog({
   label: string;
   children: ReactNode;
 }) {
-  return (
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-overlay p-6 backdrop-blur-md"
       role="dialog"
@@ -255,6 +257,7 @@ function EditorStateDialog({
       <div className="flex min-h-48 w-full max-w-lg flex-col items-center justify-center gap-4 rounded-2xl border border-glass-border bg-surface p-8 shadow-lg">
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

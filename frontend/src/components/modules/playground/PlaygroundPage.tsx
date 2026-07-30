@@ -72,7 +72,6 @@ export default function PlaygroundPage() {
   const inputMedia = usePlaygroundStore((s) => s.inputMedia);
   const parameters = usePlaygroundStore((s) => s.parameters);
   const batchSize = usePlaygroundStore((s) => s.batchSize);
-  const history = usePlaygroundStore((s) => s.history);
   const setHistory = usePlaygroundStore((s) => s.setHistory);
   const setTemplates = usePlaygroundStore((s) => s.setTemplates);
   const startGeneration = usePlaygroundStore((s) => s.startGeneration);
@@ -259,7 +258,6 @@ export default function PlaygroundPage() {
 
   // ─── Derived values ────────────────────────────────────────────────────────
 
-  const resultCount = history.reduce((n, g) => n + g.outputs.length, 0);
   const showMediaInput = MODES_WITH_MEDIA.includes(mode) || MODES_WITH_OPTIONAL_MEDIA.includes(mode);
   const usableInputCount = inputMedia.filter((item) => item.trim().length > 0).length;
   let generateBlockReason: string | null = null;
@@ -278,19 +276,9 @@ export default function PlaygroundPage() {
     <div className="flex h-full flex-col overflow-hidden text-foreground">
       {/* ═══ PAGE HEADER ═══ */}
       <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-7 py-5">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-baseline gap-[10px]">
-            <GlobalPageTitle>
-              {t('header.title')}
-            </GlobalPageTitle>
-            <span className="font-mono text-[0.6875rem] uppercase tracking-[0.1em] text-text-muted">
-              {t('header.resultsCount', { count: resultCount })}
-            </span>
-          </div>
-          <p className="font-mono text-text-muted text-[0.6875rem] tracking-[0.06em]">
-            {t('header.subtitle')}
-          </p>
-        </div>
+        <GlobalPageTitle>
+          {t('header.title')}
+        </GlobalPageTitle>
         <div className="flex items-center gap-3">
           <span className="atelier-badge rounded border border-glass-border bg-glass px-2 py-1 text-[0.625rem] uppercase tracking-[0.18em] text-text-muted">
             {t(`mode.${mode}`)}

@@ -172,14 +172,15 @@
               <h2>计费说明</h2>
               <p class="muted">
                 服务器会在筛选条件与请求相符的启用规则中选择优先级最高的一项。
-                请求提交前会先预留相应额度。
+                优先级相同时选择版本最新的一项。相同操作、模型与筛选条件的首选规则会标记为“当前生效”。
+                删除只会停用后续请求；已有额度记录会完整保留。
               </p>
             </article>
           </div>
           <article class="panel table-panel">
             <div class="table-scroll">
               <table>
-                <thead><tr><th>操作类型</th><th>AI 模型</th><th>消耗额度</th><th>筛选条件</th><th>状态</th></tr></thead>
+                <thead><tr><th>操作类型</th><th>AI 模型</th><th>消耗额度</th><th>筛选条件</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody id="rates-body"></tbody>
               </table>
             </div>

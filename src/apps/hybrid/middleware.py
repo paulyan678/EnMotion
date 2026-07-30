@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
+from pathlib import Path
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
 from ..web_runtime.context import bind_tenant, reset_tenant
+from ..web_runtime.file_lock import bind_nonblocking_read, reset_nonblocking_read
 from .config import HybridSettings
 from .session import LocalSession, session_vault
 
@@ -42,6 +45,11 @@ class HybridAuthMiddleware(BaseHTTPMiddleware):
             return True
         supplied = request.headers.get("X-EnMotion-Local-Nonce", "")
         return bool(supplied) and secrets.compare_digest(supplied, expected)
+
+    @staticmethod
+    def _workspace_lock_path(workspace_id: str) -> Path:
+        workspace_root = Path(os.getenv("ENMOTION_WORKSPACE_ROOT", "data/workspaces")).expanduser()
+        return workspace_root / workspace_id / ".workspace.lock"
 
     def _session(self, request: Request) -> LocalSession | None:
         return session_vault.get_local(request.cookies.get(self.settings.session_cookie_name))
@@ -97,7 +105,21 @@ class HybridAuthMiddleware(BaseHTTPMiddleware):
         )
         try:
             if request.method in _SAFE_METHODS:
-                response = await call_next(request)
+                # Workspace JSON writers use atomic replacement. Read routes can
+                # therefore consume the latest complete snapshot without waiting
+                # minutes for an image/video provider call holding the writer
+                # lock. Transient /tasks polling has its own lock-free writer
+                # accessor and must retain the in-memory task map.
+                if path.startswith("/tasks/"):
+                    response = await call_next(request)
+                else:
+                    read_token = bind_nonblocking_read(
+                        self._workspace_lock_path(local.user.workspace_id)
+                    )
+                    try:
+                        response = await call_next(request)
+                    finally:
+                        reset_nonblocking_read(read_token)
             else:
                 async with self._write_lock(local.user.workspace_id):
                     response = await call_next(request)

@@ -83,6 +83,18 @@ def test_rate_card_models_are_fixed_and_operation_aware() -> None:
     assert "syncRateModels" in script
 
 
+def test_rate_cards_explain_precedence_and_can_be_deleted_safely() -> None:
+    script = ADMIN_SCRIPT.read_text(encoding="utf-8")
+    markup = (PROJECT_ROOT / "app" / "static" / "admin" / "index.html").read_text(encoding="utf-8")
+
+    assert "优先级相同时选择版本最新的一项" in markup
+    assert "已有额度记录会完整保留" in markup
+    assert 'data-rate-action="delete"' in script
+    assert 'method: "DELETE"' in script
+    assert "当前生效" in script
+    assert "同条件已被覆盖" in script
+
+
 def test_provider_configuration_ui_never_requests_existing_secret_values() -> None:
     script = ADMIN_SCRIPT.read_text(encoding="utf-8")
     markup = (Path(__file__).parents[1] / "app" / "static" / "admin" / "index.html").read_text(

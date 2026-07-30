@@ -499,8 +499,8 @@ export default function ScenePropWorkbench({
                   </label>
                 </GenerationSettings>
 
-                <label className="flex min-h-12 cursor-pointer items-center justify-between gap-4 rounded-xl border border-glass-border bg-input-bg px-3 text-sm text-text-secondary">
-                  <span>
+                <label className="flex min-h-12 min-w-0 cursor-pointer items-center justify-between gap-4 rounded-xl border border-glass-border bg-input-bg px-3 text-sm text-text-secondary">
+                  <span className="min-w-0 flex-1 overflow-hidden">
                     <span className="block font-semibold text-foreground">
                       {t("applyStyleLabel")}
                     </span>
@@ -514,7 +514,7 @@ export default function ScenePropWorkbench({
                     type="checkbox"
                     checked={applyStyle}
                     onChange={(event) => setApplyStyle(event.target.checked)}
-                    className="h-4 w-4 accent-primary"
+                    className="h-4 w-4 shrink-0 accent-primary"
                     aria-label={t("applyStyleLabel")}
                   />
                 </label>

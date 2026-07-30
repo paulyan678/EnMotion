@@ -490,6 +490,7 @@
     "providerProgress": "Provider {progress}%",
     "indeterminateProgress": "Waiting for a meaningful progress update",
     "requestDetails": "Request details",
+    "requestNameLabel": "Generated item",
     "statusLabel": "Status",
     "typeLabel": "Type",
     "sourceLabel": "Source",

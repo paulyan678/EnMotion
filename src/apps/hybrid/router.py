@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from .activity import backfill_asset_activity, list_activity
 from .client import ControlPlaneClient, ControlPlaneError
 from .config import HybridSettings
 from .session import (
@@ -221,6 +222,18 @@ def account_usage(
         )
     except ControlPlaneError as exc:
         _raise_control_error(exc)
+
+
+@router.get("/activity/history")
+def activity_history(
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=500),
+) -> list[dict[str, Any]]:
+    """Return local hybrid generation lifecycles without the workspace writer lock."""
+
+    local = _required_session(request)
+    backfill_asset_activity(local.user.workspace_id)
+    return list_activity(local.user.workspace_id, limit=limit)
 
 
 @router.get("/auth/users")

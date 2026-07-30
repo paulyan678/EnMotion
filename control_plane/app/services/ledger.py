@@ -59,6 +59,7 @@ def _matching_rate_card(
         .where(RateCard.operation == operation)
         .where(RateCard.model == model)
         .where(RateCard.active.is_(True))
+        .where(RateCard.deleted_at.is_(None))
         .order_by(RateCard.priority.desc(), RateCard.version.desc())
     ).all()
     for card in candidates:

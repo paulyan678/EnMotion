@@ -409,8 +409,13 @@ def list_rate_cards(
 ) -> list[RateCardPublic]:
     with request.app.state.db.session() as session:
         rows = session.scalars(
-            select(RateCard).order_by(
-                RateCard.operation.asc(), RateCard.model.asc(), RateCard.priority.desc()
+            select(RateCard)
+            .where(RateCard.deleted_at.is_(None))
+            .order_by(
+                RateCard.operation.asc(),
+                RateCard.model.asc(),
+                RateCard.priority.desc(),
+                RateCard.version.desc(),
             )
         ).all()
         return [RateCardPublic.model_validate(card) for card in rows]
@@ -476,7 +481,7 @@ def update_rate_card(
     with request.app.state.db.session() as session:
         begin_immediate(session)
         card = session.get(RateCard, card_id)
-        if card is None:
+        if card is None or card.deleted_at is not None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "rate card not found")
         changes = payload.model_dump(exclude_none=True)
         for key, value in changes.items():
@@ -498,6 +503,39 @@ def update_rate_card(
             ip_address=client_ip(request),
         )
         return RateCardPublic.model_validate(card)
+
+
+@router.delete("/rate-cards/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_rate_card(
+    card_id: str,
+    principal: AdminPrincipal,
+    request: Request,
+) -> None:
+    """Hide a rule from the admin UI while preserving historical ledger links."""
+
+    with request.app.state.db.session() as session:
+        begin_immediate(session)
+        card = session.get(RateCard, card_id)
+        if card is None or card.deleted_at is not None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "rate card not found")
+        card.active = False
+        card.deleted_at = utcnow()
+        card.updated_at = card.deleted_at
+        record_audit(
+            session,
+            actor_user_id=principal.user_id,
+            action="admin.rate_card_deleted",
+            target_type="rate_card",
+            target_id=card.id,
+            detail={
+                "operation": card.operation,
+                "model": card.model,
+                "unit_cost": card.unit_cost,
+                "selectors": card.selectors,
+                "version": card.version,
+            },
+            ip_address=client_ip(request),
+        )
 
 
 @router.post("/usage/{usage_id}/settle", response_model=UsagePublic)
