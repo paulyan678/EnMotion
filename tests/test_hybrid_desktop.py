@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +25,8 @@ from src.apps.hybrid.session import (
     StalePersistedCredentialError,
     session_vault,
 )
+from src.apps.playground.models import PlaygroundGeneration, PlaygroundMode
+from src.apps.playground.storage import PlaygroundStorage
 from src.apps.web_runtime.file_lock import (
     acquire_lock_file,
     interprocess_lock,
@@ -95,6 +99,94 @@ def test_authenticated_hybrid_read_does_not_wait_for_busy_workspace_writer(
     assert response.status_code == 200
     assert response.json() == {"workspace_id": local.user.workspace_id}
     assert response.headers["x-enmotion-workspace-id"] == local.user.workspace_id
+
+
+def test_playground_admission_does_not_wait_for_busy_workspace_writer(tmp_path) -> None:
+    output_root = tmp_path / "workspaces" / "workspace-alice" / "output"
+    storage = PlaygroundStorage(
+        output_root=str(output_root),
+        shared_workspace=True,
+    )
+    generation = PlaygroundGeneration(
+        id="generation-admitted",
+        mode=PlaygroundMode.T2I,
+        model_id="gpt-image-2",
+        prompt="Dog",
+        status="pending",
+        created_at="2026-08-01T00:57:00+00:00",
+    )
+
+    descriptor, _canonical = acquire_lock_file(storage.workspace_lock_path)
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(storage.add_generation, generation)
+    try:
+        try:
+            future.result(timeout=1.0)
+        except TimeoutError:  # pragma: no cover - regression guard
+            pytest.fail("Playground admission waited for an unrelated workspace writer")
+    finally:
+        release_lock_file(descriptor)
+        executor.shutdown(wait=True)
+
+    assert storage.get_generation(generation.id) == generation
+
+
+def test_playground_generate_does_not_wait_for_unrelated_hybrid_mutation(
+    monkeypatch,
+) -> None:
+    settings = HybridSettings(
+        enabled=True,
+        control_plane_url="http://127.0.0.1:8123",
+    )
+    local = LocalSession(
+        token="local-session",
+        csrf_token="csrf-token",
+        user=_user("playground-admission"),
+    )
+    monkeypatch.setattr(session_vault, "get_local", lambda _token: local)
+    app = FastAPI()
+    app.add_middleware(HybridAuthMiddleware, settings=settings)
+    mutation_started = threading.Event()
+    release_mutation = threading.Event()
+
+    @app.post("/protected/slow-mutation")
+    async def slow_mutation():
+        mutation_started.set()
+        await asyncio.to_thread(release_mutation.wait, 5)
+        return {"ok": True}
+
+    @app.post("/playground/generate")
+    async def admit_playground_generation():
+        return {"id": "generation-admitted", "status": "pending"}
+
+    with TestClient(app, base_url="http://testserver") as client:
+        client.cookies.set(settings.session_cookie_name, local.token)
+        headers = {settings.csrf_header_name: local.csrf_token}
+        executor = ThreadPoolExecutor(max_workers=2)
+        mutation = executor.submit(
+            client.post,
+            "/protected/slow-mutation",
+            headers=headers,
+        )
+        assert mutation_started.wait(1.0)
+        admission = executor.submit(
+            client.post,
+            "/playground/generate",
+            headers=headers,
+        )
+        try:
+            try:
+                response = admission.result(timeout=1.0)
+            except TimeoutError:  # pragma: no cover - regression guard
+                pytest.fail("Playground POST waited for an unrelated hybrid mutation")
+        finally:
+            release_mutation.set()
+            mutation.result(timeout=2.0)
+            admission.result(timeout=2.0)
+            executor.shutdown(wait=True)
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "generation-admitted", "status": "pending"}
 
 
 def test_hybrid_task_status_reads_the_cached_writer_without_its_provider_lock(

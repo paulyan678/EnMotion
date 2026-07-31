@@ -28,6 +28,7 @@ _PUBLIC_PATHS = {
 _PUBLIC_PREFIXES = ("/static/", "/docs", "/openapi.json")
 _BLOCKED_PREFIXES = ("/config/api-keys", "/config/env")
 _NONCE_BOOTSTRAP_PATHS = {"/health", "/ready", "/runtime-config.js"}
+_INDEPENDENT_MUTATION_PATHS = {"/playground/generate"}
 
 
 class HybridAuthMiddleware(BaseHTTPMiddleware):
@@ -120,6 +121,12 @@ class HybridAuthMiddleware(BaseHTTPMiddleware):
                         response = await call_next(request)
                     finally:
                         reset_nonblocking_read(read_token)
+            elif path in _INDEPENDENT_MUTATION_PATHS:
+                # Playground admission persists only its dedicated history
+                # file under a separate lock, then returns the durable
+                # generation id before provider work starts. Do not leave it
+                # waiting behind an unrelated multi-minute project render.
+                response = await call_next(request)
             else:
                 async with self._write_lock(local.user.workspace_id):
                     response = await call_next(request)

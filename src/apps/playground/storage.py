@@ -39,6 +39,9 @@ class PlaygroundStorage:
         self.workspace_lock_path = os.path.join(
             os.path.dirname(self.output_root), ".workspace.lock"
         )
+        self.playground_lock_path = os.path.join(
+            os.path.dirname(self.output_root), ".playground.lock"
+        )
         if output_root is None:
             # Preserve class-level monkeypatch seams used by desktop tests.
             self.history_path = self.HISTORY_PATH
@@ -52,6 +55,15 @@ class PlaygroundStorage:
         self._load()
 
     def _shared_lock(self):
+        if not self.shared_workspace:
+            return nullcontext()
+        # Playground history/templates are independent atomic JSON files. A
+        # dedicated lock keeps their admission and lifecycle updates coherent
+        # across API/worker processes without queueing behind long provider
+        # calls that own the broader project workspace lock.
+        return interprocess_lock(self.playground_lock_path)
+
+    def _workspace_lock(self):
         if not self.shared_workspace:
             return nullcontext()
         return interprocess_lock(self.workspace_lock_path)
@@ -319,7 +331,10 @@ class PlaygroundStorage:
 
     def delete_generation(self, gen_id: str) -> bool:
         """Remove a generation and reclaim outputs unreferenced workspace-wide."""
-        with self._lock, self._shared_lock():
+        # Destructive media reclamation still needs the broad workspace lock.
+        # Acquire it before the Playground lock to match save-to-library and
+        # avoid lock-order inversions.
+        with self._workspace_lock(), self._lock, self._shared_lock():
             self._refresh_history()
             for i, gen in enumerate(self._history):
                 if gen.id == gen_id:
@@ -357,26 +372,27 @@ class PlaygroundStorage:
             resolve_workspace_media_path,
         )
 
-        candidate = Path(
-            resolve_workspace_media_path(
-                self.output_root,
-                media_path,
-                require_file=False,
+        with self._workspace_lock(), self._lock, self._shared_lock():
+            candidate = Path(
+                resolve_workspace_media_path(
+                    self.output_root,
+                    media_path,
+                    require_file=False,
+                )
             )
-        )
-        uploads_root = (Path(self.output_root).resolve() / "playground" / "uploads").resolve()
-        if candidate == uploads_root or uploads_root not in candidate.parents:
-            raise UnsafeMediaReferenceError(
-                "Only files in the Playground upload directory can be deleted"
-            )
-        if not candidate.exists():
-            return True
-        if not candidate.is_file() or candidate.is_symlink():
-            raise UnsafeMediaReferenceError("Playground upload must be a regular file")
-        reclaimed = self._reclaim_deleted_value(str(candidate))
-        if reclaimed is None:
-            raise RuntimeError("Could not verify workspace references before deleting upload")
-        return str(candidate) in reclaimed
+            uploads_root = (Path(self.output_root).resolve() / "playground" / "uploads").resolve()
+            if candidate == uploads_root or uploads_root not in candidate.parents:
+                raise UnsafeMediaReferenceError(
+                    "Only files in the Playground upload directory can be deleted"
+                )
+            if not candidate.exists():
+                return True
+            if not candidate.is_file() or candidate.is_symlink():
+                raise UnsafeMediaReferenceError("Playground upload must be a regular file")
+            reclaimed = self._reclaim_deleted_value(str(candidate))
+            if reclaimed is None:
+                raise RuntimeError("Could not verify workspace references before deleting upload")
+            return str(candidate) in reclaimed
 
     def _reclaim_deleted_value(self, deleted_value) -> Optional[list[str]]:
         from ...utils.media_gc import (
@@ -451,7 +467,7 @@ class PlaygroundStorage:
 
     def delete_template(self, template_id: str) -> bool:
         """Remove a template by id. Returns True if found and deleted."""
-        with self._lock, self._shared_lock():
+        with self._workspace_lock(), self._lock, self._shared_lock():
             self._refresh_templates()
             for i, template in enumerate(self._templates):
                 if template.id == template_id:
