@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -17,6 +19,24 @@ def encode(payload: dict[str, object]) -> str:
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_workspace_snapshot_import_does_not_require_server_database_stack(self) -> None:
+        repository_root = Path(sidecar.__file__).resolve().parents[2]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.modules['sqlalchemy'] = None; "
+                    "import src.apps.web_runtime.workspace_snapshot"
+                ),
+            ],
+            cwd=repository_root,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_starlette_is_not_imported_on_the_frozen_module_critical_path(self) -> None:
         source = Path(sidecar.__file__).read_text(encoding="utf-8")
         self.assertNotIn("from starlette.requests import Request", source.splitlines())

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from src.apps.web_runtime.workspace_paths import workspace_output_root
 from src.utils.paths import (
     account_output_root,
     accounts_root,
@@ -38,3 +39,15 @@ def test_account_output_is_contained(monkeypatch, tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError):
         account_output_root("../escape")
+
+
+def test_workspace_output_is_contained_without_server_dependencies(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace_root = tmp_path / "workspaces"
+    monkeypatch.setenv("ENMOTION_WORKSPACE_ROOT", str(workspace_root))
+
+    assert workspace_output_root("workspace_123") == workspace_root / "workspace_123" / "output"
+    for invalid in ("", "../escape", "workspace/child", "a" * 129):
+        with pytest.raises(ValueError):
+            workspace_output_root(invalid)

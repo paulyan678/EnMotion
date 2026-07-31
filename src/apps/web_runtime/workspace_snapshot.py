@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..comic_gen.models import GlobalAssetLibrary, Script, Series
-from ..server.quotas import workspace_output_root
 from .asset_library_feed import AssetLibrarySnapshot, build_asset_library_snapshot
+from .workspace_paths import workspace_output_root
 
 logger = logging.getLogger(__name__)
 
