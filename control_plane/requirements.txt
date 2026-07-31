@@ -1,6 +1,6 @@
 alembic>=1.13,<2
 argon2-cffi>=23.1,<26
-cryptography>=43,<46
+cryptography>=48.0.1,<49
 fastapi>=0.115,<1
 httpx>=0.27,<1
 packaging>=24,<27

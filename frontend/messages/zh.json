@@ -452,26 +452,6 @@
     "loadError": "无法更新接口活动",
     "actionError": "无法完成该请求操作，请稍后重试。",
     "downloadError": "无法下载输出文件，请稍后重试。",
-    "billing": {
-      "record": "账务记录",
-      "outcome": "账务结果：{status}",
-      "statusLabel": "账务结果",
-      "description": "此账户记录仅反映额度结算，不代表生成进度或生成结果。",
-      "statuses": {
-        "settled": "已结算",
-        "completed": "已完成",
-        "captured": "已扣费",
-        "succeeded": "已成功",
-        "reserved": "额度已预留",
-        "processing": "处理中",
-        "pendingReconciliation": "等待结算",
-        "released": "已释放",
-        "refunded": "已退款",
-        "failed": "失败",
-        "canceled": "已取消",
-        "other": "处理中"
-      }
-    },
     "dismissError": "关闭错误提示",
     "filterAria": "按状态筛选接口调用",
     "emptyTitle": "这里还没有接口调用",
@@ -541,6 +521,8 @@
     },
     "errors": {
       "inputImagePrivacy": "视频服务商拒绝了这张参考图，因为它可能看起来像真实人物。请选择或生成一张明显为虚构角色的图片，然后重试。",
+      "outputVideoPolicy": "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。请调整提示词，避免受版权保护的角色、品牌或作品风格后重试。",
+      "providerConnection": "暂时无法连接模型服务商。请稍后重试；如果持续失败，请联系管理员检查服务商线路。",
       "requestFailed": "请求处理失败，请检查输入后重试。"
     },
     "parameterKeys": {
@@ -556,6 +538,7 @@
       "audio": "音频",
       "watermark": "水印",
       "prompt_extend": "提示词扩展",
+      "generation_mode": "生成模式",
       "unknown": "参数"
     },
     "parameterValues": {

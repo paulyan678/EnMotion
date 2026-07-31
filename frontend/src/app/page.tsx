@@ -16,7 +16,7 @@ import CreateProjectDialog from "@/components/project/CreateProjectDialog";
 import EnvConfigDialog from "@/components/project/EnvConfigDialog";
 import CreativeCanvas from "@/components/canvas/CreativeCanvas";
 import AppShell from "@/components/layout/AppShell";
-import GlobalPageTitle from "@/components/layout/GlobalPageTitle";
+import GlobalPageHeader from "@/components/layout/GlobalPageHeader";
 import type { GlobalTab } from "@/components/layout/GlobalSidebar";
 import dynamic from "next/dynamic";
 import { api } from "@/lib/api";
@@ -695,14 +695,10 @@ export default function Home() {
       wsVisibleStandalone.length + wsSeriesGroups.reduce((n, g) => n + g.eps.length, 0);
     return (
       <div className="flex flex-col h-full overflow-hidden">
-        {/* Page header — Fraunces title + actions */}
-        <header className="px-4 md:px-7 pt-5 md:pt-6 pb-3 flex flex-col md:flex-row md:items-end gap-3 md:gap-5">
-          <div className="flex-1 min-w-0">
-            <GlobalPageTitle>
-              {t("title")}
-            </GlobalPageTitle>
-          </div>
-          <div className="flex items-center flex-wrap gap-2.5 md:pb-1">
+        <GlobalPageHeader
+          title={t("title")}
+          actions={(
+            <>
             <button
               onClick={syncAll}
               disabled={isSyncing || !online}
@@ -764,8 +760,9 @@ export default function Home() {
                 </motion.div>
               )}
             </div>
-          </div>
-        </header>
+            </>
+          )}
+        />
 
         {/* Toolbar — 状态横向筛选 + 搜索 + 视图切换 */}
         <div className="px-7 pb-2 flex flex-wrap items-center gap-3">

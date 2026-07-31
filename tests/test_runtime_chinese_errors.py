@@ -16,6 +16,11 @@ from src.apps.hybrid.errors import (
 )
 from src.apps.playground.models import PlaygroundGeneration, PlaygroundMode
 from src.apps.playground.service import GENERATION_FAILED_MESSAGE, PlaygroundService
+from src.models.newapi import (
+    OUTPUT_VIDEO_POLICY_ERROR_CODE,
+    OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE,
+    NewAPIProviderError,
+)
 
 
 class _MemoryStorage:
@@ -67,6 +72,38 @@ def test_playground_background_failure_is_stable_chinese(monkeypatch) -> None:
     assert storage.generation.status == "failed"
     assert storage.generation.error == GENERATION_FAILED_MESSAGE
     assert leaked_detail not in storage.generation.error
+
+
+def test_playground_preserves_safe_provider_failure_metadata(monkeypatch) -> None:
+    generation = PlaygroundGeneration(
+        id="generation-policy",
+        mode=PlaygroundMode.T2V,
+        model_id="doubao-seedance-2-0-fast-260128",
+        prompt="抽象光点缓慢流动",
+        created_at="2026-07-24T00:00:00+00:00",
+    )
+    storage = _MemoryStorage(generation)
+    service = PlaygroundService(storage)
+    provider_error = NewAPIProviderError(
+        OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE,
+        error_code=OUTPUT_VIDEO_POLICY_ERROR_CODE,
+        provider_code="OutputVideoSensitiveContentDetected.PolicyViolation",
+        request_id="policy-request-1",
+        provider_task_id="policy-task",
+    )
+
+    def fail(_generation) -> None:
+        raise provider_error
+
+    monkeypatch.setattr(service, "_process_video_generation", fail)
+
+    service.process_generation(generation.id)
+
+    assert storage.generation.status == "failed"
+    assert storage.generation.error == OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE
+    assert storage.generation.error_code == OUTPUT_VIDEO_POLICY_ERROR_CODE
+    assert "服务商错误代码：" in storage.generation.error_diagnostic
+    assert "policy-request-1" in storage.generation.error_diagnostic
 
 
 def test_hybrid_http_boundary_hides_non_chinese_exception_detail() -> None:

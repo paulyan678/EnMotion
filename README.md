@@ -48,10 +48,11 @@ Generated work defaults to:
 <Documents>/enmotion-output/workspaces/<workspace-id>/output/
 ```
 
-Settings, caches, logs, and indexes use the operating system's EnMotion
-application-data directory. Session refresh credentials use macOS Keychain or
-Windows Credential Manager. Application upgrades do not write into either data
-location.
+Settings, caches, logs, indexes, and the revocable session refresh token use the
+operating system's EnMotion application-data directory. The token is stored in
+an EnMotion-only owner-readable file, never in project files, browser
+localStorage, or `AGENTS.md`. EnMotion does not store the account password.
+Application upgrades do not write into the generated-media location.
 
 Set `ENMOTION_OUTPUT_DIR` or use the desktop setting to select a different stable
 output root.

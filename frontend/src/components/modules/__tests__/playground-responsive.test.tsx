@@ -113,7 +113,10 @@ describe("playground responsive layout", () => {
       expect(usePlaygroundStore.getState().activeGenerationIds).toEqual([processing.id]);
     });
     await waitFor(() => {
-      expect(playgroundApi.getGenerationStatus).toHaveBeenCalledWith(processing.id);
+      expect(playgroundApi.getGenerationStatus).toHaveBeenCalledWith(
+        processing.id,
+        { signal: expect.any(AbortSignal) },
+      );
       expect(usePlaygroundStore.getState().history[0]?.status).toBe("completed");
     }, { timeout: 3500 });
   });

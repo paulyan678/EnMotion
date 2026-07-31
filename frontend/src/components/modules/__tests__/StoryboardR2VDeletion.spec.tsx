@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import StoryboardR2V, {
     resolveStoryboardVideoModel,
 } from "@/components/modules/StoryboardR2V";
-import { crudApi } from "@/lib/api";
+import { api, crudApi } from "@/lib/api";
 import { useProjectStore, type Project } from "@/store/projectStore";
 import { useToastStore } from "@/store/toastStore";
 import { renderWithIntl } from "@/test/renderWithIntl";
@@ -14,15 +14,25 @@ vi.mock("@/components/modules/storyboard-r2v/ShotCard", () => ({
     shot,
     index,
     onDelete,
+    onGenerateT2I,
     isDeleting,
   }: {
-    shot: { id: string; prompt: string };
+    shot: {
+      id: string;
+      prompt: string;
+      t2iImageUrl?: string;
+      t2iTaskId?: string;
+      t2iStatus?: string;
+    };
     index: number;
     onDelete: () => void;
+    onGenerateT2I: () => void;
     isDeleting?: boolean;
   }) => (
     <article data-testid={`shot-${shot.id}`}>
       <span>{index + 1}: {shot.prompt}</span>
+      <span>{shot.t2iStatus ?? "idle"}</span>
+      <span>{shot.t2iImageUrl ?? "no-image"}</span>
       <button
         type="button"
         aria-label={shot.id}
@@ -31,6 +41,9 @@ vi.mock("@/components/modules/storyboard-r2v/ShotCard", () => ({
         onClick={onDelete}
       >
         ×
+      </button>
+      <button type="button" aria-label={`生成-${shot.id}`} onClick={onGenerateT2I}>
+        生成
       </button>
     </article>
   ),
@@ -152,5 +165,52 @@ describe("StoryboardR2V frame deletion", () => {
     expect(useToastStore.getState().toasts.at(-1)?.title).not.toContain("media cleanup failed");
     expect(screen.getByText("1: First frame")).toBeInTheDocument();
     expect(useProjectStore.getState().currentProject?.frames).toHaveLength(2);
+  });
+
+  it("uses the completed project frame as T2I output without polling the project id as a task", async () => {
+    seedProject();
+    const generatedFrame = {
+      ...firstFrame,
+      image_url: "storyboard/generated.png",
+      rendered_image_url: "storyboard/generated.png",
+      rendered_image_asset: {
+        selected_id: "generated-variant",
+        variants: [{
+          id: "generated-variant",
+          url: "storyboard/generated.png",
+          created_at: 1,
+        }],
+      },
+      t2i_image_urls: ["storyboard/generated.png"],
+      t2i_selected_index: 0,
+      clip_start_image_id: "generated-variant",
+      clip_start_image_url: "storyboard/generated.png",
+    };
+    const renderSpy = vi.spyOn(api, "renderFrame").mockResolvedValue({
+      ...project,
+      frames: [generatedFrame, secondFrame],
+    });
+    const taskStatusSpy = vi.spyOn(api, "getTaskStatus");
+    renderWithIntl(<StoryboardR2V />, { locale: "en" });
+
+    fireEvent.click(screen.getByRole("button", { name: "生成-frame-delete" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("storyboard/generated.png")).toBeInTheDocument();
+      expect(screen.getByText("completed")).toBeInTheDocument();
+    });
+    expect(renderSpy).toHaveBeenCalledWith(
+      project.id,
+      firstFrame.id,
+      {},
+      firstFrame.action_description,
+      1,
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(taskStatusSpy).not.toHaveBeenCalled();
+    expect(useProjectStore.getState().currentProject?.frames[0]).toMatchObject({
+      id: firstFrame.id,
+      t2i_image_urls: ["storyboard/generated.png"],
+    });
   });
 });

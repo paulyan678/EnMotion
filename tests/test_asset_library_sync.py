@@ -23,9 +23,9 @@ from src.apps.comic_gen.models import (
     VideoVariant,
 )
 from src.apps.comic_gen.pipeline import (
+    FICTIONAL_CHARACTER_PROMPT_NOTICE,
     AssetTypeChangeConflictError,
     ComicGenPipeline,
-    FICTIONAL_CHARACTER_PROMPT_NOTICE,
 )
 from src.models.newapi import (
     INPUT_IMAGE_PRIVACY_ERROR_CODE,
@@ -573,7 +573,12 @@ def test_global_asset_generation_reservation_tracks_and_restores_owner(tmp_path)
 
     task = pipeline.asset_generation_tasks[task_id]
     assert task["asset_source"] == "global"
+    assert task["asset_owner_kind"] == "global"
+    assert task["asset_owner_id"] == "global"
     assert task["asset_is_global_level"] is True
+    task["status"] = "completed"
+    assert pipeline.asset_generation_task_result_asset(task_id) is tester
+    task["status"] = "pending"
     assert tester.status is GenerationStatus.PROCESSING
     assert pipeline.rollback_asset_generation_task(task_id)
     assert tester.status is GenerationStatus.PENDING
@@ -592,6 +597,41 @@ def test_global_asset_generation_reservation_tracks_and_restores_owner(tmp_path)
     pipeline.asset_generator.generate_character.assert_called_once()
     assert tester.status is GenerationStatus.COMPLETED
     assert _pipeline(tmp_path).library_store.characters[0].status is GenerationStatus.COMPLETED
+
+
+def test_episode_asset_task_records_the_exact_series_owner_for_its_result(tmp_path):
+    pipeline = _pipeline(tmp_path)
+    character = Character(
+        id="series-character",
+        name="灯灯",
+        description="Series-owned character",
+    )
+    series = _series("series-1", ["episode-1"], characters=[character])
+    episode = _script(
+        "episode-1",
+        series_id=series.id,
+        episode_number=1,
+    )
+    pipeline.series_store[series.id] = series
+    pipeline.scripts[episode.id] = episode
+
+    with (
+        patch("src.apps.comic_gen.pipeline.get_model_spec"),
+        patch("src.apps.comic_gen.pipeline.resolve_model_api_key"),
+    ):
+        _, task_id = pipeline.create_asset_generation_task(
+            episode.id,
+            character.id,
+            "character",
+            generation_type="reference_sheet",
+            task_id="series-generation-task",
+        )
+
+    task = pipeline.asset_generation_tasks[task_id]
+    assert task["asset_owner_kind"] == "series"
+    assert task["asset_owner_id"] == series.id
+    task["status"] = "completed"
+    assert pipeline.asset_generation_task_result_asset(task_id) is character
 
 
 def test_series_generation_persists_real_primary_image_across_every_payload(
@@ -651,13 +691,9 @@ def test_series_generation_persists_real_primary_image_across_every_payload(
     assert generated_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert character.image_url == generated_url
     assert character.reference_sheet.selected_image_id == "generated-primary"
-    assert pipeline._selected_asset_unit_image_url(character.reference_sheet) == (
-        generated_url
-    )
+    assert pipeline._selected_asset_unit_image_url(character.reference_sheet) == (generated_url)
 
-    overview_asset = pipeline.get_asset_library_overview()["series"][0][
-        "characters"
-    ][0]
+    overview_asset = pipeline.get_asset_library_overview()["series"][0]["characters"][0]
     resolved_project_asset = next(
         asset
         for asset in pipeline.resolve_episode_assets(episode, series)["characters"]
@@ -676,9 +712,7 @@ def test_series_generation_persists_real_primary_image_across_every_payload(
     saved = reloaded.series_store[series.id].characters[0]
     assert saved.image_url == generated_url
     assert saved.reference_sheet.selected_image_id == "generated-primary"
-    assert reloaded._selected_asset_unit_image_url(saved.reference_sheet) == (
-        generated_url
-    )
+    assert reloaded._selected_asset_unit_image_url(saved.reference_sheet) == (generated_url)
 
 
 def test_series_variant_selection_and_deletion_share_one_canonical_record(tmp_path):
@@ -713,9 +747,7 @@ def test_series_variant_selection_and_deletion_share_one_canonical_record(tmp_pa
 
     pipeline = _pipeline(tmp_path)
     migrated = pipeline.series_store[series.id].characters[0]
-    assert pipeline._selected_asset_unit_image_url(migrated.reference_sheet) == (
-        full_body.url
-    )
+    assert pipeline._selected_asset_unit_image_url(migrated.reference_sheet) == (full_body.url)
 
     pipeline.select_asset_variant(
         episode.id,
@@ -727,9 +759,7 @@ def test_series_variant_selection_and_deletion_share_one_canonical_record(tmp_pa
     assert migrated.image_url == full_body.url
     assert migrated.headshot_image_url == headshot.url
     assert migrated.reference_sheet.selected_image_id == full_body.id
-    assert pipeline._selected_asset_unit_image_url(migrated.reference_sheet) == (
-        full_body.url
-    )
+    assert pipeline._selected_asset_unit_image_url(migrated.reference_sheet) == (full_body.url)
 
     pipeline.video_generator.generate_i2v.return_value = {
         "video_url": "videos/full-body-motion.mp4"
@@ -740,9 +770,7 @@ def test_series_variant_selection_and_deletion_share_one_canonical_record(tmp_pa
         "full_body",
         prompt="Animate the full-body master",
     )
-    assert pipeline.video_generator.generate_i2v.call_args.kwargs["image_url"] == (
-        full_body.url
-    )
+    assert pipeline.video_generator.generate_i2v.call_args.kwargs["image_url"] == (full_body.url)
 
     pipeline.delete_asset_variant(
         episode.id,
@@ -751,17 +779,12 @@ def test_series_variant_selection_and_deletion_share_one_canonical_record(tmp_pa
         headshot.id,
     )
     assert migrated.image_url == full_body.url
-    assert all(
-        variant.url != headshot.url
-        for variant in migrated.reference_sheet.image_variants
-    )
+    assert all(variant.url != headshot.url for variant in migrated.reference_sheet.image_variants)
 
     reloaded = _pipeline(tmp_path)
     saved = reloaded.series_store[series.id].characters[0]
     assert saved.image_url == full_body.url
-    assert reloaded._selected_asset_unit_image_url(saved.reference_sheet) == (
-        full_body.url
-    )
+    assert reloaded._selected_asset_unit_image_url(saved.reference_sheet) == (full_body.url)
 
 
 def test_derived_character_upload_and_generation_preserve_existing_master(tmp_path):
@@ -796,9 +819,7 @@ def test_derived_character_upload_and_generation_preserve_existing_master(tmp_pa
     )
     assert character.headshot_image_url == "assets/uploaded-headshot.png"
     assert character.image_url == master.url
-    assert pipeline._selected_asset_unit_image_url(character.reference_sheet) == (
-        master.url
-    )
+    assert pipeline._selected_asset_unit_image_url(character.reference_sheet) == (master.url)
 
     generated = ImageVariant(
         id="generated-three-view",
@@ -825,15 +846,11 @@ def test_derived_character_upload_and_generation_preserve_existing_master(tmp_pa
 
     assert character.three_view_image_url == generated.url
     assert character.image_url == master.url
-    assert pipeline._selected_asset_unit_image_url(character.reference_sheet) == (
-        master.url
-    )
+    assert pipeline._selected_asset_unit_image_url(character.reference_sheet) == (master.url)
     reloaded = _pipeline(tmp_path)
     persisted = reloaded.series_store[series.id].characters[0]
     assert persisted.image_url == master.url
-    assert reloaded._selected_asset_unit_image_url(persisted.reference_sheet) == (
-        master.url
-    )
+    assert reloaded._selected_asset_unit_image_url(persisted.reference_sheet) == (master.url)
 
 
 def test_startup_normalization_keeps_derived_character_views_out_of_master_list(
@@ -871,13 +888,12 @@ def test_startup_normalization_keeps_derived_character_views_out_of_master_list(
 
     pipeline = _pipeline(tmp_path)
     migrated = pipeline.series_store[series.id].characters[0]
-    assert [
-        (variant.id, variant.url)
-        for variant in migrated.reference_sheet.image_variants
-    ] == [(master.id, master.url)]
-    assert [
-        (variant.id, variant.url) for variant in migrated.headshot_asset.variants
-    ] == [(headshot.id, headshot.url)]
+    assert [(variant.id, variant.url) for variant in migrated.reference_sheet.image_variants] == [
+        (master.id, master.url)
+    ]
+    assert [(variant.id, variant.url) for variant in migrated.headshot_asset.variants] == [
+        (headshot.id, headshot.url)
+    ]
 
     with pytest.raises(ValueError, match="Variant headshot not found"):
         pipeline.select_asset_variant(
@@ -920,14 +936,12 @@ def test_startup_normalization_does_not_promote_legacy_three_view_alias(
     migrated = pipeline.series_store[series.id].characters[0]
     assert migrated.image_url == master.url
     assert migrated.reference_sheet.selected_image_id == master.id
-    assert [
-        (variant.id, variant.url)
-        for variant in migrated.reference_sheet.image_variants
-    ] == [(master.id, master.url)]
-    assert [
-        (variant.id, variant.url)
-        for variant in migrated.three_view_asset.variants
-    ] == [(three_view.id, three_view.url)]
+    assert [(variant.id, variant.url) for variant in migrated.reference_sheet.image_variants] == [
+        (master.id, master.url)
+    ]
+    assert [(variant.id, variant.url) for variant in migrated.three_view_asset.variants] == [
+        (three_view.id, three_view.url)
+    ]
 
     reloaded = _pipeline(tmp_path).series_store[series.id].characters[0]
     assert reloaded.image_url == master.url
@@ -955,18 +969,12 @@ def test_startup_normalization_preserves_legacy_master_mirrored_to_avatar(
     pipeline = _pipeline(tmp_path)
     migrated = pipeline.series_store[series.id].characters[0]
     assert migrated.image_url == master_url
-    assert pipeline._selected_asset_unit_image_url(migrated.reference_sheet) == (
-        master_url
-    )
-    assert [
-        variant.url for variant in migrated.reference_sheet.image_variants
-    ] == [master_url]
+    assert pipeline._selected_asset_unit_image_url(migrated.reference_sheet) == (master_url)
+    assert [variant.url for variant in migrated.reference_sheet.image_variants] == [master_url]
 
     reloaded = _pipeline(tmp_path).series_store[series.id].characters[0]
     assert reloaded.image_url == master_url
-    assert pipeline._selected_asset_unit_image_url(reloaded.reference_sheet) == (
-        master_url
-    )
+    assert pipeline._selected_asset_unit_image_url(reloaded.reference_sheet) == (master_url)
 
 
 def test_startup_normalization_preserves_authoritative_same_url_metadata(tmp_path):
@@ -1024,15 +1032,11 @@ def test_startup_image_normalization_is_idempotent_for_reused_variant_ids(
         description="Hero",
         reference_sheet=AssetUnit(
             selected_image_id="reused-id",
-            image_variants=[
-                ImageVariant(id="reused-id", url="assets/master.png")
-            ],
+            image_variants=[ImageVariant(id="reused-id", url="assets/master.png")],
         ),
         full_body_asset=ImageAsset(
             selected_id="reused-id",
-            variants=[
-                ImageVariant(id="reused-id", url="assets/legacy-full-body.png")
-            ],
+            variants=[ImageVariant(id="reused-id", url="assets/legacy-full-body.png")],
         ),
         image_url="assets/master.png",
     )
@@ -1071,9 +1075,7 @@ def test_startup_image_normalization_resolves_deterministic_id_collisions(
         description="Hero",
         reference_sheet=AssetUnit(
             selected_image_id=colliding_id,
-            image_variants=[
-                ImageVariant(id=colliding_id, url="assets/first.png")
-            ],
+            image_variants=[ImageVariant(id=colliding_id, url="assets/first.png")],
         ),
         full_body_asset=ImageAsset(
             selected_id=colliding_id,
@@ -1137,9 +1139,7 @@ def test_variant_deletion_removes_same_url_aliases_from_all_image_containers(
         for variant in migrated.reference_sheet.image_variants
         if variant.url == shared_url
     } == {canonical_alias.id}
-    assert [variant.id for variant in migrated.headshot_asset.variants] == [
-        legacy_alias.id
-    ]
+    assert [variant.id for variant in migrated.headshot_asset.variants] == [legacy_alias.id]
 
     pipeline.delete_asset_variant(
         episode.id,
@@ -1165,10 +1165,7 @@ def test_variant_deletion_removes_same_url_aliases_from_all_image_containers(
 
     reloaded = _pipeline(tmp_path)
     saved = reloaded.series_store[series.id].characters[0]
-    assert all(
-        variant.url != shared_url
-        for variant in saved.reference_sheet.image_variants
-    )
+    assert all(variant.url != shared_url for variant in saved.reference_sheet.image_variants)
     assert saved.image_url == fallback.url
 
 
@@ -1228,19 +1225,13 @@ def test_update_series_asset_image_updates_canonical_container_and_survives_relo
     )
 
     updated = getattr(pipeline.series_store[series.id], collection_name)[0]
-    canonical = (
-        updated.reference_sheet
-        if asset_type == "character"
-        else updated.image_asset
-    )
+    canonical = updated.reference_sheet if asset_type == "character" else updated.image_asset
     assert updated.image_url == new_url
     assert pipeline._selected_variant_url(canonical) == new_url
 
     reloaded = _pipeline(tmp_path)
     saved = getattr(reloaded.series_store[series.id], collection_name)[0]
-    canonical = (
-        saved.reference_sheet if asset_type == "character" else saved.image_asset
-    )
+    canonical = saved.reference_sheet if asset_type == "character" else saved.image_asset
     assert saved.image_url == new_url
     assert reloaded._selected_variant_url(canonical) == new_url
 
@@ -1369,16 +1360,12 @@ def test_source_asset_variant_actions_persist_to_global_owner(tmp_path):
         second.id,
         "reference_sheet",
     )
-    pipeline.delete_source_asset_variant(
-        "global", "global", "character", character.id, first_id
-    )
+    pipeline.delete_source_asset_variant("global", "global", "character", character.id, first_id)
 
     reloaded = _pipeline(tmp_path)
     saved = reloaded.library_store.characters[0]
     assert saved.reference_sheet.selected_image_id == second.id
-    assert [variant.id for variant in saved.reference_sheet.image_variants] == [
-        second.id
-    ]
+    assert [variant.id for variant in saved.reference_sheet.image_variants] == [second.id]
     assert saved.reference_sheet.image_variants[0].is_favorited is True
     assert saved.image_url == second.url
 
@@ -1409,9 +1396,7 @@ def test_asset_type_change_is_atomic_for_unreferenced_exact_owners(tmp_path):
     assert pipeline.library_store.characters == []
     assert pipeline.library_store.scenes == [converted]
 
-    project_character = Character(
-        id="project-character", name="Local", description="Project owned"
-    )
+    project_character = Character(id="project-character", name="Local", description="Project owned")
     episode = _script("episode-1", characters=[project_character])
     pipeline.scripts[episode.id] = episode
     project_prop, project_type = pipeline.update_source_asset(
@@ -1427,9 +1412,7 @@ def test_asset_type_change_is_atomic_for_unreferenced_exact_owners(tmp_path):
 
     shared = Character(id="shared-character", name="Shared", description="Series owned")
     series = _series("series-1", ["series-episode"], characters=[shared])
-    series_episode = _script(
-        "series-episode", series_id=series.id, episode_number=1
-    )
+    series_episode = _script("series-episode", series_id=series.id, episode_number=1)
     pipeline.series_store[series.id] = series
     pipeline.scripts[series_episode.id] = series_episode
     series_scene, series_type = pipeline.update_source_asset(
@@ -1461,20 +1444,14 @@ def test_asset_type_change_is_atomic_for_unreferenced_exact_owners(tmp_path):
 
 
 @pytest.mark.parametrize("source_kind", ["project", "series"])
-def test_asset_type_change_rejects_referenced_project_and_series_assets(
-    tmp_path, source_kind
-):
+def test_asset_type_change_rejects_referenced_project_and_series_assets(tmp_path, source_kind):
     pipeline = _pipeline(tmp_path)
     character = Character(id="character-1", name="Hero", description="Referenced")
     if source_kind == "project":
         episode = _script(
             "episode-1",
             characters=[character],
-            frames=[
-                StoryboardFrame(
-                    id="frame-1", scene_id="", character_ids=[character.id]
-                )
-            ],
+            frames=[StoryboardFrame(id="frame-1", scene_id="", character_ids=[character.id])],
         )
         pipeline.scripts[episode.id] = episode
         source_id = episode.id
@@ -1484,11 +1461,7 @@ def test_asset_type_change_rejects_referenced_project_and_series_assets(
             "episode-1",
             series_id=series.id,
             episode_number=1,
-            frames=[
-                StoryboardFrame(
-                    id="frame-1", scene_id="", character_ids=[character.id]
-                )
-            ],
+            frames=[StoryboardFrame(id="frame-1", scene_id="", character_ids=[character.id])],
         )
         pipeline.series_store[series.id] = series
         pipeline.scripts[episode.id] = episode
@@ -1631,9 +1604,7 @@ def test_asset_type_change_rejects_unsupported_motion_or_audio_media(
 
 
 @pytest.mark.parametrize("source_kind", ["project", "series", "global"])
-def test_restore_asset_reservation_persists_exact_previous_status(
-    tmp_path, source_kind
-):
+def test_restore_asset_reservation_persists_exact_previous_status(tmp_path, source_kind):
     pipeline = _pipeline(tmp_path)
     character = Character(
         id="character-1",
@@ -1689,9 +1660,7 @@ def test_restore_asset_reservation_persists_exact_previous_status(
 
 def test_global_generation_task_persists_prompt_variants_and_status(tmp_path):
     pipeline = _pipeline(tmp_path)
-    scene = pipeline.create_library_asset(
-        "scene", {"name": "Square", "description": "Open plaza"}
-    )
+    scene = pipeline.create_library_asset("scene", {"name": "Square", "description": "Open plaza"})
 
     def generate_scene(target, **kwargs):
         target.image_prompt = kwargs["prompt"]
@@ -1788,14 +1757,11 @@ def test_reference_sheet_favorites_persist_to_series_and_global_owners(tmp_path)
 
     reloaded = _pipeline(tmp_path)
     persisted_series_variant = (
-        reloaded.series_store[series.id]
-        .characters[0]
-        .reference_sheet.image_variants[0]
+        reloaded.series_store[series.id].characters[0].reference_sheet.image_variants[0]
     )
-    persisted_global_variant = (
-        reloaded.library_store.characters[0]
-        .reference_sheet.image_variants[0]
-    )
+    persisted_global_variant = reloaded.library_store.characters[0].reference_sheet.image_variants[
+        0
+    ]
     assert persisted_series_variant.is_favorited is True
     assert persisted_global_variant.is_favorited is True
 
@@ -1868,15 +1834,9 @@ def test_motion_reference_uses_canonical_image_and_persists_shared_owners(tmp_pa
     assert calls[0].kwargs["image_url"] == "uploads/series-canonical.png"
     assert calls[1].kwargs["image_url"] == "uploads/series-headshot.png"
     assert calls[2].kwargs["image_url"] == "uploads/global-canonical.png"
-    assert series_character.full_body.video_variants[0].url == (
-        "videos/series-motion.mp4"
-    )
-    assert series_character.head_shot.video_variants[0].url == (
-        "videos/series-headshot-motion.mp4"
-    )
-    assert global_character.full_body.video_variants[0].url == (
-        "videos/global-motion.mp4"
-    )
+    assert series_character.full_body.video_variants[0].url == ("videos/series-motion.mp4")
+    assert series_character.head_shot.video_variants[0].url == ("videos/series-headshot-motion.mp4")
+    assert global_character.full_body.video_variants[0].url == ("videos/global-motion.mp4")
 
     reloaded = _pipeline(tmp_path)
     persisted_series_character = reloaded.series_store[series.id].characters[0]
@@ -1920,9 +1880,7 @@ def test_motion_reference_task_preflights_shared_asset_and_source_image(tmp_path
             "head_shot",
         )
 
-        assert pipeline.video_generation_tasks[task_id]["asset_id"] == (
-            shared_character.id
-        )
+        assert pipeline.video_generation_tasks[task_id]["asset_id"] == (shared_character.id)
 
         with pytest.raises(ValueError, match="Character missing-character not found"):
             pipeline.create_motion_ref_task(

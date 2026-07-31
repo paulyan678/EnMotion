@@ -1,4 +1,4 @@
-import { act, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,7 +37,9 @@ vi.mock("@/components/layout/ResizableSidePanel", () => ({
 }));
 
 vi.mock("@/components/layout/PipelineSidebar", () => ({
-  default: () => <div data-testid="pipeline-sidebar" />,
+  default: ({ headerActions }: { headerActions?: ReactNode }) => (
+    <div data-testid="pipeline-sidebar">{headerActions}</div>
+  ),
 }));
 vi.mock("@/components/layout/EpisodeMiniList", () => ({ default: () => null }));
 
@@ -51,7 +53,6 @@ vi.mock("@/components/modules/StoryboardComposer", () => ({ default: () => null 
 vi.mock("@/components/modules/StoryboardR2V", () => ({ default: () => null }));
 
 vi.mock("@/components/common/ModelSettingsModal", () => ({ default: () => null }));
-vi.mock("@/components/project/EnvConfigDialog", () => ({ default: () => null }));
 vi.mock("@/components/project/PromptConfigModal", () => ({ default: () => null }));
 vi.mock("@/components/modules/EntityConfirmModal", () => ({ default: () => null }));
 
@@ -129,5 +130,14 @@ describe("ProjectClient asset synchronization", () => {
       );
     });
     expect(getProject).toHaveBeenLastCalledWith(baseProject.id);
+  });
+
+  it("keeps project tools while omitting the redundant API-key action", async () => {
+    renderWithIntl(<ProjectClient id={baseProject.id} />, { locale: "en" });
+
+    await waitFor(() => expect(getProject).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: "API Key & OSS Configuration" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Prompt configuration" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Model settings" })).toBeInTheDocument();
   });
 });

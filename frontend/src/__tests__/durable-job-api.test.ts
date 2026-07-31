@@ -164,4 +164,26 @@ describe("durable server job API compatibility", () => {
 
         await expect(waitForDurableJob("failed-job")).rejects.toThrow("FFmpeg failed");
     });
+
+    it("stops durable polling when the owning screen aborts its request", async () => {
+        const controller = new AbortController();
+        let requests = 0;
+        apiClient.defaults.adapter = async (config) => {
+            requests += 1;
+            return response(config, {
+                task_id: "running-job",
+                status: "running",
+            });
+        };
+
+        const pending = waitForDurableJob("running-job", {
+            pollIntervalMs: 60_000,
+            signal: controller.signal,
+        });
+        await vi.waitFor(() => expect(requests).toBe(1));
+        controller.abort();
+
+        await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+        expect(requests).toBe(1);
+    });
 });

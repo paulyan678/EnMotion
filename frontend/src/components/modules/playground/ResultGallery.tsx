@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Sparkles, Grid3x3, GalleryHorizontal } from 'lucide-react';
 import { usePlaygroundStore, type PlaygroundGeneration } from './usePlaygroundStore';
@@ -20,6 +20,7 @@ import {
   appDateTimeFormatter,
   parseApiTimestamp,
 } from '@/lib/dateTime';
+import { waitForPlaygroundGeneration } from './pollGeneration';
 
 type FilterType = 'all' | 'image' | 'video';
 
@@ -68,6 +69,15 @@ export default function ResultGallery() {
   const [viewMode, setViewMode] = useState<'grid' | 'gallery'>('grid');
   const [detailGen, setDetailGen] = useState<PlaygroundGeneration | null>(null);
   const [detailOutputId, setDetailOutputId] = useState<string | undefined>(undefined);
+  const retryPollControllers = useRef<Set<AbortController>>(new Set());
+
+  useEffect(() => {
+    const controllers = retryPollControllers.current;
+    return () => {
+      for (const controller of controllers) controller.abort();
+      controllers.clear();
+    };
+  }, []);
 
   const handleOpenDetail = useCallback((gen: PlaygroundGeneration, outputId?: string) => {
     setDetailGen(gen);
@@ -110,31 +120,34 @@ export default function ResultGallery() {
         finished_at: resp.finished_at,
       };
       startGeneration(newGen);
-      // Poll for status
-      const poll = setInterval(async () => {
-        try {
-          const s = await playgroundApi.getGenerationStatus(newGen.id);
-          if (s.status === 'completed' || s.status === 'failed') {
-            clearInterval(poll);
-            const full = await playgroundApi.getGeneration(newGen.id);
-            updateGeneration({
-              ...newGen,
-              status: full.status as PlaygroundGeneration['status'],
-              outputs: full.outputs.map((o) => ({
-                id: o.id,
-                media_path: o.media_path,
-                media_type: o.media_type as 'image' | 'video',
-                thumbnail_path: o.thumbnail_path,
-                saved_to_library: o.saved_to_library,
-                library_category: o.library_category,
-              })),
-              error: full.error,
-              updated_at: full.updated_at,
-              finished_at: full.finished_at,
-            });
-          }
-        } catch { clearInterval(poll); }
-      }, 2000);
+      const controller = new AbortController();
+      retryPollControllers.current.add(controller);
+      void waitForPlaygroundGeneration(newGen.id, {
+        signal: controller.signal,
+      }).then((full) => {
+        if (controller.signal.aborted) return;
+        updateGeneration({
+          ...newGen,
+          status: full.status as PlaygroundGeneration['status'],
+          outputs: full.outputs.map((o) => ({
+            id: o.id,
+            media_path: o.media_path,
+            media_type: o.media_type as 'image' | 'video',
+            thumbnail_path: o.thumbnail_path,
+            saved_to_library: o.saved_to_library,
+            library_category: o.library_category,
+          })),
+          error: full.error,
+          updated_at: full.updated_at,
+          finished_at: full.finished_at,
+        });
+      }).catch((error) => {
+        if (!controller.signal.aborted) {
+          console.error('[Playground] Retry poll failed:', error);
+        }
+      }).finally(() => {
+        retryPollControllers.current.delete(controller);
+      });
     } catch (err) {
       console.error('[Playground] Retry failed:', err);
     }

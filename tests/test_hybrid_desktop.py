@@ -1,5 +1,3 @@
-import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
 
@@ -135,9 +133,8 @@ def test_remote_control_plane_requires_https() -> None:
     assert settings.control_plane_url == "http://127.0.0.1:8123"
 
 
-def test_account_switch_invalidates_previous_local_session(monkeypatch) -> None:
-    vault = SessionVault()
-    monkeypatch.setattr(vault, "_keyring", lambda: None)
+def test_account_switch_invalidates_previous_local_session(tmp_path) -> None:
+    vault = SessionVault(credential_path=tmp_path / "refresh-token")
     first = vault.start(
         user=_user("first"),
         access_token="access-first",
@@ -157,9 +154,8 @@ def test_account_switch_invalidates_previous_local_session(monkeypatch) -> None:
         vault.remote_for_user("first")
 
 
-def test_refresh_cannot_change_account_identity(monkeypatch) -> None:
-    vault = SessionVault()
-    monkeypatch.setattr(vault, "_keyring", lambda: None)
+def test_refresh_cannot_change_account_identity(tmp_path) -> None:
+    vault = SessionVault(credential_path=tmp_path / "refresh-token")
     vault.start(
         user=_user("first"),
         access_token="expired",
@@ -180,161 +176,59 @@ def test_refresh_cannot_change_account_identity(monkeypatch) -> None:
         vault.remote_for_user("first")
 
 
-def test_keyring_read_times_out_without_blocking_session_restore(monkeypatch) -> None:
-    entered = threading.Event()
-    release = threading.Event()
-    calls = 0
+def test_refresh_token_persists_across_vault_instances(tmp_path) -> None:
+    path = tmp_path / "refresh-token"
+    first = SessionVault(credential_path=path)
+    first.start(
+        user=_user("persisted-session"),
+        access_token="access",
+        refresh_token="persisted-refresh",
+        expires_in=900,
+    )
 
-    class BlockingKeyring:
+    restored = SessionVault(credential_path=path).persisted_refresh_token_snapshot()
+
+    assert restored is not None
+    assert restored.value == "persisted-refresh"
+    assert restored.generation == 0
+
+
+def test_credential_write_failure_prevents_session_commit(monkeypatch) -> None:
+    class FailingStore:
         @staticmethod
-        def get_password(_service: str, _account: str) -> str:
-            nonlocal calls
-            calls += 1
-            entered.set()
-            release.wait(timeout=1)
-            return "persisted-refresh-token"
+        def write(_value: str) -> None:
+            raise RuntimeError("credential write failed")
 
-    vault = SessionVault(keyring_timeout_seconds=0.02)
-    monkeypatch.setattr(vault, "_keyring", lambda: BlockingKeyring)
+    vault = SessionVault()
+    monkeypatch.setattr(vault, "_credential_store", lambda: FailingStore)
 
-    started = time.monotonic()
-    try:
-        assert vault.persisted_refresh_token() is None
-        assert time.monotonic() - started < 0.5
-        assert entered.wait(timeout=0.5)
-
-        # Repeated browser focus/session probes must not accumulate blocked
-        # Keychain workers while the operating-system prompt is unresolved.
-        assert vault.persisted_refresh_token() is None
-        assert calls == 1
-    finally:
-        release.set()
-
-    deadline = time.monotonic() + 0.5
-    while vault._keyring_read_task is not None and time.monotonic() < deadline:
-        time.sleep(0.005)
-    assert vault.persisted_refresh_token() == "persisted-refresh-token"
-
-
-def test_stuck_keyring_read_does_not_block_set_or_delete(monkeypatch) -> None:
-    read_entered = threading.Event()
-    release_read = threading.Event()
-    set_finished = threading.Event()
-    delete_finished = threading.Event()
-    operations: list[tuple[str, str | None]] = []
-
-    class BlockingReadKeyring:
-        @staticmethod
-        def get_password(_service: str, _account: str) -> str:
-            read_entered.set()
-            release_read.wait(timeout=1)
-            return "persisted-refresh-token"
-
-        @staticmethod
-        def set_password(_service: str, _account: str, value: str) -> None:
-            operations.append(("set", value))
-            set_finished.set()
-
-        @staticmethod
-        def delete_password(_service: str, _account: str) -> None:
-            operations.append(("delete", None))
-            delete_finished.set()
-
-    vault = SessionVault(keyring_timeout_seconds=0.02)
-    monkeypatch.setattr(vault, "_keyring", lambda: BlockingReadKeyring)
-
-    try:
-        assert vault.persisted_refresh_token() is None
-        assert read_entered.wait(timeout=0.5)
-        assert not release_read.is_set()
-
+    with pytest.raises(RuntimeError, match="credential write failed"):
         vault.start(
-            user=_user("read-does-not-starve-writes"),
+            user=_user("failed-login"),
             access_token="access",
             refresh_token="refresh",
             expires_in=900,
         )
-        assert set_finished.wait(timeout=0.5)
-
-        vault.clear()
-        assert delete_finished.wait(timeout=0.5)
-        assert operations == [("set", "refresh"), ("delete", None)]
-        assert not release_read.is_set()
-    finally:
-        release_read.set()
-
-
-@pytest.mark.parametrize("mutation", ["login", "logout"])
-def test_stale_keyring_read_is_discarded_after_credential_mutation(
-    monkeypatch,
-    mutation: str,
-) -> None:
-    read_entered = threading.Event()
-    release_read = threading.Event()
-    write_finished = threading.Event()
-    result: list[object] = []
-
-    class SnapshotKeyring:
-        value: str | None = "stale-refresh"
-
-        @classmethod
-        def get_password(cls, _service: str, _account: str) -> str | None:
-            captured = cls.value
-            read_entered.set()
-            release_read.wait(timeout=1)
-            return captured
-
-        @classmethod
-        def set_password(cls, _service: str, _account: str, value: str) -> None:
-            cls.value = value
-            write_finished.set()
-
-        @classmethod
-        def delete_password(cls, _service: str, _account: str) -> None:
-            cls.value = None
-            write_finished.set()
-
-    vault = SessionVault(keyring_timeout_seconds=0.5)
-    monkeypatch.setattr(vault, "_keyring", lambda: SnapshotKeyring)
-    reader = threading.Thread(
-        target=lambda: result.append(vault.persisted_refresh_token_snapshot())
-    )
-    reader.start()
-    assert read_entered.wait(timeout=0.5)
-
-    if mutation == "login":
-        vault.start(
-            user=_user("replacement-login"),
-            access_token="replacement-access",
-            refresh_token="replacement-refresh",
-            expires_in=900,
-        )
-    else:
-        vault.clear()
-    assert write_finished.wait(timeout=0.5)
-
-    release_read.set()
-    reader.join(timeout=0.5)
-    assert not reader.is_alive()
-    assert result == [None]
+    with pytest.raises(RuntimeError):
+        vault.remote_for_user("failed-login")
 
 
 def test_restore_cannot_overwrite_a_newer_credential_state(monkeypatch) -> None:
-    class ImmediateKeyring:
+    class ImmediateStore:
         @staticmethod
-        def get_password(_service: str, _account: str) -> str:
+        def read() -> str:
             return "persisted-refresh"
 
         @staticmethod
-        def set_password(_service: str, _account: str, _value: str) -> None:
+        def write(_value: str) -> None:
             return None
 
         @staticmethod
-        def delete_password(_service: str, _account: str) -> None:
+        def delete() -> None:
             return None
 
     vault = SessionVault()
-    monkeypatch.setattr(vault, "_keyring", lambda: ImmediateKeyring)
+    monkeypatch.setattr(vault, "_credential_store", lambda: ImmediateStore)
     persisted = vault.persisted_refresh_token_snapshot()
     assert persisted is not None
 
@@ -353,17 +247,17 @@ def test_restore_cannot_overwrite_a_newer_credential_state(monkeypatch) -> None:
 
 
 def test_invalid_restore_cannot_clear_a_newer_login(monkeypatch) -> None:
-    class ImmediateKeyring:
+    class ImmediateStore:
         @staticmethod
-        def get_password(_service: str, _account: str) -> str:
+        def read() -> str:
             return "persisted-refresh"
 
         @staticmethod
-        def set_password(_service: str, _account: str, _value: str) -> None:
+        def write(_value: str) -> None:
             return None
 
     vault = SessionVault()
-    monkeypatch.setattr(vault, "_keyring", lambda: ImmediateKeyring)
+    monkeypatch.setattr(vault, "_credential_store", lambda: ImmediateStore)
     persisted = vault.persisted_refresh_token_snapshot()
     assert persisted is not None
 
@@ -377,84 +271,6 @@ def test_invalid_restore_cannot_clear_a_newer_login(monkeypatch) -> None:
     assert not vault.clear_if_credential_generation(persisted.generation)
     assert vault.get_local(local.token) == local
     assert vault.remote_for_user("newer-login").refresh_token == "newer-refresh"
-
-
-def test_keyring_update_timeout_does_not_block_login(monkeypatch) -> None:
-    entered = threading.Event()
-    release = threading.Event()
-
-    class BlockingKeyring:
-        @staticmethod
-        def set_password(_service: str, _account: str, _value: str) -> None:
-            entered.set()
-            release.wait(timeout=1)
-
-    vault = SessionVault(keyring_timeout_seconds=0.02)
-    monkeypatch.setattr(vault, "_keyring", lambda: BlockingKeyring)
-
-    started = time.monotonic()
-    try:
-        local = vault.start(
-            user=_user("bounded-login"),
-            access_token="access",
-            refresh_token="refresh",
-            expires_in=900,
-        )
-        assert time.monotonic() - started < 0.5
-        assert entered.wait(timeout=0.5)
-        assert vault.get_local(local.token) == local
-    finally:
-        release.set()
-    deadline = time.monotonic() + 0.5
-    while vault._keyring_writer_running and time.monotonic() < deadline:
-        time.sleep(0.005)
-    assert not vault._keyring_writer_running
-
-
-def test_keyring_writes_finish_with_latest_desired_state(monkeypatch) -> None:
-    first_write_entered = threading.Event()
-    release_first_write = threading.Event()
-    operations: list[tuple[str, str | None]] = []
-
-    class BlockingKeyring:
-        @staticmethod
-        def set_password(_service: str, _account: str, value: str) -> None:
-            operations.append(("set-start", value))
-            if not first_write_entered.is_set():
-                first_write_entered.set()
-                release_first_write.wait(timeout=1)
-            operations.append(("set", value))
-
-        @staticmethod
-        def delete_password(_service: str, _account: str) -> None:
-            operations.append(("delete", None))
-
-    vault = SessionVault(keyring_timeout_seconds=0.02)
-    monkeypatch.setattr(vault, "_keyring", lambda: BlockingKeyring)
-
-    vault.start(
-        user=_user("first-write"),
-        access_token="access-first",
-        refresh_token="refresh-first",
-        expires_in=900,
-    )
-    assert first_write_entered.wait(timeout=0.5)
-    vault.start(
-        user=_user("second-write"),
-        access_token="access-second",
-        refresh_token="refresh-second",
-        expires_in=900,
-    )
-    vault.clear()
-    release_first_write.set()
-
-    deadline = time.monotonic() + 0.5
-    while vault._keyring_writer_running and time.monotonic() < deadline:
-        time.sleep(0.005)
-
-    assert operations[-1] == ("delete", None)
-    with pytest.raises(RuntimeError):
-        vault.remote_for_user("second-write")
 
 
 def test_control_plane_accepts_iso_expiry_payload() -> None:

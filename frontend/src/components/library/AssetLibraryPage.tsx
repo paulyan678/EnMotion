@@ -45,6 +45,7 @@ import { useAssetLibraryQuery } from "@/lib/assetLibraryQuery";
 import FavoriteButton from "@/components/assets/FavoriteButton";
 import SharedAssetEditor from "@/components/assets/SharedAssetEditor";
 import type { AssetRef, EditableAsset } from "@/components/assets/assetEditorTypes";
+import GlobalPageHeader from "@/components/layout/GlobalPageHeader";
 import {
   type AssetLibraryFeedItem,
   type AssetLibraryThumbnail,
@@ -879,14 +880,10 @@ export default function AssetLibraryPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Header */}
-      <header className="px-4 md:px-7 pt-5 md:pt-6 pb-3 flex items-end gap-5">
-        <div className="flex-1 min-w-0">
-          <h1 className="text-[1.625rem] md:text-[2.125rem] font-display atelier-display font-semibold text-foreground leading-tight tracking-tight">
-            {t("title")}
-          </h1>
-        </div>
-        <div className="flex items-center gap-2.5 pb-1">
+      <GlobalPageHeader
+        title={t("title")}
+        actions={(
+          <>
           {refreshing && (
             <span className="inline-flex items-center gap-1.5 text-[0.6875rem] text-text-muted">
               <Loader2 size={12} className="animate-spin" />
@@ -904,8 +901,9 @@ export default function AssetLibraryPage() {
             <Plus size={14} />
             {t("newAsset")}
           </button>
-        </div>
-      </header>
+          </>
+        )}
+      />
 
       {/* Toolbar: 视图切换 + 类型 pills（带计数）+ ★ + 搜索 + 排序 */}
       <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 pb-2 md:flex md:flex-wrap md:px-7">

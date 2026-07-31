@@ -47,6 +47,16 @@ INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE = (
     "视频服务商拒绝了所选参考图，因为图片可能包含真人形象。"
     "请选择或生成明显为虚构角色的图片后重试。"
 )
+OUTPUT_VIDEO_POLICY_ERROR_CODE = "output_video_policy"
+OUTPUT_VIDEO_POLICY_PROVIDER_CODE = "OutputVideoSensitiveContentDetected.PolicyViolation"
+OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE = (
+    "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。"
+    "请调整提示词，避免受版权保护的角色、品牌或作品风格后重试。"
+)
+PROVIDER_CONNECTION_ERROR_CODE = "provider_connection_failed"
+PROVIDER_CONNECTION_PUBLIC_MESSAGE = (
+    "暂时无法连接到 AI 服务商。请稍后重试；如果持续失败，请联系管理员检查服务商线路。"
+)
 RATE_CARD_MISSING_ERROR_CODE = "rate_card_missing"
 RATE_CARD_MISSING_PUBLIC_MESSAGE = "当前模型尚未配置计费规则，请联系管理员在管理中心添加后重试。"
 _PHASE_LABELS = {
@@ -129,6 +139,27 @@ def _classified_provider_error(
     """Map known provider failures to stable, non-technical application errors."""
 
     normalized = f"{code} {message}".casefold().replace("_", "")
+    is_provider_connection_failure = (
+        "provider connection failed" in normalized or "providerconnectfailed" in normalized
+    )
+    if is_provider_connection_failure:
+        logger.warning(
+            "无法连接 AI 服务商：阶段=%s HTTP=%s 请求ID=%s",
+            phase,
+            http_status,
+            redact_newapi_secrets(request_id)[:200],
+        )
+        return NewAPIProviderError(
+            PROVIDER_CONNECTION_PUBLIC_MESSAGE,
+            error_code=PROVIDER_CONNECTION_ERROR_CODE,
+            provider_code=code or PROVIDER_CONNECTION_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
     if "no active rate card" in normalized:
         logger.warning(
             "账号服务缺少计费规则：阶段=%s HTTP=%s 请求ID=%s",
@@ -140,6 +171,30 @@ def _classified_provider_error(
             RATE_CARD_MISSING_PUBLIC_MESSAGE,
             error_code=RATE_CARD_MISSING_ERROR_CODE,
             provider_code=code,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    is_output_video_policy = OUTPUT_VIDEO_POLICY_PROVIDER_CODE.casefold() in normalized or (
+        "outputvideo" in normalized
+        and ("policyviolation" in normalized or "copyright" in normalized)
+    )
+    if is_output_video_policy:
+        logger.warning(
+            "AI 视频输出被服务商政策拒绝：阶段=%s HTTP=%s 错误代码=%s " "请求ID=%s 任务ID=%s",
+            phase,
+            http_status,
+            redact_newapi_secrets(code)[:200],
+            redact_newapi_secrets(request_id)[:200],
+            redact_newapi_secrets(provider_task_id)[:200],
+        )
+        return NewAPIProviderError(
+            OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE,
+            error_code=OUTPUT_VIDEO_POLICY_ERROR_CODE,
+            provider_code=code or OUTPUT_VIDEO_POLICY_PROVIDER_CODE,
             provider_message=message,
             http_status=http_status,
             request_id=request_id,

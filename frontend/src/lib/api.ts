@@ -3,7 +3,6 @@ import { API_URL } from "@/lib/apiUrl";
 import type { FrameMovementType } from "@/lib/frameMovement";
 import type { NewApiSecretField } from "@/lib/newApiModels";
 import { notifyAssetUsageChanged } from "@/lib/assetLibrarySync";
-import { authApi, type AccountUsageItem } from "@/lib/authApi";
 import { isHybridModeEnabled } from "@/lib/serverMode";
 import { getAssetUrl } from "@/lib/utils";
 import { apiTimestampMilliseconds } from "@/lib/dateTime";
@@ -282,11 +281,8 @@ export interface ApiCallActivity {
     updated_at: string;
     started_at?: string | null;
     finished_at?: string | null;
-    /** Managed billing history is immutable from the desktop client. */
+    /** Server-managed activity is immutable from the desktop client. */
     managed_read_only?: boolean;
-    /** Billing settlement and application generation are separate activities. */
-    activity_kind?: "billing" | "generation";
-    billing_status?: string | null;
 }
 
 const DURABLE_JOB_POLL_INTERVAL_MS = 1000;
@@ -301,8 +297,24 @@ function isDurableJobMarker(value: unknown): value is DurableJobMarker {
     );
 }
 
-function wait(delayMs: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, delayMs));
+function abortedOperationError(signal: AbortSignal): unknown {
+    return signal.reason ?? new DOMException("Operation was aborted", "AbortError");
+}
+
+function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) return new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (signal.aborted) return Promise.reject(abortedOperationError(signal));
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", handleAbort);
+            resolve();
+        }, delayMs);
+        const handleAbort = () => {
+            clearTimeout(timer);
+            reject(abortedOperationError(signal));
+        };
+        signal.addEventListener("abort", handleAbort, { once: true });
+    });
 }
 
 /**
@@ -311,14 +323,23 @@ function wait(delayMs: number): Promise<void> {
  */
 export async function waitForDurableJob(
     jobId: string,
-    options: { pollIntervalMs?: number; timeoutMs?: number } = {},
+    options: {
+        pollIntervalMs?: number;
+        timeoutMs?: number;
+        signal?: AbortSignal;
+    } = {},
 ): Promise<DurableJobStatus> {
     const pollIntervalMs = options.pollIntervalMs ?? DURABLE_JOB_POLL_INTERVAL_MS;
     const timeoutMs = options.timeoutMs ?? DURABLE_JOB_TIMEOUT_MS;
+    const signal = options.signal;
     const startedAt = Date.now();
 
     while (true) {
-        const response = await axios.get<DurableJobStatus>(`${API_URL}/jobs/${jobId}`);
+        if (signal?.aborted) throw abortedOperationError(signal);
+        const response = await axios.get<DurableJobStatus>(
+            `${API_URL}/jobs/${jobId}`,
+            { signal },
+        );
         const job = response.data;
         if (job.status === "completed") return job;
         if (job.status === "failed" || job.status === "canceled") {
@@ -327,14 +348,20 @@ export async function waitForDurableJob(
         if (Date.now() - startedAt >= timeoutMs) {
             throw new Error("等待服务器任务完成超时");
         }
-        await wait(pollIntervalMs);
+        await wait(pollIntervalMs, signal);
     }
 }
 
-async function resolveProjectJobResponse<T>(data: T, scriptId: string): Promise<T> {
+async function resolveProjectJobResponse<T>(
+    data: T,
+    scriptId: string,
+    options: { signal?: AbortSignal } = {},
+): Promise<T> {
     if (!isDurableJobMarker(data)) return data;
-    await waitForDurableJob(data.task_id);
-    const response = await axios.get(`${API_URL}/projects/${scriptId}`);
+    await waitForDurableJob(data.task_id, options);
+    const response = await axios.get(`${API_URL}/projects/${scriptId}`, {
+        signal: options.signal,
+    });
     return { ...response.data, originalText: response.data.original_text } as T;
 }
 
@@ -513,8 +540,13 @@ export const api = {
         return res.data.map((p: any) => ({ ...p, originalText: p.original_text }));
     },
 
-    getProject: async (scriptId: string) => {
-        const res = await axios.get(`${API_URL}/projects/${scriptId}`);
+    getProject: async (
+        scriptId: string,
+        options: { signal?: AbortSignal } = {},
+    ) => {
+        const res = await axios.get(`${API_URL}/projects/${scriptId}`, {
+            signal: options.signal,
+        });
         return { ...res.data, originalText: res.data.original_text };
     },
 
@@ -760,8 +792,13 @@ export const api = {
         return res.data;
     },
 
-    getTaskStatus: async (taskId: string) => {
-        const res = await axios.get(`${API_URL}/tasks/${taskId}`);
+    getTaskStatus: async (
+        taskId: string,
+        options: { signal?: AbortSignal } = {},
+    ) => {
+        const res = await axios.get(`${API_URL}/tasks/${taskId}`, {
+            signal: options.signal,
+        });
         return res.data;
     },
 
@@ -1036,14 +1073,23 @@ export const api = {
         return res.data;
     },
 
-    renderFrame: async (scriptId: string, frameId: string, compositionData: any, prompt: string, batchSize: number = 1) => {
+    renderFrame: async (
+        scriptId: string,
+        frameId: string,
+        compositionData: any,
+        prompt: string,
+        batchSize: number = 1,
+        options: { signal?: AbortSignal } = {},
+    ) => {
         const res = await axios.post(`${API_URL}/projects/${scriptId}/storyboard/render`, {
             frame_id: frameId,
             composition_data: compositionData,
             prompt: prompt,
             batch_size: batchSize
+        }, {
+            signal: options.signal,
         });
-        return resolveProjectJobResponse(res.data, scriptId);
+        return resolveProjectJobResponse(res.data, scriptId, options);
     },
 
     // === STORYBOARD DRAMATIZATION v2 ===
@@ -1852,54 +1898,8 @@ export const crudApi = {
 
 // ─── Central API activity monitor ───────────────────────────────────────────
 
-function accountUsageStatus(status: string): ApiCallStatus {
-  const normalized = status.trim().toLowerCase();
-  if (normalized === "failed") return "failed";
-  if (normalized === "canceled" || normalized === "cancelled") return "canceled";
-  if ([
-    "settled",
-    "completed",
-    "captured",
-    "succeeded",
-    "released",
-    "refunded",
-  ].includes(normalized)) return "completed";
-  return "running";
-}
-
-function accountUsageCategory(operation: string): ApiCallCategory {
-  if (operation.startsWith("images.")) return "image";
-  if (operation.startsWith("video.")) return "video";
-  if (operation.startsWith("chat.")) return "text";
-  return "other";
-}
-
-function accountUsageActivity(item: AccountUsageItem): ApiCallActivity {
-  const status = accountUsageStatus(item.status);
-  const terminal = ["completed", "failed", "canceled"].includes(status);
-  return {
-    id: `billing:${item.id}`,
-    task_id: item.id,
-    type: item.operation,
-    status,
-    category: accountUsageCategory(item.operation),
-    source: "workspace",
-    progress: status === "completed" ? 100 : status === "running" ? 50 : 0,
-    progress_is_estimated: status === "running",
-    error_code: item.error_code ?? null,
-    model_name: item.model,
-    attempts: 1,
-    created_at: item.created_at,
-    updated_at: item.settled_at || item.created_at,
-    started_at: item.created_at,
-    finished_at: terminal ? item.settled_at || item.created_at : null,
-    managed_read_only: true,
-    activity_kind: "billing",
-    billing_status: item.status,
-  };
-}
-
 const PLAYGROUND_ACTIVITY_PREFIX = "playground:";
+const HYBRID_ACTIVITY_PREFIX = "hybrid:";
 
 function playgroundActivityStatus(status: string): ApiCallStatus {
   if (status === "pending") return "queued";
@@ -1969,6 +1969,8 @@ function playgroundActivity(item: PlaygroundGenerationResponse): ApiCallActivity
     progress_is_estimated: status === "running",
     progress_steps: steps,
     error: item.error ?? null,
+    error_code: item.error_code ?? null,
+    error_diagnostic: item.error_diagnostic ?? null,
     prompt: item.prompt,
     model_name: item.model_id,
     parameters: primitiveParameters(item.parameters),
@@ -1999,20 +2001,13 @@ function playgroundActivity(item: PlaygroundGenerationResponse): ApiCallActivity
     started_at: status === "queued" ? null : item.created_at,
     finished_at: terminal ? lifecycleUpdatedAt : null,
     managed_read_only: true,
-    activity_kind: "generation",
-    billing_status: null,
   };
 }
 
 export const apiCallsApi = {
   list: async (limit = 200): Promise<ApiCallActivity[]> => {
     if (isHybridModeEnabled()) {
-      const [billing, playground, localActivity] = await Promise.all([
-        authApi.accountUsage(
-          Math.min(limit, 100),
-          undefined,
-          API_ACTIVITY_SOURCE_TIMEOUT_MS,
-        ),
+      const [playground, localActivity] = await Promise.all([
         axios.get<PlaygroundGenerationResponse[]>(`${API_URL}/playground/history`, {
           params: { limit, offset: 0 },
           timeout: API_ACTIVITY_SOURCE_TIMEOUT_MS,
@@ -2025,7 +2020,6 @@ export const apiCallsApi = {
       const activities = [
         ...localActivity.data,
         ...playground.data.map(playgroundActivity),
-        ...billing.items.map(accountUsageActivity),
       ];
       return activities
         .sort(
@@ -2052,7 +2046,20 @@ export const apiCallsApi = {
   dismiss: (jobId: string) =>
     axios.delete<void>(`${API_URL}/jobs/${jobId}`).then(() => undefined),
 
-  download: async (jobId: string, outputId: string) => {
+  download: async (jobId: string, outputId: string, mediaPath?: string) => {
+    if (jobId.startsWith(HYBRID_ACTIVITY_PREFIX)) {
+      if (!mediaPath) throw new Error("Hybrid output path is unavailable");
+      const response = await apiFetch(getAssetUrl(mediaPath));
+      if (!response.ok) {
+        throw new Error(`Hybrid output download failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      if (blob.size === 0) throw new Error("Hybrid output download was empty");
+      return {
+        blob,
+        filename: mediaPath.split("/").pop() || `enmotion-output-${outputId}`,
+      };
+    }
     if (jobId.startsWith(PLAYGROUND_ACTIVITY_PREFIX)) {
       const generationId = jobId.slice(PLAYGROUND_ACTIVITY_PREFIX.length);
       const generation = await axios
@@ -2115,6 +2122,8 @@ export interface PlaygroundGenerationResponse {
   }>;
   status: string;
   error?: string;
+  error_code?: string | null;
+  error_diagnostic?: string | null;
   created_at: string;
   updated_at?: string;
   finished_at?: string | null;
@@ -2142,11 +2151,17 @@ export const playgroundApi = {
   getHistory: (limit = 50, offset = 0) =>
     axios.get<PlaygroundGenerationResponse[]>(API_URL + "/playground/history", { params: { limit, offset } }).then(r => r.data),
 
-  getGeneration: (id: string) =>
-    axios.get<PlaygroundGenerationResponse>(API_URL + "/playground/history/" + id).then(r => r.data),
+  getGeneration: (id: string, options: { signal?: AbortSignal } = {}) =>
+    axios.get<PlaygroundGenerationResponse>(
+      API_URL + "/playground/history/" + id,
+      { signal: options.signal },
+    ).then(r => r.data),
 
-  getGenerationStatus: (id: string) =>
-    axios.get<{ id: string; status: string; outputs: any[]; error?: string }>(API_URL + "/playground/history/" + id + "/status").then(r => r.data),
+  getGenerationStatus: (id: string, options: { signal?: AbortSignal } = {}) =>
+    axios.get<{ id: string; status: string; outputs: any[]; error?: string }>(
+      API_URL + "/playground/history/" + id + "/status",
+      { signal: options.signal },
+    ).then(r => r.data),
 
   deleteGeneration: (id: string) =>
     axios.delete(API_URL + "/playground/history/" + id).then(r => r.data),
