@@ -5,22 +5,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ..web_runtime.workspace_paths import workspace_output_root
 from .database import Database
 from .models import Workspace
 
 
 class StorageQuotaExceededError(RuntimeError):
     pass
-
-
-def workspace_output_root(workspace_id: str) -> Path:
-    if not workspace_id or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in workspace_id):
-        raise ValueError("Invalid workspace id")
-    root = Path(os.getenv("ENMOTION_WORKSPACE_ROOT", "data/workspaces")).expanduser().resolve()
-    output = (root / workspace_id / "output").resolve()
-    if root not in output.parents:
-        raise ValueError("Workspace path escapes the configured root")
-    return output
 
 
 def workspace_usage_bytes(workspace_id: str) -> int:

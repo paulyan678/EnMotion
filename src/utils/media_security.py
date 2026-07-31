@@ -77,7 +77,7 @@ def current_workspace_output_root() -> Path:
     """Return the authenticated workspace root, failing closed outside a tenant."""
 
     from ..apps.web_runtime.context import get_tenant
-    from ..apps.server.quotas import workspace_output_root
+    from ..apps.web_runtime.workspace_paths import workspace_output_root
 
     tenant = get_tenant(required=True)
     assert tenant is not None

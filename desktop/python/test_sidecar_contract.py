@@ -17,6 +17,21 @@ def encode(payload: dict[str, object]) -> str:
 
 
 class RuntimeContractTests(unittest.TestCase):
+    def test_workspace_snapshot_uses_server_neutral_path_module(self) -> None:
+        repository_root = Path(sidecar.__file__).resolve().parents[2]
+        snapshot_source = (
+            repository_root / "src/apps/web_runtime/workspace_snapshot.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "from .workspace_paths import workspace_output_root",
+            snapshot_source,
+        )
+        self.assertNotIn("from ..server.quotas", snapshot_source)
+
+        from src.apps.web_runtime.workspace_paths import workspace_output_root
+
+        self.assertEqual(workspace_output_root("workspace-a").name, "output")
+
     def test_starlette_is_not_imported_on_the_frozen_module_critical_path(self) -> None:
         source = Path(sidecar.__file__).read_text(encoding="utf-8")
         self.assertNotIn("from starlette.requests import Request", source.splitlines())
