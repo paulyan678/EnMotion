@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { ChevronDown, Loader2, Video, X } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -39,6 +39,12 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
     const [isSavingFrameType, setIsSavingFrameType] = useState(false);
     const [frameTypeError, setFrameTypeError] = useState("");
     const dialogRef = useModalFocusTrap<HTMLDivElement>(onClose);
+    const renderControllerRef = useRef<AbortController | null>(null);
+
+    useEffect(() => () => {
+        renderControllerRef.current?.abort();
+        renderControllerRef.current = null;
+    }, []);
 
     // Adjust before rendering children when the store replaces this frame's
     // prompt. Local edits remain intact while the external value is stable.
@@ -54,6 +60,10 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
 
     const handleGenerate = async (batchSize: number) => {
         if (!currentProject) return;
+        const projectId = currentProject.id;
+        renderControllerRef.current?.abort();
+        const controller = new AbortController();
+        renderControllerRef.current = controller;
 
         setIsGenerating(true);
         try {
@@ -63,18 +73,25 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
             // If we don't pass it, pipeline uses existing.
 
             const updatedProject = await api.renderFrame(
-                currentProject.id,
+                projectId,
                 frame.id,
                 null, // Use existing composition data
                 prompt,
-                batchSize
+                batchSize,
+                { signal: controller.signal },
             );
-            updateProject(currentProject.id, updatedProject);
+            if (!controller.signal.aborted) {
+                updateProject(projectId, updatedProject);
+            }
         } catch (error) {
+            if (controller.signal.aborted) return;
             console.error("Failed to generate frame:", error);
             alert(ts("generateFailed"));
         } finally {
-            setIsGenerating(false);
+            if (renderControllerRef.current === controller) {
+                renderControllerRef.current = null;
+                setIsGenerating(false);
+            }
         }
     };
 

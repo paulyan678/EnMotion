@@ -18,14 +18,12 @@ redis==6.4.0
 # AI/ML Models
 openai==2.46.0  # OpenAI-compatible client used by New API chat models
 
-# Desktop Runtime
-keyring==25.7.0
-
 # Data Validation & Processing
 pydantic==2.13.4
 pydantic-settings==2.14.2
 
 # Utilities
+cryptography==48.0.1
 python-dotenv==1.2.2
 requests==2.34.2
 pyyaml==6.0.3

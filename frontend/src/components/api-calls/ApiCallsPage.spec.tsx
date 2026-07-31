@@ -111,31 +111,6 @@ const completedWithMedia: ApiCallActivity = {
   finished_at: "2026-07-21T08:00:12.000Z",
 };
 
-const failedBilling: ApiCallActivity = {
-  id: "billing:usage-failed",
-  task_id: "usage-failed",
-  type: "images.generations",
-  status: "failed",
-  category: "image",
-  source: "workspace",
-  progress: 0,
-  attempts: 1,
-  created_at: "2026-07-21T08:00:00.000Z",
-  updated_at: "2026-07-21T08:00:05.000Z",
-  finished_at: "2026-07-21T08:00:05.000Z",
-  managed_read_only: true,
-  activity_kind: "billing",
-  billing_status: "failed",
-};
-
-const canceledBilling: ApiCallActivity = {
-  ...failedBilling,
-  id: "billing:usage-canceled",
-  task_id: "usage-canceled",
-  status: "canceled",
-  billing_status: "cancelled",
-};
-
 describe("API Calls dashboard", () => {
   beforeEach(() => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([running, queued, failed]);
@@ -184,6 +159,34 @@ describe("API Calls dashboard", () => {
     expect(screen.queryByText("Track generation requests from the Playground, Workspace, and other tools in one place.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
     expect(apiCallsApi.list).toHaveBeenCalledWith();
+  });
+
+  it("shows a localized actionable message for output video policy failures", async () => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([{
+      ...failed,
+      error_code: "output_video_policy",
+      error: "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。",
+    }]);
+
+    renderWithIntl(<ApiCallsPage />, { locale: "en" });
+
+    expect(await screen.findByText(
+      "The video provider rejected the generated result because it may violate content or copyright policy. Adjust the prompt to avoid protected characters, brands, or recognizable work styles, then retry.",
+    )).toBeInTheDocument();
+  });
+
+  it("shows a localized actionable message for provider connection failures", async () => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([{
+      ...failed,
+      error_code: "provider_connection_failed",
+      error: "暂时无法连接到 AI 服务商。",
+    }]);
+
+    renderWithIntl(<ApiCallsPage />, { locale: "en" });
+
+    expect(await screen.findByText(
+      "EnMotion could not reach the AI provider. Try again shortly; if it continues, ask an administrator to check the provider route.",
+    )).toBeInTheDocument();
   });
 
   it("marks a newly created queued request as canceled without offering retry", async () => {
@@ -306,6 +309,28 @@ describe("API Calls dashboard", () => {
     expect(within(card as HTMLElement).queryByText("Queued")).not.toBeInTheDocument();
   });
 
+  it("keeps one activity refresh in flight across repeated visibility events", async () => {
+    let resolveList!: (jobs: ApiCallActivity[]) => void;
+    const pendingList = new Promise<ApiCallActivity[]>((resolve) => {
+      resolveList = resolve;
+    });
+    vi.mocked(apiCallsApi.list).mockReturnValue(pendingList);
+
+    const view = renderWithIntl(<ApiCallsPage />, { locale: "en" });
+    await waitFor(() => expect(apiCallsApi.list).toHaveBeenCalledTimes(1));
+
+    fireEvent(document, new Event("visibilitychange"));
+    fireEvent(document, new Event("visibilitychange"));
+    fireEvent(document, new Event("visibilitychange"));
+    expect(apiCallsApi.list).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveList([]);
+      await pendingList;
+    });
+    view.unmount();
+  });
+
   it("renders a complete Chinese interface when Chinese is selected", async () => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([]);
     renderWithIntl(<ApiCallsPage />, { locale: "zh" });
@@ -314,6 +339,8 @@ describe("API Calls dashboard", () => {
     expect(title.previousElementSibling).toBeNull();
     expect(title).toHaveAttribute("data-global-page-title");
     expect(title).toHaveClass("text-[1.625rem]", "md:text-[2.125rem]");
+    expect(title.closest("header")).toHaveAttribute("data-global-page-header");
+    expect(title.closest("header")).not.toHaveClass("border-b");
     expect(screen.queryByText("接口活动 · 实时监控")).not.toBeInTheDocument();
     expect(screen.queryByText("集中查看创作台、工作区及其他功能发起的所有生成请求。")).not.toBeInTheDocument();
     expect(screen.queryByText("实时更新")).not.toBeInTheDocument();
@@ -387,46 +414,6 @@ describe("API Calls dashboard", () => {
     expect(screen.getByText("技术详情")).toBeInTheDocument();
   });
 
-  it("shows a failed billing outcome without presenting it as a generation failure", async () => {
-    vi.mocked(apiCallsApi.list).mockResolvedValue([failedBilling]);
-    renderWithIntl(<ApiCallsPage />, { locale: "en" });
-
-    const card = await screen.findByRole("button", { name: "Open details for Image generation" });
-    expect(within(card).getByText("Billing record")).toBeInTheDocument();
-    expect(within(card).getByText("Billing outcome: Failed")).toBeInTheDocument();
-    expect(within(card).getByText("Failed")).toBeInTheDocument();
-    expect(within(card).queryByText("Succeeded")).not.toBeInTheDocument();
-    expect(within(card).queryByText("The request failed. Check the input and try again.")).not.toBeInTheDocument();
-
-    fireEvent.click(card);
-    const dialog = screen.getByRole("dialog", { name: "Image generation" });
-    expect(within(dialog).getByText("Billing outcome")).toBeInTheDocument();
-    expect(within(dialog).getByText(
-      "This account record tracks credit settlement, not generation progress or outputs.",
-    )).toBeInTheDocument();
-    expect(within(dialog).queryByText("Failure reason:")).not.toBeInTheDocument();
-    expect(within(dialog).queryByText("Processing timeline")).not.toBeInTheDocument();
-  });
-
-  it("shows a canceled billing outcome in Chinese on both card and detail", async () => {
-    vi.mocked(apiCallsApi.list).mockResolvedValue([canceledBilling]);
-    renderWithIntl(<ApiCallsPage />, { locale: "zh" });
-
-    const card = await screen.findByRole("button", { name: "打开图像生成的详情" });
-    expect(within(card).getByText("账务记录")).toBeInTheDocument();
-    expect(within(card).getByText("账务结果：已取消")).toBeInTheDocument();
-    expect(within(card).getByText("已取消")).toBeInTheDocument();
-    expect(within(card).queryByText("已成功")).not.toBeInTheDocument();
-
-    fireEvent.click(card);
-    const dialog = screen.getByRole("dialog", { name: "图像生成" });
-    expect(within(dialog).getByText("账务结果")).toBeInTheDocument();
-    expect(within(dialog).getByText(
-      "此账户记录仅反映额度结算，不代表生成进度或生成结果。",
-    )).toBeInTheDocument();
-    expect(within(dialog).queryByText("处理时间线")).not.toBeInTheDocument();
-  });
-
   it("renders persisted image and video media, posters, and individual downloads", async () => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([completedWithMedia]);
     const createObjectURL = vi.fn(() => "blob:download");
@@ -449,7 +436,11 @@ describe("API Calls dashboard", () => {
     expect(video).toHaveAttribute("poster", expect.stringContaining("playground/video_thumbnails/harbor.jpg"));
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Download harbor.png" }));
-    await waitFor(() => expect(apiCallsApi.download).toHaveBeenCalledWith("completed-media", "image-output"));
+    await waitFor(() => expect(apiCallsApi.download).toHaveBeenCalledWith(
+      "completed-media",
+      "image-output",
+      "playground/images/harbor.png",
+    ));
     expect(createObjectURL).toHaveBeenCalled();
     expect(click).toHaveBeenCalled();
 

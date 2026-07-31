@@ -452,26 +452,6 @@
     "loadError": "Could not update API activity",
     "actionError": "The request action could not be completed. Please try again.",
     "downloadError": "The output could not be downloaded. Please try again.",
-    "billing": {
-      "record": "Billing record",
-      "outcome": "Billing outcome: {status}",
-      "statusLabel": "Billing outcome",
-      "description": "This account record tracks credit settlement, not generation progress or outputs.",
-      "statuses": {
-        "settled": "Settled",
-        "completed": "Completed",
-        "captured": "Charged",
-        "succeeded": "Succeeded",
-        "reserved": "Credits reserved",
-        "processing": "Processing",
-        "pendingReconciliation": "Awaiting settlement",
-        "released": "Released",
-        "refunded": "Refunded",
-        "failed": "Failed",
-        "canceled": "Canceled",
-        "other": "Processing"
-      }
-    },
     "dismissError": "Dismiss error",
     "filterAria": "Filter API calls by status",
     "emptyTitle": "No API calls here",
@@ -541,6 +521,8 @@
     },
     "errors": {
       "inputImagePrivacy": "The video provider rejected this reference image because it may appear to show a real person. Select or generate a clearly fictional character image, then retry.",
+      "outputVideoPolicy": "The video provider rejected the generated result because it may violate content or copyright policy. Adjust the prompt to avoid protected characters, brands, or recognizable work styles, then retry.",
+      "providerConnection": "EnMotion could not reach the AI provider. Try again shortly; if it continues, ask an administrator to check the provider route.",
       "requestFailed": "The request failed. Check the input and try again."
     },
     "parameterKeys": {
@@ -556,6 +538,7 @@
       "audio": "Audio",
       "watermark": "Watermark",
       "prompt_extend": "Prompt extension",
+      "generation_mode": "Generation mode",
       "unknown": "Parameter"
     },
     "parameterValues": {

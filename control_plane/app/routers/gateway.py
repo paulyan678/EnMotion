@@ -39,6 +39,7 @@ router = APIRouter(prefix="/gateway", tags=["provider gateway"])
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _TASK_ID = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 
+
 _ALLOWED_JSON_FIELDS: dict[str, set[str]] = {
     "chat.completions": {
         "model",
@@ -149,9 +150,7 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
     if operation == "video.generations":
         metadata = body.get("metadata")
         if not isinstance(metadata, dict):
-            raise HTTPException(
-                UNPROCESSABLE_CONTENT, "video metadata must be an object"
-            )
+            raise HTTPException(UNPROCESSABLE_CONTENT, "video metadata must be an object")
         metadata_unknown = set(metadata) - _ALLOWED_VIDEO_METADATA
         if metadata_unknown:
             raise HTTPException(
@@ -222,9 +221,7 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
         if "seed" in metadata and (
             isinstance(metadata["seed"], bool) or not isinstance(metadata["seed"], int)
         ):
-            raise HTTPException(
-                UNPROCESSABLE_CONTENT, "video seed must be an integer"
-            )
+            raise HTTPException(UNPROCESSABLE_CONTENT, "video seed must be an integer")
         if resolution == "1080p" and (
             image_parts or body.get("model") != "doubao-seedance-2-0-260128"
         ):
@@ -572,7 +569,10 @@ async def _send_billable(
             reason="provider connection failed before acceptance",
             error_code="provider_connect_failed",
         )
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "provider connection failed") from exc
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "provider connection failed",
+        ) from exc
     except httpx.RequestError as exc:
         await run_in_threadpool(
             _pending,

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .activity import backfill_asset_activity, list_activity
+from .activity import list_activity
 from .client import ControlPlaneClient, ControlPlaneError
 from .config import HybridSettings
 from .session import (
@@ -232,7 +232,6 @@ def activity_history(
     """Return local hybrid generation lifecycles without the workspace writer lock."""
 
     local = _required_session(request)
-    backfill_asset_activity(local.user.workspace_id)
     return list_activity(local.user.workspace_id, limit=limit)
 
 

@@ -186,6 +186,17 @@ export default function StoryboardR2V() {
     >>(new Map());
     const workbenchInFlightRef = useRef<Map<string, Set<Promise<void>>>>(new Map());
     const fieldPendingRef = useRef<Map<string, { timer: number; fields: Record<string, any> }>>(new Map());
+    const t2iRenderControllersRef = useRef<Map<string, AbortController>>(new Map());
+
+    useEffect(() => {
+        const controllers = t2iRenderControllersRef.current;
+        return () => {
+            for (const controller of controllers.values()) {
+                controller.abort();
+            }
+            controllers.clear();
+        };
+    }, [currentProject?.id]);
 
     // Inline per-shot validation errors are shown before submission.
     const [shotErrors, setShotErrors] = useState<Record<string, string>>({});
@@ -947,47 +958,68 @@ export default function StoryboardR2V() {
     const generateT2I = useCallback(async (index: number) => {
         const shot = shots[index];
         if (!currentProject || !shot.prompt.trim()) return;
+        const projectId = currentProject.id;
+        const controller = new AbortController();
+        t2iRenderControllersRef.current.get(shot.id)?.abort();
+        t2iRenderControllersRef.current.set(shot.id, controller);
 
         setShots(prev => prev.map((s, i) =>
-            i === index ? { ...s, t2iStatus: "pending" } : s
+            i === index ? { ...s, t2iTaskId: undefined, t2iStatus: "pending" } : s
         ));
 
         try {
             const result = await api.renderFrame(
-                currentProject.id,
+                projectId,
                 shot.id,
                 {},  // compositionData (empty for now)
                 cleanPrompt(shot.prompt),
-                1    // batchSize
+                1,   // batchSize
+                { signal: controller.signal },
             );
+            if (controller.signal.aborted) return;
 
-            if (result?.task_id || result?.id) {
-                const taskId = result.task_id || result.id;
-                setShots(prev => prev.map((s, i) =>
-                    i === index ? { ...s, t2iTaskId: taskId, t2iStatus: "processing" } : s
-                ));
-            } else if (result?.image_url || result?.rendered_image_url) {
-                // Immediate result (synchronous render). Append to T2I
-                // history + auto-select so the new image becomes the
-                // active首帧 used by downstream I2V generation.
-                const imageUrl = result.image_url || result.rendered_image_url;
-                setShots(prev => prev.map((s, i) => {
-                    if (i !== index) return s;
-                    const updated = appendT2IImage({ ...s, t2iStatus: "completed" }, imageUrl);
-                    persistWorkbench(s.id, {
-                        t2i_image_urls: updated.t2iImageUrls ?? [],
-                        t2i_selected_index: updated.t2iSelectedIndex ?? 0,
-                    });
-                    return updated;
-                }));
+            const generatedFrame = result?.frames?.find(
+                (frame: { id?: string }) => frame.id === shot.id,
+            );
+            if (!generatedFrame) {
+                throw new Error(`Rendered frame ${shot.id} is missing from the project response`);
             }
+            const canonicalShot = frameToShotNode(
+                generatedFrame,
+                result.video_tasks ?? [],
+                "t2i_i2v",
+            );
+            const activeImageUrl = getActiveT2IImageUrl(canonicalShot);
+            if (!activeImageUrl) {
+                throw new Error(`Rendered frame ${shot.id} has no selected first-frame image`);
+            }
+
+            updateProject(projectId, result);
+            setShots(prev => prev.map((item) =>
+                item.id === shot.id
+                    ? {
+                        ...item,
+                        imageUrl: canonicalShot.imageUrl,
+                        t2iImageUrl: activeImageUrl,
+                        t2iImageUrls: canonicalShot.t2iImageUrls,
+                        t2iSelectedIndex: canonicalShot.t2iSelectedIndex,
+                        t2iTaskId: undefined,
+                        t2iStatus: "completed",
+                    }
+                    : item,
+            ));
         } catch (error) {
+            if (controller.signal.aborted) return;
             debugLog.error("Studio", "Failed to generate T2I for shot:", error);
             setShots(prev => prev.map((s, i) =>
-                i === index ? { ...s, t2iStatus: "failed" } : s
+                i === index ? { ...s, t2iTaskId: undefined, t2iStatus: "failed" } : s
             ));
+        } finally {
+            if (t2iRenderControllersRef.current.get(shot.id) === controller) {
+                t2iRenderControllersRef.current.delete(shot.id);
+            }
         }
-    }, [shots, currentProject, persistWorkbench]);
+    }, [shots, currentProject, updateProject]);
 
     // Generate one I2V task for a shot using the selected New API model.
     const generateVideo = useCallback(async (index: number) => {

@@ -96,22 +96,36 @@ describe("central API activity client", () => {
     expect(request?.responseType).toBe("blob");
   });
 
-  it("keeps billing settlement separate from local Playground lifecycle and failures", async () => {
+  it("downloads hybrid activity media directly from the authenticated workspace route", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      new Blob(["hybrid video"], { type: "video/mp4" }),
+      {
+        status: 200,
+        headers: { [WORKSPACE_RESPONSE_HEADER]: "workspace-alice" },
+      },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      apiCallsApi.download(
+        "hybrid:video-task-1",
+        "video-task-1",
+        "video/video-task-1.mp4",
+      ),
+    ).resolves.toMatchObject({ filename: "video-task-1.mp4" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/files/video/video-task-1.mp4"),
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
+  it("lists only generation activity and leaves account settlement in account controls", async () => {
     vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
+    const requests: string[] = [];
     apiClient.defaults.adapter = async (config) => {
+      requests.push(config.url ?? "");
       if (config.url?.includes("/account/usage")) {
-        return response(config, {
-          items: [{
-            id: "usage-1",
-            operation: "images.generations",
-            model: "gpt-image-2",
-            status: "settled",
-            reserved_units: 10,
-            settled_units: 8,
-            created_at: "2026-07-29T01:00:00Z",
-            settled_at: "2026-07-29T01:01:00Z",
-          }],
-        });
+        throw new Error("account ledger must not be queried by API Calls");
       }
       if (config.url?.includes("/activity/history")) return response(config, []);
       return response(config, [{
@@ -128,7 +142,9 @@ describe("central API activity client", () => {
         batch_size: 1,
         outputs: [],
         status: "failed",
-        error: "视频生成失败，请稍后重试。",
+        error: "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。",
+        error_code: "output_video_policy",
+        error_diagnostic: "阶段：处理视频任务",
         created_at: "2026-07-29T02:00:00Z",
         updated_at: "2026-07-29T02:02:00Z",
       }]);
@@ -136,29 +152,22 @@ describe("central API activity client", () => {
 
     const activities = await apiCallsApi.list();
 
-    expect(activities).toHaveLength(2);
-    expect(activities.find((item) => item.activity_kind === "billing")).toMatchObject({
-      id: "billing:usage-1",
-      status: "completed",
-      billing_status: "settled",
-      managed_read_only: true,
-    });
-    expect(activities.find((item) => item.activity_kind === "generation")).toMatchObject({
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
       id: "playground:generation-1",
       status: "failed",
       source: "playground",
-      error: "视频生成失败，请稍后重试。",
+      error: "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。",
+      error_code: "output_video_policy",
+      error_diagnostic: "阶段：处理视频任务",
       source_context: {
         playground_generation_id: "generation-1",
       },
     });
+    expect(requests.some((url) => url.includes("/account/usage"))).toBe(false);
   });
 
   it.each([
-    {
-      failingSource: "billing",
-      shouldFail: (url: string) => url.includes("/account/usage"),
-    },
     {
       failingSource: "Playground",
       shouldFail: (url: string) => url.includes("/playground/history"),
@@ -172,7 +181,6 @@ describe("central API activity client", () => {
     apiClient.defaults.adapter = async (config) => {
       const url = config.url ?? "";
       if (shouldFail(url)) throw new Error("history source unavailable");
-      if (url.includes("/account/usage")) return response(config, { items: [] });
       return response(config, []);
     };
 
@@ -182,21 +190,22 @@ describe("central API activity client", () => {
   it("sorts merged hybrid activity before enforcing the requested limit", async () => {
     vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
     apiClient.defaults.adapter = async (config) => {
-      if (config.url?.includes("/account/usage")) {
-        return response(config, {
-          items: [{
-            id: "newest-billing",
-            operation: "images.generations",
-            model: "gpt-image-2",
-            status: "settled",
-            reserved_units: 10,
-            settled_units: 8,
-            created_at: "2026-07-29T04:00:00Z",
-            settled_at: "2026-07-29T04:01:00Z",
-          }],
-        });
+      if (config.url?.includes("/activity/history")) {
+        return response(config, [{
+          id: "hybrid:newest-local",
+          task_id: "newest-local",
+          type: "storyboard_render",
+          status: "completed",
+          category: "image",
+          source: "workspace",
+          progress: 100,
+          attempts: 1,
+          created_at: "2026-07-29T04:00:00Z",
+          updated_at: "2026-07-29T04:01:00Z",
+          finished_at: "2026-07-29T04:01:00Z",
+          managed_read_only: true,
+        }]);
       }
-      if (config.url?.includes("/activity/history")) return response(config, []);
       return response(config, [{
         id: "older-generation",
         mode: "t2i",
@@ -215,15 +224,12 @@ describe("central API activity client", () => {
     const activities = await apiCallsApi.list(1);
 
     expect(activities).toHaveLength(1);
-    expect(activities[0]?.id).toBe("billing:newest-billing");
+    expect(activities[0]?.id).toBe("hybrid:newest-local");
   });
 
   it("uses terminal lifecycle time for Playground sorting and duration after metadata edits", async () => {
     vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
     apiClient.defaults.adapter = async (config) => {
-      if (config.url?.includes("/account/usage")) {
-        return response(config, { items: [] });
-      }
       if (config.url?.includes("/activity/history")) return response(config, []);
       const generation = (
         id: string,
@@ -286,60 +292,11 @@ describe("central API activity client", () => {
     });
   });
 
-  it("preserves failed and canceled billing outcomes instead of marking them completed", async () => {
-    vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
-    apiClient.defaults.adapter = async (config) => {
-      if (config.url?.includes("/account/usage")) {
-        return response(config, {
-          items: [
-            {
-              id: "usage-failed",
-              operation: "video.generations",
-              model: "doubao-seedance-2-0-fast-260128",
-              status: "failed",
-              reserved_units: 10,
-              settled_units: 0,
-              created_at: "2026-07-29T01:00:00Z",
-              settled_at: "2026-07-29T01:01:00Z",
-            },
-            {
-              id: "usage-canceled",
-              operation: "images.generations",
-              model: "gpt-image-2",
-              status: "cancelled",
-              reserved_units: 10,
-              settled_units: 0,
-              created_at: "2026-07-29T02:00:00Z",
-              settled_at: "2026-07-29T02:01:00Z",
-            },
-          ],
-        });
-      }
-      return response(config, []);
-    };
-
-    const activities = await apiCallsApi.list();
-
-    expect(activities.find((item) => item.id === "billing:usage-failed")).toMatchObject({
-      activity_kind: "billing",
-      billing_status: "failed",
-      status: "failed",
-    });
-    expect(activities.find((item) => item.id === "billing:usage-canceled")).toMatchObject({
-      activity_kind: "billing",
-      billing_status: "cancelled",
-      status: "canceled",
-    });
-  });
-
   it("merges identifiable hybrid asset activity with bounded source requests", async () => {
     vi.stubEnv("NEXT_PUBLIC_HYBRID_MODE", "true");
     const requests: InternalAxiosRequestConfig[] = [];
     apiClient.defaults.adapter = async (config) => {
       requests.push(config);
-      if (config.url?.includes("/account/usage")) {
-        return response(config, { items: [] });
-      }
       if (config.url?.includes("/playground/history")) {
         return response(config, []);
       }
@@ -359,7 +316,6 @@ describe("central API activity client", () => {
         updated_at: "2026-07-30T01:01:00Z",
         finished_at: "2026-07-30T01:01:00Z",
         managed_read_only: true,
-        activity_kind: "generation",
       }]);
     };
 
@@ -371,7 +327,7 @@ describe("central API activity client", () => {
       detail: "守塔人",
       prompt: "全身角色设定图",
     });
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(2);
     expect(requests.every((request) => request.timeout === 15_000)).toBe(true);
   });
 

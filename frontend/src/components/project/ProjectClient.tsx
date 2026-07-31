@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { Palette, Layout, Film, BookOpen, Users, Video, Settings, Key, MessageSquareCode, Clapperboard } from "lucide-react";
+import { Palette, Layout, Film, BookOpen, Users, Video, Settings, MessageSquareCode, Clapperboard } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import PipelineSidebar from "@/components/layout/PipelineSidebar";
@@ -28,7 +28,6 @@ const ArtDirection = dynamic(() => import("@/components/modules/ArtDirection"), 
 const StoryboardComposer = dynamic(() => import("@/components/modules/StoryboardComposer"), { ssr: false });
 const StoryboardR2V = dynamic(() => import("@/components/modules/StoryboardR2V"), { ssr: false });
 const ModelSettingsModal = dynamic(() => import("@/components/common/ModelSettingsModal"), { ssr: false });
-const EnvConfigDialog = dynamic(() => import("@/components/project/EnvConfigDialog"), { ssr: false });
 const PromptConfigModal = dynamic(() => import("@/components/project/PromptConfigModal"), { ssr: false });
 const EntityConfirmModal = dynamic(() => import("@/components/modules/EntityConfirmModal"), { ssr: false });
 
@@ -55,13 +54,11 @@ const UNIFIED_STEPS = [
 export default function ProjectClient({ id, breadcrumbSegments }: { id: string; breadcrumbSegments?: BreadcrumbSegment[] }) {
     const [activeStep, setActiveStep] = useState("script");
     const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
-    const [envDialogOpen, setEnvDialogOpen] = useState(false);
     const [promptConfigOpen, setPromptConfigOpen] = useState(false);
     const t = useTranslations("project");
     const tp = useTranslations("pipeline");
-    const { serverMode, user } = useAuth();
+    const { serverMode } = useAuth();
     const { registerNavigation } = useTopBarNavigation();
-    const mayConfigureEnvironment = !serverMode || user?.role === "admin";
 
     const selectProject = useProjectStore((state) => state.selectProject);
     const currentProject = useProjectStore((state) => state.currentProject);
@@ -205,16 +202,6 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
 
     const settingsActions = useMemo(() => (
         <>
-            {mayConfigureEnvironment && (
-                <button
-                    onClick={() => setEnvDialogOpen(true)}
-                    aria-label={t("apiKeyConfig")}
-                    className="p-2 hover:bg-hover-bg rounded-lg transition-colors group"
-                    title={t("apiKeyConfig")}
-                >
-                    <Key size={16} className="text-text-secondary group-hover:text-green-400 transition-colors" />
-                </button>
-            )}
             <button
                 onClick={() => setPromptConfigOpen(true)}
                 aria-label={t("promptConfigurationTitle")}
@@ -232,7 +219,7 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                 <Settings size={16} className="text-text-secondary group-hover:text-foreground transition-colors" />
             </button>
         </>
-    ), [mayConfigureEnvironment, t]);
+    ), [t]);
 
     useEffect(() => {
         if (!serverMode || !currentProjectId) return;
@@ -303,15 +290,6 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                 <PromptConfigModal
                     isOpen
                     onClose={() => setPromptConfigOpen(false)}
-                />
-            ) : null}
-
-            {/* Environment Config Dialog */}
-            {mayConfigureEnvironment && envDialogOpen ? (
-                <EnvConfigDialog
-                    isOpen
-                    onClose={() => setEnvDialogOpen(false)}
-                    isRequired={false}
                 />
             ) : null}
 

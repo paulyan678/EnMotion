@@ -2032,6 +2032,19 @@ class ComicGenPipeline:
         target_asset, source = self._find_asset_with_source(script, asset_id, asset_type)
         if target_asset is None or source is None:
             raise ValueError(f"{asset_type.capitalize()} {asset_id} not found")
+        if source == "script":
+            asset_owner_kind = "project"
+            asset_owner_id = script.id
+        elif source == "series":
+            if not script.series_id:
+                raise RuntimeError("Series-owned asset has no series id")
+            asset_owner_kind = "series"
+            asset_owner_id = script.series_id
+        elif source == "global":
+            asset_owner_kind = "global"
+            asset_owner_id = "global"
+        else:
+            raise RuntimeError(f"Unsupported asset owner: {source}")
 
         previous_status = target_asset.status
         target_asset.status = GenerationStatus.PROCESSING
@@ -2050,6 +2063,8 @@ class ComicGenPipeline:
             "asset_id": asset_id,
             "asset_type": asset_type,
             "asset_source": source,
+            "asset_owner_kind": asset_owner_kind,
+            "asset_owner_id": asset_owner_id,
             # Retain the existing flag for compatibility with callers/tests
             # that inspect the in-memory task record.
             "asset_is_series_level": source == "series",
@@ -2409,6 +2424,39 @@ class ComicGenPipeline:
             "asset_source": task.get("asset_source"),
             "created_at": task.get("created_at"),
         }
+
+    def asset_generation_task_result_asset(self, task_id: str) -> Any:
+        """Return the exact canonical asset owned by a completed image task."""
+
+        task = self.asset_generation_tasks.get(task_id)
+        if task is None:
+            raise ValueError(f"Asset generation task {task_id} not found")
+        if task.get("status") != "completed":
+            raise ValueError(f"Asset generation task {task_id} is not completed")
+
+        owner_kind = task.get("asset_owner_kind")
+        owner_id = task.get("asset_owner_id")
+        asset_type = task.get("asset_type")
+        asset_id = task.get("asset_id")
+        if owner_kind not in {"project", "series", "global"} or not isinstance(owner_id, str):
+            raise RuntimeError("Asset generation task has no canonical owner")
+        if asset_type not in {"character", "scene", "prop"} or not isinstance(asset_id, str):
+            raise RuntimeError("Asset generation task has invalid asset metadata")
+
+        asset, storage_source, _, _ = self.find_source_asset(
+            owner_kind,
+            owner_id,
+            asset_type,
+            asset_id,
+        )
+        expected_source = {
+            "project": "script",
+            "series": "series",
+            "global": "global",
+        }[owner_kind]
+        if storage_source != expected_source:
+            raise RuntimeError("Asset generation task resolved a different owner")
+        return asset
 
     def create_motion_ref_task(
         self,
@@ -5111,6 +5159,14 @@ class ComicGenPipeline:
         frame.rendered_image_asset.selected_id = selected_id
         frame.rendered_image_url = selected_variant.url
         frame.image_url = selected_variant.url
+        t2i_history = [
+            url
+            for url in (frame.t2i_image_urls or [])
+            if _normalize_clip_image_url(url) != _normalize_clip_image_url(selected_variant.url)
+        ]
+        t2i_history.append(selected_variant.url)
+        frame.t2i_image_urls = t2i_history[-self._T2I_HISTORY_LIMIT :]
+        frame.t2i_selected_index = len(frame.t2i_image_urls) - 1
         self._set_frame_clip_start_image(frame, selected_variant.id, selected_variant.url)
         frame.status = GenerationStatus.COMPLETED
         frame.updated_at = time.time()
@@ -9265,6 +9321,8 @@ class ComicGenPipeline:
             "asset_id": asset_id,
             "asset_type": asset_type,
             "asset_source": "series",
+            "asset_owner_kind": "series",
+            "asset_owner_id": series_id,
             "previous_asset_status": previous_status,
             "created_at": time.time(),
             "is_series": True,
@@ -9342,6 +9400,8 @@ class ComicGenPipeline:
             "asset_id": asset_id,
             "asset_type": asset_type,
             "asset_source": "global",
+            "asset_owner_kind": "global",
+            "asset_owner_id": "global",
             "asset_is_global_level": True,
             "previous_asset_status": previous_status,
             "created_at": time.time(),

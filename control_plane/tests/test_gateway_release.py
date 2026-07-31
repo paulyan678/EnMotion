@@ -7,9 +7,6 @@ import re
 
 import httpx
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import select
-
 from app.models import ProviderTask, ReleaseGrant, UsageRequest, User
 from app.routers.gateway import (
     _read_response_limited,
@@ -18,6 +15,9 @@ from app.routers.gateway import (
 )
 from app.routers.releases import _stage_verified_release
 from app.security import ConcurrentKeyLimiter
+from fastapi import HTTPException
+from sqlalchemy import select
+
 from tests.conftest import login
 
 
@@ -32,9 +32,7 @@ def chat_payload(text: str) -> dict:
     }
 
 
-def test_gateway_injects_server_credential_and_suppresses_duplicates(
-    app_env, provider_calls
-):
+def test_gateway_injects_server_credential_and_suppresses_duplicates(app_env, provider_calls):
     client, app = app_env
     token = login(client, "employee", "Employee-password-123")["access_token"]
     headers = {**bearer(token), "Idempotency-Key": "gateway-request-001"}
@@ -193,10 +191,13 @@ def test_video_task_is_bound_to_owner_and_polling_does_not_charge(app_env):
     )
     assert content.status_code == 200
     assert content.content == b"video-content"
-    assert client.get(
-        "/api/v1/gateway/video/generations/task-owned-123",
-        headers=bearer(other),
-    ).status_code == 404
+    assert (
+        client.get(
+            "/api/v1/gateway/video/generations/task-owned-123",
+            headers=bearer(other),
+        ).status_code
+        == 404
+    )
     with app.state.db.session() as session:
         owner = session.scalar(select(User).where(User.username == "employee"))
         assert owner.available_credits == 75
@@ -229,9 +230,7 @@ def test_video_acceptance_without_task_id_stays_reserved_for_reconciliation(app_
     with app.state.db.session() as session:
         owner = session.scalar(select(User).where(User.username == "employee"))
         usage = session.scalar(
-            select(UsageRequest).where(
-                UsageRequest.idempotency_key == "video-missing-task-001"
-            )
+            select(UsageRequest).where(UsageRequest.idempotency_key == "video-missing-task-001")
         )
         assert owner.available_credits == 75
         assert owner.reserved_credits == 25
@@ -255,10 +254,13 @@ def test_health_runtime_and_release_download_are_public_and_allowlisted(
     runtime = client.get("/api/v1/runtime-config")
     assert runtime.status_code == 200
     assert runtime.json()["app_name"] == "EnMotion"
-    assert client.get(
-        "/api/v1/releases/latest",
-        params={"platform": "macos-arm64", "channel": "stable"},
-    ).status_code == 401
+    assert (
+        client.get(
+            "/api/v1/releases/latest",
+            params={"platform": "macos-arm64", "channel": "stable"},
+        ).status_code
+        == 401
+    )
     employee = login(client, "employee", "Employee-password-123")["access_token"]
     latest = client.get(
         "/api/v1/releases/latest",
@@ -272,15 +274,11 @@ def test_health_runtime_and_release_download_are_public_and_allowlisted(
     release = client.get(latest.json()["download_url"], headers=bearer(employee))
     assert release.status_code == 200
     assert release.content == b"enmotion-release"
-    assert release.headers["x-content-sha256"] == hashlib.sha256(
-        b"enmotion-release"
-    ).hexdigest()
+    assert release.headers["x-content-sha256"] == hashlib.sha256(b"enmotion-release").hexdigest()
     private_source = next(
         call for call in provider_calls if call.url.host == "private-downloads.test"
     )
-    redirected_source = next(
-        call for call in provider_calls if call.url.host == "downloads.test"
-    )
+    redirected_source = next(call for call in provider_calls if call.url.host == "downloads.test")
     assert private_source.headers["authorization"] == "Bearer release-source-secret"
     assert "authorization" not in redirected_source.headers
 
@@ -305,9 +303,7 @@ def test_public_github_release_download_needs_no_server_token(app_env, provider_
     release = client.get(latest.json()["download_url"], headers=bearer(employee))
     assert release.status_code == 200
     public_source = next(call for call in provider_calls if call.url.host == "github.com")
-    redirected_source = next(
-        call for call in provider_calls if call.url.host == "downloads.test"
-    )
+    redirected_source = next(call for call in provider_calls if call.url.host == "downloads.test")
     assert "authorization" not in public_source.headers
     assert "authorization" not in redirected_source.headers
 
@@ -327,9 +323,7 @@ def test_release_capability_is_hashed_bound_same_origin_and_one_time(app_env):
     )
     assert created.status_code == 201, created.text
     manifest_url = created.json()["manifest_url"]
-    assert manifest_url.startswith(
-        "https://control.test/api/v1/releases/session/"
-    )
+    assert manifest_url.startswith("https://control.test/api/v1/releases/session/")
     assert manifest_url.endswith("/manifest")
     token = manifest_url.removesuffix("/manifest").rsplit("/", 1)[-1]
     assert re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token)
@@ -337,9 +331,7 @@ def test_release_capability_is_hashed_bound_same_origin_and_one_time(app_env):
     with app.state.db.session() as session:
         grant = session.scalar(select(ReleaseGrant))
         assert grant is not None
-        assert grant.user_id == session.scalar(
-            select(User.id).where(User.username == "employee")
-        )
+        assert grant.user_id == session.scalar(select(User.id).where(User.username == "employee"))
         assert grant.platform == "macos-arm64"
         assert grant.release_version == "1.2.3"
         assert grant.token_digest != token
@@ -347,9 +339,7 @@ def test_release_capability_is_hashed_bound_same_origin_and_one_time(app_env):
         assert grant.manifest_consumed_at is None
         assert grant.download_consumed_at is None
 
-    download_url = (
-        f"https://control.test/api/v1/releases/session/{token}/download"
-    )
+    download_url = f"https://control.test/api/v1/releases/session/{token}/download"
     assert client.get(download_url).status_code == 404
 
     manifest = client.get(manifest_url)
@@ -357,9 +347,7 @@ def test_release_capability_is_hashed_bound_same_origin_and_one_time(app_env):
     payload = manifest.json()
     assert payload == {
         "version": "1.2.3",
-        "url": (
-            f"https://control.test/api/v1/releases/session/{token}/download"
-        ),
+        "url": (f"https://control.test/api/v1/releases/session/{token}/download"),
         "signature": "test-tauri-minisign-signature",
         "notes": "Test release",
         "pub_date": "2026-07-24T00:00:00Z",
@@ -373,9 +361,7 @@ def test_release_capability_is_hashed_bound_same_origin_and_one_time(app_env):
     archive = client.get(payload["url"])
     assert archive.status_code == 200
     assert archive.content == b"enmotion-release"
-    assert archive.headers["x-content-sha256"] == hashlib.sha256(
-        b"enmotion-release"
-    ).hexdigest()
+    assert archive.headers["x-content-sha256"] == hashlib.sha256(b"enmotion-release").hexdigest()
     assert client.get(payload["url"]).status_code == 404
     with app.state.db.session() as session:
         grant = session.scalar(select(ReleaseGrant))

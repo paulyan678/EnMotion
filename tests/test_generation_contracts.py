@@ -342,7 +342,42 @@ def test_storyboard_render_merge_preserves_edits_and_deletions():
     assert [item.id for item in frame.rendered_image_asset.variants] == ["new-variant"]
     assert frame.rendered_image_asset.selected_id == "new-variant"
     assert frame.image_url == "storyboard/new.png"
+    assert frame.t2i_image_urls == ["storyboard/new.png"]
+    assert frame.t2i_selected_index == 0
+    assert frame.clip_start_image_id == "new-variant"
+    assert frame.clip_start_image_url == "storyboard/new.png"
     assert save_calls == [True, True]
+
+
+def test_storyboard_render_selects_new_image_in_bounded_t2i_history():
+    frame = _frame()
+    frame.t2i_image_urls = [f"storyboard/old-{index}.png" for index in range(10)]
+    frame.t2i_image_urls[4] = "storyboard/new.png"
+    frame.t2i_selected_index = 4
+    script = _script(frame)
+
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline.resolve_episode_assets = lambda _script: {"characters": [], "scenes": []}
+    pipeline._save_data = lambda: None
+    plan = pipeline.prepare_storyboard_render(
+        script.id, frame.id, composition_data=None, prompt="cinematic frame"
+    )
+    generated = plan.frame
+    generated.rendered_image_asset.variants.append(
+        ImageVariant(id="new-variant", url="storyboard/new.png")
+    )
+    generated.rendered_image_asset.selected_id = "new-variant"
+    generated.rendered_image_url = "storyboard/new.png"
+    generated.image_url = "storyboard/new.png"
+    generated.status = GenerationStatus.COMPLETED
+
+    pipeline.commit_storyboard_render_plan(plan, generated)
+
+    assert len(frame.t2i_image_urls) == 10
+    assert frame.t2i_image_urls[-1] == "storyboard/new.png"
+    assert frame.t2i_image_urls.count("storyboard/new.png") == 1
+    assert frame.t2i_selected_index == 9
 
 
 @pytest.mark.parametrize(

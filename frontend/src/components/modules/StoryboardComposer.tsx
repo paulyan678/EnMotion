@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState, useRef } from "react";
+import { Fragment, useEffect, useState, useRef } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -48,11 +48,20 @@ export default function StoryboardComposer() {
     const [showScriptOverlay, setShowScriptOverlay] = useState(false);
     const [deletingFrameIds, setDeletingFrameIds] = useState<Set<string>>(() => new Set());
     const deletingFrameIdsRef = useRef<Set<string>>(new Set());
+    const renderControllersRef = useRef<Map<string, AbortController>>(new Map());
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [uploadTargetFrameId, setUploadTargetFrameId] = useState<string | null>(null);
 
-
+    useEffect(() => {
+        const controllers = renderControllersRef.current;
+        return () => {
+            for (const controller of controllers.values()) {
+                controller.abort();
+            }
+            controllers.clear();
+        };
+    }, [currentProject?.id]);
 
     // NEW: Analyze script text to generate storyboard frames
     const handleAnalyzeToStoryboard = async () => {
@@ -255,6 +264,10 @@ export default function StoryboardComposer() {
     const handleRenderFrame = async (frame: any, batchSize: number = 1, e?: React.MouseEvent) => {
         e?.stopPropagation();
         if (!currentProject) return;
+        const projectId = currentProject.id;
+        const controller = new AbortController();
+        renderControllersRef.current.get(frame.id)?.abort();
+        renderControllersRef.current.set(frame.id, controller);
 
         addRenderingFrame(frame.id);
         try {
@@ -322,16 +335,26 @@ export default function StoryboardComposer() {
                 finalPrompt = parts.join(" . ");
             }
 
-            await api.renderFrame(currentProject.id, frame.id, compositionData, finalPrompt, batchSize);
-
-            // Fetch updated project to get new image URL and timestamp
-            const updatedProject = await api.getProject(currentProject.id);
-            useProjectStore.getState().updateProject(currentProject.id, updatedProject);
+            const updatedProject = await api.renderFrame(
+                projectId,
+                frame.id,
+                compositionData,
+                finalPrompt,
+                batchSize,
+                { signal: controller.signal },
+            );
+            if (!controller.signal.aborted) {
+                useProjectStore.getState().updateProject(projectId, updatedProject);
+            }
 
         } catch (error) {
+            if (controller.signal.aborted) return;
             console.error("Render failed:", error);
             alert(t("renderFailed"));
         } finally {
+            if (renderControllersRef.current.get(frame.id) === controller) {
+                renderControllersRef.current.delete(frame.id);
+            }
             removeRenderingFrame(frame.id);
         }
     };

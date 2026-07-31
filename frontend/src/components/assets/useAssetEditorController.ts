@@ -69,6 +69,25 @@ function errorMessage(_error: unknown, fallback: string): string {
   return fallback;
 }
 
+function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason ?? new DOMException("Operation was aborted", "AbortError"),
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const handleAbort = () => {
+      window.clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("Operation was aborted", "AbortError"));
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", handleAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
 export interface UseAssetEditorControllerOptions {
   open: boolean;
   assetRef: AssetRef;
@@ -92,6 +111,7 @@ export function useAssetEditorController({
   const [generatingMotion, setGeneratingMotion] = useState(false);
   const requestRevision = useRef(0);
   const mutationLocks = useRef(new Set<string>());
+  const generationControllers = useRef(new Map<string, AbortController>());
   const refKey = assetRefKey(assetRef);
   const loading = loadingKey !== refKey;
 
@@ -154,6 +174,14 @@ export function useAssetEditorController({
   }, [load, open]);
 
   useEffect(() => {
+    const controllers = generationControllers.current;
+    return () => {
+      for (const controller of controllers.values()) controller.abort();
+      controllers.clear();
+    };
+  }, [open, refKey]);
+
+  useEffect(() => {
     if (!open) return;
     return subscribeToAssetLibraryChanges((detail) => {
       if (
@@ -195,16 +223,19 @@ export function useAssetEditorController({
     return { response, asset: next };
   }, [assetRef, t]);
 
-  const waitForGeneration = useCallback(async (response: unknown) => {
+  const waitForGeneration = useCallback(async (
+    response: unknown,
+    signal: AbortSignal,
+  ) => {
     const target = resolveAssetTaskPollingTarget((response ?? {}) as AssetTaskMarker);
     if (!target) return;
     if (target.kind === "durable") {
-      await waitForDurableJob(target.taskId);
+      await waitForDurableJob(target.taskId, { signal });
       return;
     }
     for (let attempts = 0; attempts < 900; attempts += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      const status = await api.getTaskStatus(target.taskId);
+      await wait(1000, signal);
+      const status = await api.getTaskStatus(target.taskId, { signal });
       if (status?.status === "completed") return;
       if (status?.status === "failed" || status?.status === "canceled") {
         throw new Error(status.error || t("genFailed"));
@@ -296,6 +327,10 @@ export function useAssetEditorController({
     options: AssetGenerationOptions = {},
   ) => {
     if (generatingTypes.some((entry) => entry.type === generationType)) return;
+    const controllerKey = `image:${generationType}`;
+    const controller = new AbortController();
+    generationControllers.current.get(controllerKey)?.abort();
+    generationControllers.current.set(controllerKey, controller);
     setGeneratingTypes((entries) => [...entries, { type: generationType, batchSize }]);
     const toastId = toast.progress(t("generatingVariants"), {
       body: t("generatingVariantsBody", { name: asset?.name ?? "", count: batchSize }),
@@ -317,9 +352,11 @@ export function useAssetEditorController({
           template_id: options.templateId,
         },
       );
-      await waitForGeneration(response);
+      await waitForGeneration(response, controller.signal);
+      if (controller.signal.aborted) return;
       const marker = (response ?? {}) as AssetTaskMarker;
       const finalResponse = marker.task_id || marker._task_id ? (await reload()).response : response;
+      if (controller.signal.aborted) return;
       applyServerAsset(finalResponse);
       toast.update(toastId, {
         kind: "success",
@@ -328,6 +365,10 @@ export function useAssetEditorController({
         autoCloseMs: 5000,
       });
     } catch (error) {
+      if (controller.signal.aborted) {
+        toast.dismiss(toastId);
+        return;
+      }
       toast.update(toastId, {
         kind: "error",
         title: t("variantsGenFailed"),
@@ -335,6 +376,9 @@ export function useAssetEditorController({
         autoCloseMs: 0,
       });
     } finally {
+      if (generationControllers.current.get(controllerKey) === controller) {
+        generationControllers.current.delete(controllerKey);
+      }
       setGeneratingTypes((entries) => entries.filter((entry) => entry.type !== generationType));
     }
   }, [applyServerAsset, asset?.name, assetRef, generatingTypes, reload, t, waitForGeneration]);
@@ -350,6 +394,10 @@ export function useAssetEditorController({
     } = {},
   ) => {
     if (generatingMotion) return;
+    const controllerKey = "motion";
+    const controller = new AbortController();
+    generationControllers.current.get(controllerKey)?.abort();
+    generationControllers.current.set(controllerKey, controller);
     setGeneratingMotion(true);
     const toastId = toast.progress(t("generatingMotion"), { body: asset?.name });
     try {
@@ -367,9 +415,11 @@ export function useAssetEditorController({
           audio_url: options.audioUrl,
         },
       );
-      await waitForGeneration(response);
+      await waitForGeneration(response, controller.signal);
+      if (controller.signal.aborted) return;
       const marker = (response ?? {}) as AssetTaskMarker;
       const finalResponse = marker.task_id || marker._task_id ? (await reload()).response : response;
+      if (controller.signal.aborted) return;
       applyServerAsset(finalResponse);
       toast.update(toastId, {
         kind: "success",
@@ -377,6 +427,10 @@ export function useAssetEditorController({
         autoCloseMs: 5000,
       });
     } catch (error) {
+      if (controller.signal.aborted) {
+        toast.dismiss(toastId);
+        return;
+      }
       toast.update(toastId, {
         kind: "error",
         title: t("motionGenerationFailed"),
@@ -384,6 +438,9 @@ export function useAssetEditorController({
         autoCloseMs: 0,
       });
     } finally {
+      if (generationControllers.current.get(controllerKey) === controller) {
+        generationControllers.current.delete(controllerKey);
+      }
       setGeneratingMotion(false);
     }
   }, [applyServerAsset, asset?.name, assetRef, generatingMotion, reload, t, waitForGeneration]);

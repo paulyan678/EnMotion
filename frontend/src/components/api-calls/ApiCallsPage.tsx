@@ -38,8 +38,9 @@ import {
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import PreviewVideo from "@/components/shared/preview/PreviewVideo";
 import ModalPortal from "@/components/common/ModalPortal";
-import GlobalPageTitle from "@/components/layout/GlobalPageTitle";
+import GlobalPageHeader from "@/components/layout/GlobalPageHeader";
 import { appDateTimeFormatter, parseApiTimestamp } from "@/lib/dateTime";
+import { useNow } from "@/lib/useNow";
 
 type StatusFilter = "all" | ApiCallStatus;
 
@@ -90,6 +91,7 @@ const PARAMETER_KEYS: Record<string, string> = {
   audio: "audio",
   watermark: "watermark",
   prompt_extend: "prompt_extend",
+  generation_mode: "generation_mode",
 };
 
 const STATUS_TONES: Record<ApiCallStatus, string> = {
@@ -99,28 +101,6 @@ const STATUS_TONES: Record<ApiCallStatus, string> = {
   failed: "border-red-400/30 bg-red-400/10 text-red-300",
   canceled: "border-glass-border bg-glass text-text-muted",
 };
-
-const BILLING_STATUS_KEYS = {
-  settled: "settled",
-  completed: "completed",
-  captured: "captured",
-  succeeded: "succeeded",
-  reserved: "reserved",
-  processing: "processing",
-  pending_reconciliation: "pendingReconciliation",
-  released: "released",
-  refunded: "refunded",
-  failed: "failed",
-  canceled: "canceled",
-  cancelled: "canceled",
-} as const;
-
-function billingStatusKey(
-  status?: string | null,
-): (typeof BILLING_STATUS_KEYS)[keyof typeof BILLING_STATUS_KEYS] | "other" {
-  const normalized = status?.trim().toLowerCase() ?? "";
-  return BILLING_STATUS_KEYS[normalized as keyof typeof BILLING_STATUS_KEYS] ?? "other";
-}
 
 function parseTimestamp(value?: string | null): number | null {
   return parseApiTimestamp(value)?.getTime() ?? null;
@@ -140,6 +120,20 @@ export function formatElapsed(milliseconds: number): string {
   const minutes = Math.floor((totalSeconds % 3_600) / 60);
   const seconds = totalSeconds % 60;
   return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+function LiveElapsedText({ job }: { job: ApiCallActivity }) {
+  const now = useNow();
+  return <>{formatElapsed(elapsedMilliseconds(job, now))}</>;
+}
+
+function ElapsedText({ job }: { job: ApiCallActivity }) {
+  if (job.status === "running") return <LiveElapsedText job={job} />;
+  const terminalTime = parseTimestamp(job.finished_at)
+    ?? parseTimestamp(job.updated_at)
+    ?? parseTimestamp(job.created_at)
+    ?? 0;
+  return <>{formatElapsed(elapsedMilliseconds(job, terminalTime))}</>;
 }
 
 function CategoryIcon({ category, className = "h-5 w-5" }: {
@@ -215,7 +209,6 @@ export default function ApiCallsPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionJobId, setActionJobId] = useState<string | null>(null);
   const [downloadKey, setDownloadKey] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   const requestInFlight = useRef(false);
   const hasLiveJobsRef = useRef(false);
   const mutationVersion = useRef(0);
@@ -250,36 +243,56 @@ export default function ApiCallsPage() {
   useEffect(() => {
     let timer: number | null = null;
     let stopped = false;
-    const schedule = () => {
-      if (stopped) return;
-      const base = hasLiveJobsRef.current
+    let cycle: Promise<void> | null = null;
+
+    const clearTimer = () => {
+      if (timer === null) return;
+      window.clearTimeout(timer);
+      timer = null;
+    };
+    const scheduleNext = () => {
+      clearTimer();
+      if (stopped || document.visibilityState !== "visible") return;
+      const delay = hasLiveJobsRef.current
         ? LIVE_POLL_INTERVAL_MS
         : IDLE_POLL_INTERVAL_MS;
-      const jittered = Math.round(base * (0.9 + Math.random() * 0.2));
-      timer = window.setTimeout(async () => {
-        if (document.visibilityState === "visible") await loadJobs();
-        schedule();
-      }, jittered);
+      timer = window.setTimeout(() => {
+        timer = null;
+        runCycle();
+      }, delay);
     };
-    const refreshWhenVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      if (timer !== null) window.clearTimeout(timer);
-      void loadJobs().finally(schedule);
+    const runCycle = () => {
+      if (
+        stopped
+        || cycle
+        || document.visibilityState !== "visible"
+      ) {
+        return;
+      }
+      clearTimer();
+      const activeCycle = loadJobs();
+      cycle = activeCycle;
+      void activeCycle.finally(() => {
+        if (cycle === activeCycle) cycle = null;
+        scheduleNext();
+      });
     };
-    void loadJobs().finally(schedule);
-    document.addEventListener("visibilitychange", refreshWhenVisible);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        clearTimer();
+        return;
+      }
+      runCycle();
+    };
+
+    runCycle();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       stopped = true;
-      if (timer !== null) window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      clearTimer();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [loadJobs]);
-
-  useEffect(() => {
-    if (!hasLiveJobs) return;
-    const ticker = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(ticker);
-  }, [hasLiveJobs]);
 
   const counts = useMemo(() => ({
     all: jobs.length,
@@ -329,7 +342,11 @@ export default function ApiCallsPage() {
     setDownloadKey(key);
     setError(null);
     try {
-      const { blob, filename } = await apiCallsApi.download(job.id, output.id);
+      const { blob, filename } = await apiCallsApi.download(
+        job.id,
+        output.id,
+        output.media_path,
+      );
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -361,11 +378,9 @@ export default function ApiCallsPage() {
   const filters: StatusFilter[] = ["all", "running", "queued", "completed", "failed", "canceled"];
 
   return (
-    <section className="min-h-full px-7 py-5">
-      <div className="flex w-full flex-col gap-5">
-        <header className="border-b border-glass-border pb-5">
-          <GlobalPageTitle>{t("title")}</GlobalPageTitle>
-        </header>
+    <section className="flex min-h-full flex-col">
+      <GlobalPageHeader title={t("title")} />
+      <div className="flex w-full flex-col gap-5 px-4 pb-6 md:px-7">
 
         {error ? (
           <div role="alert" className="flex items-start gap-3 rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm text-red-200">
@@ -443,21 +458,18 @@ export default function ApiCallsPage() {
               {filteredJobs.map((job) => {
                 const output = job.outputs?.[0];
                 const pendingAction = actionJobId === job.id;
-                const elapsed = formatElapsed(elapsedMilliseconds(job, now));
                 const progress = Math.max(0, Math.min(100, job.status === "completed" ? 100 : job.progress || 0));
                 const hasDeterminateProgress = job.status === "completed"
                   || (job.status === "running" && Boolean(job.progress_stage) && progress > 0);
-                const isBilling = job.activity_kind === "billing";
-                const billingStatusLabel = isBilling
-                  ? t(`billing.statuses.${billingStatusKey(job.billing_status)}`)
-                  : null;
-                const failureMessage = isBilling
-                  ? null
-                  : job.error_code === "input_image_privacy"
-                    ? t("errors.inputImagePrivacy")
-                    : job.error && !/[A-Za-z]{2,}/.test(job.error)
-                      ? job.error
-                      : t("errors.requestFailed");
+                const failureMessage = job.error_code === "input_image_privacy"
+                  ? t("errors.inputImagePrivacy")
+                  : job.error_code === "output_video_policy"
+                    ? t("errors.outputVideoPolicy")
+                  : job.error_code === "provider_connection_failed"
+                    ? t("errors.providerConnection")
+                  : job.error && !/[A-Za-z]{2,}/.test(job.error)
+                    ? job.error
+                    : t("errors.requestFailed");
                 return (
                   <article
                     key={job.id}
@@ -491,11 +503,6 @@ export default function ApiCallsPage() {
                             <StatusIcon status={job.status} className="h-3 w-3" />
                             {t(`status.${job.status}`)}
                           </span>
-                          {isBilling ? (
-                            <span className="rounded-full border border-glass-border bg-glass px-2 py-0.5 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-text-muted">
-                              {t("billing.record")}
-                            </span>
-                          ) : null}
                           {job.outputs && job.outputs.length > 1 ? (
                             <span className="rounded-full border border-glass-border px-2 py-0.5 text-[0.625rem] text-text-muted">
                               {t("outputCount", { count: job.outputs.length })}
@@ -507,11 +514,6 @@ export default function ApiCallsPage() {
                           {job.model_name ? <span>{job.model_name}</span> : null}
                           {job.attempts > 1 ? <span>{t("attempt", { count: job.attempts })}</span> : null}
                         </div>
-                        {billingStatusLabel ? (
-                          <p className="mt-2 line-clamp-1 text-sm text-text-secondary">
-                            {t("billing.outcome", { status: billingStatusLabel })}
-                          </p>
-                        ) : null}
                         {job.detail
                           ? <p className="mt-2 line-clamp-1 text-sm text-text-secondary">{job.detail}</p>
                           : null}
@@ -558,7 +560,9 @@ export default function ApiCallsPage() {
 
                       <div className="flex shrink-0 items-center justify-between gap-4 border-t border-glass-border pt-3 lg:min-w-[235px] lg:justify-end lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
                         <div className="text-right">
-                          <p className="font-mono text-lg tabular-nums text-foreground">{elapsed}</p>
+                          <p className="font-mono text-lg tabular-nums text-foreground">
+                            <ElapsedText job={job} />
+                          </p>
                           <p className="text-[0.625rem] uppercase tracking-[0.1em] text-text-muted">
                             {job.status === "running" ? t("elapsedLive") : t("elapsedFinal")}
                           </p>
@@ -620,7 +624,6 @@ export default function ApiCallsPage() {
       {selectedJob ? (
         <JobDetailDrawer
           job={selectedJob}
-          now={now}
           operationLabel={operationLabel}
           dateFormatter={dateFormatter}
           actionPending={actionJobId === selectedJob.id}
@@ -636,7 +639,6 @@ export default function ApiCallsPage() {
 
 function JobDetailDrawer({
   job,
-  now,
   operationLabel,
   dateFormatter,
   actionPending,
@@ -646,7 +648,6 @@ function JobDetailDrawer({
   onDownload,
 }: {
   job: ApiCallActivity;
-  now: number;
   operationLabel: (type: string) => string;
   dateFormatter: Intl.DateTimeFormat;
   actionPending: boolean;
@@ -656,17 +657,16 @@ function JobDetailDrawer({
   onDownload: (job: ApiCallActivity, output: ApiCallMedia) => Promise<void>;
 }) {
   const t = useTranslations("apiCalls");
-  const isBilling = job.activity_kind === "billing";
-  const billingStatusLabel = isBilling
-    ? t(`billing.statuses.${billingStatusKey(job.billing_status)}`)
-    : null;
-  const failureMessage = isBilling
-    ? null
-    : job.error_code === "input_image_privacy"
-      ? t("errors.inputImagePrivacy")
-      : job.error && !/[A-Za-z]{2,}/.test(job.error)
-        ? job.error
-        : t("errors.requestFailed");
+  const now = useNow();
+  const failureMessage = job.error_code === "input_image_privacy"
+    ? t("errors.inputImagePrivacy")
+    : job.error_code === "output_video_policy"
+      ? t("errors.outputVideoPolicy")
+    : job.error_code === "provider_connection_failed"
+      ? t("errors.providerConnection")
+    : job.error && !/[A-Za-z]{2,}/.test(job.error)
+      ? job.error
+      : t("errors.requestFailed");
 
   const navigateToSource = () => {
     const route = job.source_context?.route;
@@ -701,11 +701,6 @@ function JobDetailDrawer({
                 <StatusIcon status={job.status} className="h-3 w-3" />
                 {t(`status.${job.status}`)}
               </span>
-              {isBilling ? (
-                <span className="rounded-full border border-glass-border bg-glass px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-text-muted">
-                  {t("billing.record")}
-                </span>
-              ) : null}
             </div>
             <p className="mt-1 font-mono text-[0.6875rem] text-text-muted">{job.id}</p>
           </div>
@@ -723,19 +718,11 @@ function JobDetailDrawer({
               <Detail label={t("typeLabel")} value={t(`category.${job.category}`)} />
               <Detail label={t("sourceLabel")} value={t(`sources.${job.source}`)} />
               <Detail label={t("modelLabel")} value={job.model_name || t("notAvailable")} />
-              {billingStatusLabel ? (
-                <Detail label={t("billing.statusLabel")} value={billingStatusLabel} />
-              ) : null}
               <Detail label={t("createdLabel")} value={dateFormatter.format(parseTimestamp(job.created_at) ?? now)} />
               <Detail label={t("startedLabel")} value={job.started_at ? dateFormatter.format(parseTimestamp(job.started_at) ?? now) : t("notAvailable")} />
               <Detail label={t("completedLabel")} value={job.finished_at ? dateFormatter.format(parseTimestamp(job.finished_at) ?? now) : t("notAvailable")} />
               <Detail label={t("durationLabel")} value={formatElapsed(elapsedMilliseconds(job, now))} />
             </dl>
-            {isBilling ? (
-              <p className="mt-3 rounded-xl border border-glass-border bg-glass p-4 text-sm leading-relaxed text-text-secondary">
-                {t("billing.description")}
-              </p>
-            ) : null}
             {job.prompt ? (
               <div className="mt-3 rounded-xl border border-glass-border bg-glass p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">{t("promptLabel")}</p>
@@ -763,13 +750,12 @@ function JobDetailDrawer({
           ) : null}
           {job.outputs?.length ? (
             <MediaSection title={t("outputs")} media={job.outputs} job={job} downloadKey={downloadKey} onDownload={onDownload} />
-          ) : job.status === "completed" && !isBilling ? (
+          ) : job.status === "completed" ? (
             <div className="rounded-xl border border-dashed border-glass-border p-5 text-center text-sm text-text-muted">
               {t("noMediaOutput")}
             </div>
           ) : null}
 
-          {!isBilling ? (
           <section aria-labelledby="progress-timeline-title">
             <h3 id="progress-timeline-title" className="text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">{t("progressTimeline")}</h3>
             <ol className="mt-4 space-y-0">
@@ -821,7 +807,6 @@ function JobDetailDrawer({
               ) : null}
             </ol>
           </section>
-          ) : null}
 
           {job.status === "failed" && failureMessage ? (
             <section className="rounded-xl border border-red-400/30 bg-red-400/[0.07] p-4 text-sm text-red-200">

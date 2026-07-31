@@ -298,11 +298,7 @@ def headers_with_local_api_nonce(
     """Replace an untrusted local nonce while preserving streaming headers."""
 
     header_name = LOCAL_API_NONCE_HEADER.lower().encode("ascii")
-    forwarded = [
-        (name, value)
-        for name, value in headers
-        if name.lower() != header_name
-    ]
+    forwarded = [(name, value) for name, value in headers if name.lower() != header_name]
     forwarded.append((header_name, local_api_nonce(nonce).encode("ascii")))
     return forwarded
 
@@ -1106,8 +1102,6 @@ def run(config: RuntimeConfig) -> None:
 def verify_packaged_bundle() -> None:
     """Fail release CI if the frozen sidecar is missing runtime dependencies."""
 
-    import platform
-
     if not getattr(sys, "frozen", False):
         raise RuntimeError("bundle verification requires a frozen sidecar")
     bundle_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
@@ -1119,11 +1113,11 @@ def verify_packaged_bundle() -> None:
         if not resource.is_file():
             raise RuntimeError(f"packaged resource is missing: {resource.name}")
 
-    import keyring
     import openai  # noqa: F401
     import oss2  # noqa: F401
 
     from src.apps.comic_gen import api as api_module
+    from src.apps.hybrid.session_store import LocalCredentialStore
     from src.utils.system_check import get_ffmpeg_path
 
     if not getattr(api_module.app, "routes", None):
@@ -1138,15 +1132,14 @@ def verify_packaged_bundle() -> None:
         stderr=subprocess.DEVNULL,
         timeout=120,
     )
-    credential_backend = keyring.get_keyring()
-    expected_backend = {
-        "Darwin": "keyring.backends.macOS",
-        "Windows": "keyring.backends.Windows",
-    }.get(platform.system())
-    if expected_backend is None or not type(credential_backend).__module__.startswith(
-        expected_backend
-    ):
-        raise RuntimeError("packaged OS credential-store backend is unavailable")
+    with tempfile.TemporaryDirectory(prefix="enmotion-credential-store-verify-") as name:
+        credential_store = LocalCredentialStore(
+            Path(name) / "session" / "control-plane-refresh-token"
+        )
+        credential_store.write("bundle-verification-token")
+        if credential_store.read() != "bundle-verification-token":
+            raise RuntimeError("packaged local credential store is unavailable")
+        credential_store.delete()
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
         raise RuntimeError("packaged FFmpeg is unavailable")

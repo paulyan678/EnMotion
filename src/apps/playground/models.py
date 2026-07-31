@@ -261,6 +261,14 @@ class PlaygroundGeneration(BaseModel):
         "pending", description="Generation status: pending/processing/completed/failed"
     )
     error: Optional[str] = Field(None, description="Error message if generation failed")
+    error_code: Optional[str] = Field(
+        None,
+        description="Stable application error code for a failed generation",
+    )
+    error_diagnostic: Optional[str] = Field(
+        None,
+        description="Redacted diagnostic context for a failed generation",
+    )
     created_at: str = Field(..., description="Creation timestamp in ISO 8601 format")
     updated_at: str = Field(..., description="Last record update in ISO 8601 format")
     finished_at: Optional[str] = Field(

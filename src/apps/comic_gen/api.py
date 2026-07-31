@@ -82,7 +82,11 @@ from ...utils.uploads import (
     save_upload_file,
 )
 from ..hybrid import hybrid_mode_enabled, include_hybrid_mode, workspace_isolation_enabled
-from ..hybrid.activity import record_asset_activity, update_asset_activity
+from ..hybrid.activity import (
+    record_asset_activity,
+    record_video_activity,
+    update_asset_activity,
+)
 from ..server import include_server_mode, server_mode_enabled
 from ..web_runtime.asset_library_feed import (
     AssetLibraryFeedResponse,
@@ -476,7 +480,6 @@ def _hybrid_asset_source_route(
 def _process_hybrid_asset_activity(
     task_id: str,
     workspace_id: str,
-    target_asset: Any,
     existing_variant_ids: frozenset[str],
 ) -> None:
     """Run one local asset job and mirror its public lifecycle atomically."""
@@ -486,11 +489,21 @@ def _process_hybrid_asset_activity(
         pipeline.process_asset_generation_task(task_id)
         status = pipeline.get_asset_generation_task_status(task_id) or {}
         if status.get("status") == "completed":
+            target_asset = pipeline.asset_generation_task_result_asset(task_id)
+            outputs = _hybrid_asset_outputs(target_asset, existing_variant_ids)
+            if not outputs:
+                update_asset_activity(
+                    workspace_id,
+                    task_id,
+                    status="failed",
+                    error="素材生成完成，但没有找到新图像输出。",
+                )
+                return
             update_asset_activity(
                 workspace_id,
                 task_id,
                 status="completed",
-                outputs=_hybrid_asset_outputs(target_asset, existing_variant_ids),
+                outputs=outputs,
             )
             return
         update_asset_activity(
@@ -558,6 +571,302 @@ def _hybrid_asset_outputs(
     return outputs
 
 
+def _hybrid_input_media(media_path: str | None) -> list[dict[str, Any]]:
+    path = str(media_path or "").strip()
+    if not path or path.startswith("data:"):
+        return []
+    return [
+        {
+            "id": f"input:{hashlib.sha256(path.encode('utf-8')).hexdigest()[:16]}",
+            "media_type": "image",
+            "media_path": path,
+            "thumbnail_path": path,
+            "filename": path.rsplit("/", 1)[-1],
+        }
+    ]
+
+
+def _hybrid_video_output(
+    output_id: str,
+    media_path: str | None,
+    *,
+    thumbnail_path: str | None = None,
+) -> list[dict[str, Any]]:
+    path = str(media_path or "").strip()
+    if not path:
+        return []
+    return [
+        {
+            "id": output_id,
+            "media_type": "video",
+            "media_path": path,
+            "thumbnail_path": str(thumbnail_path or "").strip() or None,
+            "filename": path.rsplit("/", 1)[-1],
+        }
+    ]
+
+
+def _process_hybrid_video_activity(
+    task_id: str,
+    workspace_id: str,
+    script_id: str,
+) -> None:
+    """Run one persisted clip task and mirror its canonical terminal state."""
+
+    update_asset_activity(workspace_id, task_id, status="running")
+    try:
+        pipeline.process_video_task(script_id, task_id)
+        script = pipeline.get_script(script_id)
+        task = next(
+            (item for item in (script.video_tasks if script else []) if item.id == task_id),
+            None,
+        )
+        if task is not None and task.status == "completed" and task.video_url:
+            poster = task.source_image_url or task.image_url
+            update_asset_activity(
+                workspace_id,
+                task_id,
+                status="completed",
+                outputs=_hybrid_video_output(
+                    task.id,
+                    task.video_url,
+                    thumbnail_path=poster,
+                ),
+            )
+            return
+        error = (
+            str(getattr(task, "error", "") or "")
+            if task is not None
+            else "视频任务完成后未找到持久化记录。"
+        )
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="failed",
+            error=error or "视频生成未返回可播放的输出。",
+            error_code=str(getattr(task, "error_code", "") or "") or None,
+            error_diagnostic=(str(getattr(task, "error_diagnostic", "") or "") or None),
+        )
+    except Exception as exc:
+        logger.exception("Hybrid video task %s failed", task_id)
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="failed",
+            error=str(exc),
+        )
+
+
+def _schedule_local_video_generation(
+    background_tasks: BackgroundTasks,
+    *,
+    script: Script,
+    task: VideoTask,
+) -> None:
+    """Queue a clip and expose its media lifecycle in hybrid API Calls."""
+
+    if not hybrid_mode_enabled():
+        background_tasks.add_task(pipeline.process_video_task, script.id, task.id)
+        return
+
+    tenant = get_tenant(required=True)
+    assert tenant is not None
+    source_route = _hybrid_asset_source_route(
+        "project",
+        script.id,
+        series_id=script.series_id,
+    )
+    context: dict[str, Any] = {
+        "project_id": script.id,
+        "episode_id": script.id,
+        "video_task_id": task.id,
+    }
+    if script.series_id:
+        context["series_id"] = script.series_id
+    if task.frame_id:
+        context["frame_id"] = task.frame_id
+    if task.asset_id:
+        context["asset_id"] = task.asset_id
+    source_image = task.source_image_url or task.image_url
+    record_video_activity(
+        tenant.workspace_id,
+        task_id=task.id,
+        job_type="video",
+        source="workspace",
+        source_route=source_route,
+        detail=task.asset_id or task.frame_id or script.title or task.id,
+        prompt=task.prompt,
+        model_name=task.model,
+        duration=task.duration,
+        generation_mode=task.generation_mode,
+        resolution=task.resolution,
+        ratio=task.ratio,
+        source_context=context,
+        input_media=_hybrid_input_media(source_image),
+    )
+    background_tasks.add_task(
+        _process_hybrid_video_activity,
+        task.id,
+        tenant.workspace_id,
+        script.id,
+    )
+
+
+def _hybrid_motion_variants(
+    target_asset: Any,
+    asset_type: str,
+    motion_type: str | None,
+) -> list[Any]:
+    canonical = pipeline._canonical_motion_type(asset_type, motion_type)
+    if asset_type == "character":
+        unit = getattr(target_asset, canonical, None)
+        return list(getattr(unit, "video_variants", None) or [])
+    return list(getattr(target_asset, "video_assets", None) or [])
+
+
+def _process_hybrid_source_motion_activity(
+    task_id: str,
+    workspace_id: str,
+    source_kind: str,
+    source_id: str,
+    asset_type: str,
+    asset_id: str,
+    motion_type: str | None,
+    existing_variant_ids: frozenset[str],
+) -> None:
+    """Run exact-owner motion generation and persist only its new variants."""
+
+    update_asset_activity(workspace_id, task_id, status="running")
+    try:
+        pipeline.process_source_motion_ref_task(task_id)
+        status = pipeline.get_asset_generation_task_status(task_id) or {}
+        if status.get("status") != "completed":
+            update_asset_activity(
+                workspace_id,
+                task_id,
+                status="failed",
+                error=str(status.get("error") or "视频生成失败。"),
+            )
+            return
+        target_asset, _, _, _ = pipeline.find_source_asset(
+            source_kind,
+            source_id,
+            asset_type,
+            asset_id,
+        )
+        outputs: list[dict[str, Any]] = []
+        for variant in _hybrid_motion_variants(target_asset, asset_type, motion_type):
+            variant_id = str(getattr(variant, "id", "") or "")
+            media_path = str(
+                getattr(variant, "url", None) or getattr(variant, "video_url", None) or ""
+            )
+            if not variant_id or variant_id in existing_variant_ids or not media_path:
+                continue
+            outputs.extend(_hybrid_video_output(variant_id, media_path))
+        if not outputs:
+            update_asset_activity(
+                workspace_id,
+                task_id,
+                status="failed",
+                error="视频生成完成，但没有找到新的视频输出。",
+            )
+            return
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="completed",
+            outputs=outputs,
+        )
+    except Exception as exc:
+        logger.exception("Hybrid source motion task %s failed", task_id)
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="failed",
+            error=str(exc),
+        )
+
+
+def _schedule_local_source_motion_generation(
+    background_tasks: BackgroundTasks,
+    *,
+    task_id: str,
+    source_kind: str,
+    source_id: str,
+    asset_type: str,
+    asset_id: str,
+    target_asset: Any,
+    motion_type: str | None,
+    prompt: str | None,
+    duration: int,
+    batch_size: int,
+    model_name: str | None,
+    series_id: str | None,
+) -> None:
+    if not hybrid_mode_enabled():
+        background_tasks.add_task(pipeline.process_source_motion_ref_task, task_id)
+        return
+
+    tenant = get_tenant(required=True)
+    assert tenant is not None
+    canonical_motion_type = pipeline._canonical_motion_type(asset_type, motion_type)
+    source_image = pipeline._motion_reference_source_image_url(
+        target_asset,
+        canonical_motion_type,
+    )
+    existing_variant_ids = frozenset(
+        str(getattr(variant, "id", "") or "")
+        for variant in _hybrid_motion_variants(
+            target_asset,
+            asset_type,
+            motion_type,
+        )
+        if getattr(variant, "id", None)
+    )
+    source = "library" if source_kind == "global" else "workspace"
+    context: dict[str, Any] = {
+        "asset_id": asset_id,
+        "asset_type": asset_type,
+    }
+    if source_kind == "series":
+        context["series_id"] = source_id
+    elif source_kind == "project":
+        context["project_id"] = source_id
+        context["episode_id"] = source_id
+        if series_id:
+            context["series_id"] = series_id
+    record_video_activity(
+        tenant.workspace_id,
+        task_id=task_id,
+        job_type="motion_reference",
+        source=source,
+        source_route=_hybrid_asset_source_route(
+            source_kind,
+            source_id,
+            series_id=series_id,
+        ),
+        detail=str(getattr(target_asset, "name", "") or asset_id),
+        prompt=prompt,
+        model_name=model_name,
+        duration=duration,
+        batch_size=batch_size,
+        generation_mode="i2v",
+        source_context=context,
+        input_media=_hybrid_input_media(source_image),
+    )
+    background_tasks.add_task(
+        _process_hybrid_source_motion_activity,
+        task_id,
+        tenant.workspace_id,
+        source_kind,
+        source_id,
+        asset_type,
+        asset_id,
+        motion_type,
+        existing_variant_ids,
+    )
+
+
 def _schedule_local_asset_generation(
     background_tasks: BackgroundTasks,
     *,
@@ -611,7 +920,6 @@ def _schedule_local_asset_generation(
         _process_hybrid_asset_activity,
         task_id,
         tenant.workspace_id,
-        target_asset,
         existing_variant_ids,
     )
 
@@ -3070,7 +3378,7 @@ def generate_source_asset_motion(
     reservations = []
     task_id = str(uuid.uuid4())
     try:
-        _, task_id = pipeline.create_source_motion_ref_task(
+        target_asset, task_id = pipeline.create_source_motion_ref_task(
             source_kind,
             source_id,
             asset_type,
@@ -3104,7 +3412,34 @@ def generate_source_asset_motion(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_motion_ref_task(task_id)
         else:
-            background_tasks.add_task(pipeline.process_source_motion_ref_task, task_id)
+            _, _, series_id, _ = pipeline.find_source_asset(
+                source_kind,
+                source_id,
+                asset_type,
+                asset_id,
+            )
+            selected_model = (
+                request.model
+                or pipeline._source_owner_model_settings(
+                    source_kind,
+                    source_id,
+                ).video_model
+            )
+            _schedule_local_source_motion_generation(
+                background_tasks,
+                task_id=task_id,
+                source_kind=source_kind,
+                source_id=source_id,
+                asset_type=asset_type,
+                asset_id=asset_id,
+                target_asset=target_asset,
+                motion_type=request.motion_type,
+                prompt=request.prompt,
+                duration=request.duration,
+                batch_size=request.batch_size,
+                model_name=selected_model,
+                series_id=series_id,
+            )
         response = pipeline.source_asset_response_payload(
             source_kind, source_id, asset_type, asset_id
         )
@@ -4861,7 +5196,6 @@ def retry_video_task(script_id: str, task_id: str, background_tasks: BackgroundT
                 )
         except AssemblyOperationInProgressError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        background_tasks.add_task(pipeline.process_video_task, script_id, task_id)
 
     script = pipeline.get_script(script_id)
     task = next(
@@ -4870,6 +5204,13 @@ def retry_video_task(script_id: str, task_id: str, background_tasks: BackgroundT
     )
     if task is None:
         raise HTTPException(status_code=404, detail="Video task not found")
+    if not server_mode_enabled():
+        assert script is not None
+        _schedule_local_video_generation(
+            background_tasks,
+            script=script,
+            task=task,
+        )
     return signed_response(task)
 
 
@@ -4979,8 +5320,12 @@ def create_video_task(
             if created_task:
                 tasks.append(created_task)
 
-            if not server_mode_enabled():
-                background_tasks.add_task(pipeline.process_video_task, script_id, task_id)
+            if not server_mode_enabled() and created_task is not None:
+                _schedule_local_video_generation(
+                    background_tasks,
+                    script=script,
+                    task=created_task,
+                )
 
         if server_mode_enabled():
             publish_workspace_job_reservations(reservations)
@@ -5217,7 +5562,17 @@ def generate_asset_video(
         if server_mode_enabled():
             publish_workspace_job_reservations(reservations)
         else:
-            background_tasks.add_task(pipeline.process_video_task, script_id, task_id)
+            created_task = next(
+                (item for item in script.video_tasks if item.id == task_id),
+                None,
+            )
+            if created_task is None:
+                raise RuntimeError("Created video task was not persisted")
+            _schedule_local_video_generation(
+                background_tasks,
+                script=script,
+                task=created_task,
+            )
 
         return signed_response(script)
 

@@ -10,6 +10,10 @@ import requests
 from src.apps.comic_gen.llm_adapter import LLMAdapter
 from src.models.newapi import (
     INPUT_IMAGE_PRIVACY_ERROR_CODE,
+    OUTPUT_VIDEO_POLICY_ERROR_CODE,
+    OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE,
+    PROVIDER_CONNECTION_ERROR_CODE,
+    PROVIDER_CONNECTION_PUBLIC_MESSAGE,
     RATE_CARD_MISSING_ERROR_CODE,
     RATE_CARD_MISSING_PUBLIC_MESSAGE,
     NewAPIImageModel,
@@ -93,6 +97,33 @@ class TestNewAPIChatAdapter:
 
 
 class TestNewAPIImageModel:
+    def test_gateway_connection_failure_has_an_actionable_public_error(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_GPT_IMAGE_2_API_KEY", "image-test-token")
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda *_args, **_kwargs: FakeResponse(
+                {"detail": "provider connection failed"},
+                status=502,
+            ),
+        )
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            NewAPIImageModel({}).generate(
+                "draw a fox",
+                str(tmp_path / "result.png"),
+                model_id="gpt-image-2",
+            )
+
+        assert exc_info.value.error_code == PROVIDER_CONNECTION_ERROR_CODE
+        assert str(exc_info.value) == PROVIDER_CONNECTION_PUBLIC_MESSAGE
+        assert "HTTP 状态：502" in exc_info.value.diagnostic
+        assert "provider connection failed" not in str(exc_info.value)
+
     def test_missing_rate_card_has_an_actionable_public_error(self, monkeypatch, tmp_path):
         monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
         monkeypatch.setenv("NEWAPI_GPT_IMAGE_2_API_KEY", "image-test-token")
@@ -308,6 +339,48 @@ class TestNewAPIVideoModel:
 
         assert exc_info.value.error_code == INPUT_IMAGE_PRIVACY_ERROR_CODE
         assert "服务商任务 ID：privacy-task" in exc_info.value.diagnostic
+
+    def test_nested_output_policy_rejection_is_actionable(self, monkeypatch, tmp_path):
+        responses = iter(
+            [
+                FakeResponse({"task_id": "policy-task", "status": "processing"}),
+                FakeResponse(
+                    {
+                        "status": "failed",
+                        "error": {
+                            "code": "OutputVideoSensitiveContentDetected.PolicyViolation",
+                            "message": (
+                                "The output video may be related to copyright restrictions. "
+                                "Request id: policy-request-1"
+                            ),
+                        },
+                    }
+                ),
+            ]
+        )
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_SEEDANCE_2_FAST_API_KEY", "video-test-token")
+        monkeypatch.setenv("NEWAPI_VIDEO_POLL_INTERVAL", "0.1")
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda *_args, **_kwargs: next(responses),
+        )
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _: None)
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            NewAPIVideoModel({}).generate(
+                "abstract lights drifting through space",
+                str(tmp_path / "rejected.mp4"),
+                model_id="doubao-seedance-2-0-fast-260128",
+                generation_mode="t2v",
+            )
+
+        error = exc_info.value
+        assert error.error_code == OUTPUT_VIDEO_POLICY_ERROR_CODE
+        assert str(error) == OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE
+        assert "copyright restrictions" not in str(error)
+        assert "服务商任务 ID：policy-task" in error.diagnostic
+        assert "policy-request-1" in error.diagnostic
 
     def test_nested_task_failure_wins_and_echoed_input_url_is_not_output(self):
         source_url = "https://studio.example/provider-media/signed/source.png"

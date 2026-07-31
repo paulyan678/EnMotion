@@ -1,19 +1,18 @@
 from __future__ import annotations
 
+import base64
 import gzip
 import json
-import base64
 from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
 from app.config import Settings
 from app.factory import create_app
 from app.models import CreditLedger, RateCard, User
 from app.security import hash_password, normalize_username
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture

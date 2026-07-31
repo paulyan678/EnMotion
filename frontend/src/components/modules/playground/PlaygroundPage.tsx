@@ -16,16 +16,14 @@ import {
   supportsPlaygroundNegativePrompt,
 } from './playgroundModels';
 import { playgroundApi, type PlaygroundGenerationResponse } from '@/lib/api';
-import GlobalPageTitle from '@/components/layout/GlobalPageTitle';
+import GlobalPageHeader from '@/components/layout/GlobalPageHeader';
 import { toast } from '@/store/toastStore';
+import { waitForPlaygroundGeneration } from './pollGeneration';
 
 /** Modes that require media input (image or video source).
  *  t2i also shows optional media input — when provided, it auto-becomes i2i. */
 const MODES_WITH_MEDIA: PlaygroundMode[] = ['i2i', 'i2v'];
 const MODES_WITH_OPTIONAL_MEDIA: PlaygroundMode[] = ['t2i'];
-
-/** Polling interval for generation status (ms) */
-const POLL_INTERVAL = 2000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -83,45 +81,40 @@ export default function PlaygroundPage() {
   const activeCount = usePlaygroundStore((s) => s.activeGenerationIds.length);
   const maxConcurrent = usePlaygroundStore((s) => s.maxConcurrent);
 
-  const pollTimers = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  const pollControllers = useRef<Map<string, AbortController>>(new Map());
 
   // ─── Cleanup poll timers ───────────────────────────────────────────────────
 
   useEffect(() => {
-    const timers = pollTimers.current;
+    const controllers = pollControllers.current;
     return () => {
-      timers.forEach((timer) => clearInterval(timer));
-      timers.clear();
+      controllers.forEach((controller) => controller.abort());
+      controllers.clear();
     };
   }, []);
 
   // ─── Status poller ─────────────────────────────────────────────────────────
 
   const startPolling = useCallback((generationId: string) => {
-    // Prevent duplicate timers
-    if (pollTimers.current.has(generationId)) return;
+    if (pollControllers.current.has(generationId)) return;
+    const controller = new AbortController();
+    pollControllers.current.set(generationId, controller);
 
-    const timer = setInterval(async () => {
-      try {
-        const statusResp = await playgroundApi.getGenerationStatus(generationId);
-        const isTerminal = statusResp.status === 'completed' || statusResp.status === 'failed';
-
-        // Fetch full generation data for complete update
-        const fullResp = await playgroundApi.getGeneration(generationId);
-        updateGeneration(toGeneration(fullResp));
-
-        if (isTerminal) {
-          clearInterval(timer);
-          pollTimers.current.delete(generationId);
-        }
-      } catch (err) {
-        console.error('[Playground] Poll failed for', generationId, err);
-        clearInterval(timer);
-        pollTimers.current.delete(generationId);
+    void waitForPlaygroundGeneration(generationId, {
+      signal: controller.signal,
+    }).then((fullResponse) => {
+      if (!controller.signal.aborted) {
+        updateGeneration(toGeneration(fullResponse));
       }
-    }, POLL_INTERVAL);
-
-    pollTimers.current.set(generationId, timer);
+    }).catch((error) => {
+      if (!controller.signal.aborted) {
+        console.error('[Playground] Poll failed for', generationId, error);
+      }
+    }).finally(() => {
+      if (pollControllers.current.get(generationId) === controller) {
+        pollControllers.current.delete(generationId);
+      }
+    });
   }, [updateGeneration]);
 
   // ─── Fetch initial data and resume server-side work ────────────────────────
@@ -274,17 +267,14 @@ export default function PlaygroundPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden text-foreground">
-      {/* ═══ PAGE HEADER ═══ */}
-      <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-7 py-5">
-        <GlobalPageTitle>
-          {t('header.title')}
-        </GlobalPageTitle>
-        <div className="flex items-center gap-3">
+      <GlobalPageHeader
+        title={t('header.title')}
+        actions={(
           <span className="atelier-badge rounded border border-glass-border bg-glass px-2 py-1 text-[0.625rem] uppercase tracking-[0.18em] text-text-muted">
             {t(`mode.${mode}`)}
           </span>
-        </div>
-      </header>
+        )}
+      />
 
       {/* ═══ SPLIT LAYOUT ═══ */}
       <div

@@ -46,7 +46,9 @@ Python、Node.js，也不需要填写公司的 AI Provider API Key。
 | macOS | `~/Library/Application Support/EnMotion` |
 | Windows | `%LOCALAPPDATA%\EnMotion` |
 
-登录刷新凭证存放在 macOS Keychain 或 Windows Credential Manager，而不是项目文件、浏览器 localStorage 或普通 JSON 文件。
+登录时只会将可撤销的刷新令牌保存到 EnMotion 专属应用数据目录；macOS/Linux
+目录权限为 `0700`，令牌文件权限为 `0600`。EnMotion 不保存账户密码，也不会把
+登录信息写入项目文件、浏览器 localStorage 或 `AGENTS.md`。
 
 EnMotion 不会自动读取、移动或删除其他应用的数据。
 

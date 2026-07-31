@@ -82,6 +82,8 @@ class PlaygroundService:
             outputs=[],
             status="pending",
             error=None,
+            error_code=None,
+            error_diagnostic=None,
             created_at=now,
             updated_at=now,
         )
@@ -99,6 +101,8 @@ class PlaygroundService:
         # Mark processing
         gen.status = "processing"
         gen.error = None
+        gen.error_code = None
+        gen.error_diagnostic = None
         self.storage.update_generation(gen)
 
         try:
@@ -116,9 +120,12 @@ class PlaygroundService:
             gen.status = "failed"
             from ...models.newapi import NewAPIProviderError
 
-            gen.error = (
-                str(exc) if isinstance(exc, NewAPIProviderError) else GENERATION_FAILED_MESSAGE
-            )
+            if isinstance(exc, NewAPIProviderError):
+                gen.error = str(exc)
+                gen.error_code = exc.error_code
+                gen.error_diagnostic = exc.diagnostic
+            else:
+                gen.error = GENERATION_FAILED_MESSAGE
 
         self.storage.update_generation(gen)
 
@@ -312,7 +319,7 @@ class PlaygroundService:
     def _process_image_generation(self, gen: PlaygroundGeneration) -> None:
         os.makedirs(self.image_output_dir, exist_ok=True)
 
-        failures = []
+        failures: list[Exception] = []
 
         for idx in range(gen.batch_size):
             ext = "png"
@@ -333,9 +340,17 @@ class PlaygroundService:
                 self.storage.update_generation(gen)
             except Exception as exc:
                 logger.error("Image generation %s batch %d failed: %s", gen.id, idx, exc)
-                failures.append(str(exc))
+                failures.append(exc)
 
         if failures and not gen.outputs:
+            from ...models.newapi import NewAPIProviderError
+
+            provider_failure = next(
+                (failure for failure in failures if isinstance(failure, NewAPIProviderError)),
+                None,
+            )
+            if provider_failure is not None:
+                raise provider_failure
             raise RuntimeError(IMAGE_GENERATION_FAILED_MESSAGE)
 
     def _generate_image_newapi(self, gen: PlaygroundGeneration, out_path: str, _idx: int) -> None:
@@ -372,7 +387,7 @@ class PlaygroundService:
     def _process_video_generation(self, gen: PlaygroundGeneration) -> None:
         os.makedirs(self.video_output_dir, exist_ok=True)
 
-        failures = []
+        failures: list[Exception] = []
 
         for idx in range(gen.batch_size):
             out_filename = f"{gen.mode.value}_{gen.id}_{idx}.mp4"
@@ -396,9 +411,17 @@ class PlaygroundService:
                 self.storage.update_generation(gen)
             except Exception as exc:
                 logger.error("Video generation %s batch %d failed: %s", gen.id, idx, exc)
-                failures.append(str(exc))
+                failures.append(exc)
 
         if failures and not gen.outputs:
+            from ...models.newapi import NewAPIProviderError
+
+            provider_failure = next(
+                (failure for failure in failures if isinstance(failure, NewAPIProviderError)),
+                None,
+            )
+            if provider_failure is not None:
+                raise provider_failure
             raise RuntimeError(VIDEO_GENERATION_FAILED_MESSAGE)
 
     # -- adapter delegates ------------------------------------------------
