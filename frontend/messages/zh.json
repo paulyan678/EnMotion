@@ -1973,6 +1973,13 @@
   "creator": {
     "title": "动态演译",
     "i2vMode": "首帧驱动（图生视频）",
+    "t2vMode": "提示词驱动（文生视频）",
+    "generationMode": "生成模式",
+    "i2vDescription": "将当前选中的分镜图片作为精确首帧生成视频。",
+    "t2vDescription": "不传入图片，直接使用镜头动作提示词生成视频。",
+    "t2vPromptOnly": "此模式只发送镜头提示词，不上传分镜图片。",
+    "savingMode": "正在保存模式…",
+    "modeSaveFailed": "无法保存此镜头的生成模式。",
     "firstFrame": "片段首帧",
     "clipStartFrame": "片段首帧",
     "shotCount": "共 {count} 个镜头",

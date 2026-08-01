@@ -143,8 +143,11 @@ describe("shot-specific Motion Creator", () => {
     expect(within(dialog).getByText("Action 1")).toBeInTheDocument();
     expect(within(dialog).getByText("Tracking")).toBeInTheDocument();
 
-    const variantButtons = within(dialog).getAllByRole("button", { pressed: false });
-    fireEvent.click(variantButtons[0]);
+    const variantButton = within(dialog)
+      .getAllByRole("button", { name: "Clip start image variant" })
+      .find((button) => button.getAttribute("aria-pressed") === "false");
+    expect(variantButton).toBeDefined();
+    fireEvent.click(variantButton!);
     await waitFor(() => expect(updateSpy).toHaveBeenCalledWith(
       "motion-project",
       "frame-1",
@@ -307,6 +310,95 @@ describe("shot-specific Motion Creator", () => {
 
     await waitFor(() => expect(createSpy).toHaveBeenCalledOnce());
     expect(envSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not swallow Generate Clip while an edited prompt is saving on blur", async () => {
+    window.__ENMOTION_RUNTIME_CONFIG__ = {
+      hybridMode: true,
+      serverMode: false,
+    };
+    const selectedFrame = frame(8);
+    seed([selectedFrame]);
+    let finishPromptSave: ((value: StoryboardFrame) => void) | undefined;
+    const promptSave = new Promise<StoryboardFrame>((resolve) => {
+      finishPromptSave = resolve;
+    });
+    const updateSpy = vi.spyOn(api, "updateFrameWorkbench").mockReturnValue(promptSave);
+    const createSpy = vi.spyOn(api, "createVideoTask").mockResolvedValue([]);
+    renderCreator();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure clip for shot 1" }));
+    const prompt = screen.getByLabelText("Action Prompt");
+    fireEvent.change(prompt, { target: { value: "A newly edited motion prompt" } });
+    fireEvent.blur(prompt);
+
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledOnce());
+    const generate = screen.getByRole("button", { name: "Generate Clip" });
+    expect(generate).toBeEnabled();
+    fireEvent.click(generate);
+    expect(createSpy).not.toHaveBeenCalled();
+
+    finishPromptSave?.({ ...selectedFrame, video_prompt: "A newly edited motion prompt" });
+    await waitFor(() => expect(createSpy).toHaveBeenCalledOnce());
+    expect(updateSpy).toHaveBeenCalledOnce();
+    expect(createSpy).toHaveBeenCalledWith(
+      "motion-project",
+      expect.objectContaining({ prompt: "A newly edited motion prompt" }),
+    );
+  });
+
+  it("submits a shot-scoped text-to-video task without an image input", async () => {
+    window.__ENMOTION_RUNTIME_CONFIG__ = {
+      hybridMode: true,
+      serverMode: false,
+    };
+    const selectedFrame = frame(9, false);
+    seed([selectedFrame]);
+    const updateSpy = vi.spyOn(api, "updateFrameWorkbench").mockImplementation(
+      async (_projectId, _frameId, patch) => ({ ...selectedFrame, ...patch }),
+    );
+    const createdTask: VideoTask = {
+      id: "task-shot-9-t2v",
+      project_id: "motion-project",
+      frame_id: selectedFrame.id,
+      image_url: "",
+      prompt: selectedFrame.video_prompt!,
+      status: "pending",
+      duration: 5,
+      seed: 42,
+      resolution: "720p",
+      generate_audio: true,
+      created_at: 1,
+      model: DEFAULT_I2V_MODEL_ID,
+      generation_mode: "t2v",
+      workbench_tab: "direct_r2v",
+    };
+    const createSpy = vi.spyOn(api, "createVideoTask").mockResolvedValue([createdTask]);
+    renderCreator();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure clip for shot 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prompt Driven (T2V)" }));
+
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledWith(
+      "motion-project",
+      "frame-9",
+      { workbench_tab_mode: "direct_r2v" },
+    ));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Generate Clip" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Generate Clip" }));
+
+    await waitFor(() => expect(createSpy).toHaveBeenCalledOnce());
+    const payload = createSpy.mock.calls[0][1];
+    expect(payload).toMatchObject({
+      frame_id: "frame-9",
+      frame_type: "follow",
+      prompt: "Move through shot 9",
+      model: DEFAULT_I2V_MODEL_ID,
+      generation_mode: "t2v",
+      workbench_tab: "direct_r2v",
+    });
+    expect(payload).not.toHaveProperty("image_url");
+    expect(payload).not.toHaveProperty("source_image_id");
   });
 
   it("uses localized Clip Start Frame and shot controls in Chinese", () => {

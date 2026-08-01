@@ -26,6 +26,7 @@ import { api, type VideoTask } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
 import {
     configuredSecretFields,
+    getApprovedModel,
     getSecretFieldForModel,
     isApprovedModelForCapability,
 } from "@/lib/newApiModels";
@@ -93,7 +94,9 @@ export default function VideoCreator({
     const updateProject = useProjectStore((state) => state.updateProject);
     const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
     const [prompt, setPrompt] = useState("");
+    const [generationMode, setGenerationMode] = useState<"i2v" | "t2v">("i2v");
     const [isSavingPrompt, setIsSavingPrompt] = useState(false);
+    const [isSavingMode, setIsSavingMode] = useState(false);
     const [isSelectingImage, setIsSelectingImage] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -102,6 +105,7 @@ export default function VideoCreator({
     const [submitSuccess, setSubmitSuccess] = useState(false);
     const [inlineError, setInlineError] = useState<string | null>(null);
     const uploadInputRef = useRef<HTMLInputElement>(null);
+    const promptSaveRef = useRef<{ value: string; promise: Promise<boolean> } | null>(null);
 
     const frames = useMemo(
         () => (currentProject?.frames ?? []) as StoryboardFrame[],
@@ -137,6 +141,7 @@ export default function VideoCreator({
             if (canceled) return;
             if (remixData.frame_id) setSelectedFrameId(remixData.frame_id);
             if (remixData.prompt) setPrompt(remixData.prompt);
+            if (remixData.generation_mode) setGenerationMode(remixData.generation_mode);
             onRemixClear();
         });
         return () => { canceled = true; };
@@ -152,26 +157,64 @@ export default function VideoCreator({
     const openShot = (frame: StoryboardFrame) => {
         setSelectedFrameId(frame.id);
         setPrompt(frame.video_prompt || defaultMotionPrompt(frame));
+        setGenerationMode(frame.workbench_tab_mode === "direct_r2v" ? "t2v" : "i2v");
         setInlineError(null);
     };
 
-    const savePrompt = async (nextPrompt = prompt): Promise<boolean> => {
-        if (!currentProject || !selectedFrame || isSavingPrompt) return false;
-        const clean = nextPrompt.trim();
-        if (clean === (selectedFrame.video_prompt || "").trim()) return true;
-        setIsSavingPrompt(true);
+    const selectGenerationMode = async (nextMode: "i2v" | "t2v") => {
+        if (!currentProject || !selectedFrame || isSavingMode || nextMode === generationMode) return;
+        const previousMode = generationMode;
+        setGenerationMode(nextMode);
+        setIsSavingMode(true);
+        setInlineError(null);
         try {
             const updated = await api.updateFrameWorkbench(currentProject.id, selectedFrame.id, {
-                video_prompt: clean,
+                workbench_tab_mode: nextMode === "t2v" ? "direct_r2v" : "t2i_i2v",
             });
             applyUpdatedFrame(updated);
-            return true;
         } catch (error) {
-            console.error("Failed to save shot motion prompt", error);
-            setInlineError(t("promptSaveFailed"));
-            return false;
+            console.error("Failed to save shot video mode", error);
+            setGenerationMode(previousMode);
+            setInlineError(t("modeSaveFailed"));
         } finally {
-            setIsSavingPrompt(false);
+            setIsSavingMode(false);
+        }
+    };
+
+    const savePrompt = async (nextPrompt = prompt): Promise<boolean> => {
+        if (!currentProject || !selectedFrame) return false;
+        const clean = nextPrompt.trim();
+        if (clean === (selectedFrame.video_prompt || "").trim()) return true;
+
+        const activeSave = promptSaveRef.current;
+        if (activeSave) {
+            if (activeSave.value === clean) return activeSave.promise;
+            if (!await activeSave.promise) return false;
+        }
+
+        const projectId = currentProject.id;
+        const frameId = selectedFrame.id;
+        const request = (async (): Promise<boolean> => {
+            setIsSavingPrompt(true);
+            try {
+                const updated = await api.updateFrameWorkbench(projectId, frameId, {
+                    video_prompt: clean,
+                });
+                applyUpdatedFrame(updated);
+                return true;
+            } catch (error) {
+                console.error("Failed to save shot motion prompt", error);
+                setInlineError(t("promptSaveFailed"));
+                return false;
+            } finally {
+                setIsSavingPrompt(false);
+            }
+        })();
+        promptSaveRef.current = { value: clean, promise: request };
+        try {
+            return await request;
+        } finally {
+            if (promptSaveRef.current?.promise === request) promptSaveRef.current = null;
         }
     };
 
@@ -232,7 +275,7 @@ export default function VideoCreator({
                 "",
                 currentProject.id,
                 "",
-                selectedImage ? [selectedImage.url] : [],
+                generationMode === "i2v" && selectedImage ? [selectedImage.url] : [],
             );
             const polished = result.prompt_en || result.prompt_cn || prompt;
             setPrompt(polished);
@@ -250,10 +293,17 @@ export default function VideoCreator({
 
     const disabledReason = (() => {
         if (!selectedFrame) return t("selectShotReason");
-        if (!selectedImage) return variants.length ? t("selectStartImageReason") : t("uploadStartImageReason");
+        if (generationMode === "i2v" && !selectedImage) {
+            return variants.length ? t("selectStartImageReason") : t("uploadStartImageReason");
+        }
         if (!prompt.trim()) return t("enterMotionPromptReason");
-        if (isSavingPrompt) return t("savingPrompt");
-        if (!currentModel || !isApprovedModelForCapability(params.model, "video")) return t("selectVideoModelReason");
+        if (isSavingMode) return t("savingMode");
+        const approvedModel = getApprovedModel(params.model);
+        if (
+            !currentModel
+            || !isApprovedModelForCapability(params.model, "video")
+            || !approvedModel?.capabilities.includes(generationMode)
+        ) return t("selectVideoModelReason");
         if (
             !supportsDuration(currentModel, params.duration)
             || !currentModel.params.resolution?.options.includes(params.resolution)
@@ -266,7 +316,13 @@ export default function VideoCreator({
     })();
 
     const generateClip = async () => {
-        if (!currentProject || !selectedFrame || !selectedImage || disabledReason || isSubmitting) return;
+        if (
+            !currentProject
+            || !selectedFrame
+            || (generationMode === "i2v" && !selectedImage)
+            || disabledReason
+            || isSubmitting
+        ) return;
         setIsSubmitting(true);
         setInlineError(null);
         try {
@@ -283,9 +339,14 @@ export default function VideoCreator({
             }
 
             if (!await savePrompt(prompt)) return;
+            const imageInput = generationMode === "i2v" && selectedImage
+                ? {
+                    image_url: selectedImage.url,
+                    source_image_id: selectedImage.id,
+                }
+                : {};
             const created = await api.createVideoTask(currentProject.id, {
-                image_url: selectedImage.url,
-                source_image_id: selectedImage.id,
+                ...imageInput,
                 frame_id: selectedFrame.id,
                 frame_type: selectedFrameType,
                 prompt: prompt.trim(),
@@ -295,10 +356,10 @@ export default function VideoCreator({
                 generate_audio: params.generateAudio,
                 batch_size: params.batchSize,
                 model: params.model,
-                generation_mode: "i2v",
+                generation_mode: generationMode,
                 ratio: params.ratio,
                 watermark: params.watermark,
-                workbench_tab: "t2i_i2v",
+                workbench_tab: generationMode === "t2v" ? "direct_r2v" : "t2i_i2v",
             });
             const createdTasks = Array.isArray(created) ? created : [created];
             onTaskCreated({
@@ -442,9 +503,32 @@ export default function VideoCreator({
                         </header>
 
                         <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 custom-scrollbar">
+                            <section aria-labelledby="clip-generation-mode-label">
+                                <p id="clip-generation-mode-label" className="mb-2 text-sm font-semibold text-foreground">
+                                    {t("generationMode")}
+                                </p>
+                                <div className="grid grid-cols-2 gap-2 rounded-xl border border-glass-border bg-glass p-1">
+                                    {(["i2v", "t2v"] as const).map((mode) => (
+                                        <button
+                                            key={mode}
+                                            type="button"
+                                            aria-pressed={generationMode === mode}
+                                            onClick={() => void selectGenerationMode(mode)}
+                                            disabled={isSavingMode}
+                                            className={`rounded-lg px-3 py-2 text-sm font-medium transition ${generationMode === mode ? "bg-primary text-white shadow" : "text-text-secondary hover:bg-surface hover:text-foreground"}`}
+                                        >
+                                            {t(mode === "i2v" ? "i2vMode" : "t2vMode")}
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="mt-2 text-xs text-text-muted">
+                                    {t(generationMode === "i2v" ? "i2vDescription" : "t2vDescription")}
+                                </p>
+                            </section>
+
                             <div className="grid gap-5 sm:grid-cols-[minmax(0,1.35fr)_minmax(180px,0.65fr)]">
                                 <div className="relative aspect-video overflow-hidden rounded-xl border border-glass-border bg-black/25">
-                                    {selectedImage ? (
+                                    {generationMode === "i2v" && selectedImage ? (
                                         <NextImage
                                             src={getAssetUrl(selectedImage.url)}
                                             alt={t("selectedStartImageAlt")}
@@ -453,6 +537,11 @@ export default function VideoCreator({
                                             className="object-cover"
                                             unoptimized
                                         />
+                                    ) : generationMode === "t2v" ? (
+                                        <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-text-muted">
+                                            <Film size={30} />
+                                            <span className="text-sm">{t("t2vPromptOnly")}</span>
+                                        </div>
                                     ) : (
                                         <div className="flex h-full flex-col items-center justify-center gap-2 text-text-muted">
                                             <ImageIcon size={30} />
@@ -470,6 +559,10 @@ export default function VideoCreator({
                                         <dd className="mt-1 text-foreground">{ts(`frameTypes.${selectedFrameType}`)}</dd>
                                     </div>
                                     <div>
+                                        <dt className="text-xs text-text-muted">{t("generationMode")}</dt>
+                                        <dd className="mt-1 text-foreground">{t(generationMode === "i2v" ? "i2vMode" : "t2vMode")}</dd>
+                                    </div>
+                                    <div>
                                         <dt className="text-xs text-text-muted">{t("activeVideoModel")}</dt>
                                         <dd className="mt-1 text-foreground">{currentModel?.name ?? t("noVideoModel")}</dd>
                                     </div>
@@ -480,7 +573,7 @@ export default function VideoCreator({
                                 </dl>
                             </div>
 
-                            <section>
+                            {generationMode === "i2v" ? <section>
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                     <div>
                                         <h4 className="text-sm font-semibold text-foreground">{t("availableVariants")}</h4>
@@ -534,7 +627,7 @@ export default function VideoCreator({
                                         </button>
                                     ) : null}
                                 </div>
-                            </section>
+                            </section> : null}
 
                             <section>
                                 <div className="mb-2 flex items-center justify-between gap-3">
@@ -581,7 +674,10 @@ export default function VideoCreator({
                                                 )}
                                                 <div className="space-y-2 px-3 py-2 text-xs text-text-muted">
                                                     <div className="flex items-center justify-between gap-2">
-                                                        <span className="truncate">{task.model ? VIDEO_I2V_MODELS.find((model) => model.id === task.model)?.name || task.model : ""}</span>
+                                                        <span className="truncate">
+                                                            {task.model ? VIDEO_I2V_MODELS.find((model) => model.id === task.model)?.name || task.model : ""}
+                                                            {task.generation_mode ? ` · ${task.generation_mode.toUpperCase()}` : ""}
+                                                        </span>
                                                         <span className="font-mono">#{task.id.slice(0, 6)}</span>
                                                     </div>
                                                     {task.status === "failed" ? (

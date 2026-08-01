@@ -784,25 +784,38 @@ class ComicGenPipeline:
         source_image_id: Optional[str],
         image_url: Optional[str],
         frame_type: Optional[str],
-    ) -> Tuple[StoryboardFrame, str, str]:
-        """Validate and resolve one exact shot + image selection.
+        generation_mode: str = "i2v",
+    ) -> Tuple[StoryboardFrame, Optional[str], str]:
+        """Validate and resolve one exact shot plus its optional image input.
 
-        This is deliberately server-authoritative: clients cannot submit an
-        arbitrary image URL while claiming it belongs to a storyboard shot.
+        Both Workspace video modes stay shot-scoped. I2V additionally resolves
+        the exact server-owned image variant, while T2V rejects image input so
+        clients cannot accidentally send a stale or unintended reference.
         """
 
         if not frame_id:
             raise ValueError("Select a storyboard shot before generating a clip")
-        if not source_image_id:
-            raise ValueError("Select a clip start image before generating a clip")
-        if not image_url:
-            raise ValueError("Clip generation requires a source image URL")
         script = self.scripts.get(script_id)
         if not script:
             raise ValueError("Script not found")
         frame = next((item for item in script.frames if item.id == frame_id), None)
         if frame is None:
             raise ValueError("Storyboard frame not found")
+
+        canonical_type = _frame_type_from_storyboard(frame)
+        if frame_type and _normalize_frame_type(frame_type) != canonical_type:
+            raise ValueError("The submitted frame type is stale; reopen the shot and try again")
+
+        if generation_mode == "t2v":
+            if source_image_id or image_url:
+                raise ValueError("Text-to-video generation must not include a source image")
+            return frame, None, canonical_type
+        if generation_mode != "i2v":
+            raise ValueError("Clip generation mode must be t2v or i2v")
+        if not source_image_id:
+            raise ValueError("Select a clip start image before generating a clip")
+        if not image_url:
+            raise ValueError("Clip generation requires a source image URL")
 
         candidates = self._frame_clip_image_candidates(frame)
         expected_url = candidates.get(source_image_id)
@@ -824,9 +837,6 @@ class ComicGenPipeline:
             # task creation save immediately below makes it durable.
             self._set_frame_clip_start_image(frame, source_image_id, expected_url)
 
-        canonical_type = _frame_type_from_storyboard(frame)
-        if frame_type and _normalize_frame_type(frame_type) != canonical_type:
-            raise ValueError("The submitted frame type is stale; reopen the shot and try again")
         return frame, expected_url, canonical_type
 
     def update_frame_workbench(

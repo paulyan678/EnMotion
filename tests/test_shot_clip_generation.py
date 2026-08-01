@@ -113,6 +113,59 @@ def test_server_rejects_stale_frame_type_and_stale_selected_image(pipeline):
         )
 
 
+def test_workspace_text_to_video_is_shot_scoped_and_has_no_image_input(pipeline):
+    frame = make_frame()
+    script = install_script(pipeline, frame)
+
+    validated_frame, image_url, frame_type = pipeline.validate_clip_generation_request(
+        script.id,
+        frame.id,
+        None,
+        None,
+        "follow",
+        "t2v",
+    )
+
+    assert validated_frame is frame
+    assert image_url is None
+    assert frame_type == "follow"
+
+    with pytest.raises(ValueError, match="must not include a source image"):
+        pipeline.validate_clip_generation_request(
+            script.id,
+            frame.id,
+            "render-a",
+            "storyboard/a.png",
+            "follow",
+            "t2v",
+        )
+
+    with patch("src.apps.comic_gen.pipeline.resolve_model_api_key", return_value="test-key"):
+        _, task_id = pipeline.create_video_task(
+            script_id=script.id,
+            image_url=image_url,
+            source_image_id=None,
+            source_image_url=None,
+            frame_id=frame.id,
+            frame_type=frame_type,
+            prompt="A slow tracking shot through fictional neon rain.",
+            model=VIDEO_MODEL,
+            generation_mode="t2v",
+            duration=5,
+            resolution="720p",
+            ratio="16:9",
+            workbench_tab="direct_r2v",
+        )
+
+    task = next(item for item in script.video_tasks if item.id == task_id)
+    assert task.frame_id == frame.id
+    assert task.image_url == ""
+    assert task.source_image_id is None
+    assert task.source_image_url is None
+    assert task.generation_mode == "t2v"
+    assert task.workbench_tab == "direct_r2v"
+
+
 def test_workbench_persists_exact_variant_prompt_and_uploaded_selection(pipeline):
     frame = make_frame()
     install_script(pipeline, frame)

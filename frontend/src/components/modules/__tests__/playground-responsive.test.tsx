@@ -62,8 +62,17 @@ describe("playground responsive layout", () => {
     expect(screen.getByTestId("playground-input-panel")).toHaveClass(
       "w-full",
       "md:w-[420px]",
-      "md:overflow-y-auto",
+      "md:h-full",
+      "md:overflow-hidden",
     );
+    const composerScroll = screen.getByTestId("playground-composer-scroll");
+    const generateBar = screen.getByTestId("playground-generate-bar");
+    expect(composerScroll).toHaveClass("md:flex-1", "md:overflow-y-auto");
+    expect(generateBar).toHaveClass("shrink-0");
+    expect(generateBar).not.toHaveClass("sticky", "bottom-0");
+    expect(composerScroll.nextElementSibling).toBe(generateBar);
+    expect(generateBar.parentElement).toBe(screen.getByTestId("playground-input-panel"));
+    expect(screen.getByRole("button", { name: "生成" })).toBeWithin(generateBar);
     expect(screen.getByTestId("playground-results-panel")).toHaveClass(
       "min-h-[360px]",
       "w-full",
