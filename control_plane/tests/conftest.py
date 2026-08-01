@@ -75,6 +75,16 @@ def provider_transport(provider_calls: list[httpx.Request]) -> httpx.MockTranspo
                         }
                     },
                 )
+            if body.get("prompt") == "quota below threshold":
+                return httpx.Response(
+                    403,
+                    json={
+                        "error": {
+                            "code": "quota_below_block_threshold",
+                            "message": "balance is below the video submission threshold",
+                        }
+                    },
+                )
             if body.get("prompt") == "missing task id":
                 return httpx.Response(200, json={"status": "queued"})
             if body.get("prompt") == "nested task id":

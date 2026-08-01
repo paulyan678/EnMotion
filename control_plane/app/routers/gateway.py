@@ -141,6 +141,12 @@ def _provider_rejection_code(status_code: int, provider_code: str = "") -> str:
     normalized = provider_code.casefold()
     if "quota_warning_concurrency_limit" in normalized:
         return "provider_concurrency_limited"
+    # Some OpenAI-compatible providers return their low-balance guard as HTTP
+    # 403 even though this is a billing failure rather than a model entitlement
+    # failure. Preserve the provider's explicit code before falling back to the
+    # status-based classification so users receive the actionable diagnosis.
+    if "quota_below_block_threshold" in normalized:
+        return "provider_quota_exhausted"
     if "inputimagesensitivecontentdetected.privacyinformation" in normalized:
         return "input_image_privacy"
     if "outputvideosensitivecontentdetected.policyviolation" in normalized:

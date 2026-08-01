@@ -478,6 +478,44 @@ def test_video_provider_concurrency_limit_is_refunded_and_exposed_as_retryable(a
         assert session.scalar(select(ProviderTask)) is None
 
 
+def test_video_provider_low_balance_is_refunded_and_exposed_as_quota(app_env):
+    client, app = app_env
+    employee = login(client, "employee", "Employee-password-123")["access_token"]
+    submitted = client.post(
+        "/api/v1/gateway/video/generations",
+        headers={**bearer(employee), "Idempotency-Key": "video-low-balance-001"},
+        json={
+            "model": "doubao-seedance-2-0-fast-260128",
+            "prompt": "quota below threshold",
+            "metadata": {
+                "content": [{"type": "text", "text": "quota below threshold"}],
+                "duration": 5,
+                "resolution": "720p",
+                "ratio": "16:9",
+                "generate_audio": True,
+                "watermark": False,
+            },
+        },
+    )
+
+    assert submitted.status_code == 403, submitted.text
+    assert submitted.json() == {
+        "detail": "provider rejected request",
+        "code": "provider_quota_exhausted",
+        "provider_status": 403,
+    }
+    with app.state.db.session() as session:
+        owner = session.scalar(select(User).where(User.username == "employee"))
+        usage = session.scalar(
+            select(UsageRequest).where(UsageRequest.idempotency_key == "video-low-balance-001")
+        )
+        assert owner.available_credits == 100
+        assert owner.reserved_credits == 0
+        assert usage.status == "refunded"
+        assert usage.error_code == "provider_quota_exhausted"
+        assert session.scalar(select(ProviderTask)) is None
+
+
 def test_video_acceptance_without_task_id_stays_reserved_for_reconciliation(app_env):
     client, app = app_env
     employee = login(client, "employee", "Employee-password-123")["access_token"]

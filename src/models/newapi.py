@@ -236,9 +236,12 @@ def _classified_provider_error(
         marker in normalized
         for marker in (
             "providerquotaexhausted",
+            "quotabelowblockthreshold",
             "insufficientquota",
             "insufficient available credits",
             "no balance left",
+            "余额不足",
+            "低于禁止阈值",
         )
     )
     if is_quota_exhausted:
