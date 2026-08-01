@@ -30,8 +30,10 @@ Opening it again focuses the existing window instead of starting a second
 sidecar against the same workspace files.
 
 The local data directory is resolved by the operating system. Generated media
-always defaults to `Documents/enmotion-output`. Application updates never replace
-or delete either location.
+defaults to its private `enmotion-output` child (on macOS,
+`~/Library/Application Support/com.enmotion.desktop/enmotion-output`) so the app
+does not need Documents-folder or Full Disk Access permission. Application
+updates never replace or delete this location.
 
 Web content receives only Tauri events and five narrow Rust commands:
 

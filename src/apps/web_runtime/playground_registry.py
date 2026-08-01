@@ -8,6 +8,7 @@ from typing import Dict, Optional
 
 from ..playground.service import PlaygroundService
 from ..playground.storage import PlaygroundStorage
+from .background_dispatch import DetachedTaskDispatcher
 from .context import get_tenant
 from .pipeline_registry import WorkspacePipelineRegistry
 
@@ -19,8 +20,13 @@ class WorkspacePlayground:
 
 
 class WorkspacePlaygroundRegistry:
-    def __init__(self, pipelines: Optional[WorkspacePipelineRegistry] = None):
+    def __init__(
+        self,
+        pipelines: Optional[WorkspacePipelineRegistry] = None,
+        dispatcher: Optional[DetachedTaskDispatcher] = None,
+    ):
         self.pipelines = pipelines or WorkspacePipelineRegistry()
+        self._dispatcher = dispatcher
         self._lock = threading.RLock()
         self._runtimes: Dict[str, WorkspacePlayground] = {}
 
@@ -36,7 +42,27 @@ class WorkspacePlaygroundRegistry:
                     service=PlaygroundService(storage),
                 )
                 self._runtimes[safe_id] = runtime
+                for generation_id in storage.resumable_generation_ids():
+                    self._task_dispatcher().submit(
+                        runtime.service.process_generation,
+                        generation_id,
+                    )
             return runtime
+
+    def _task_dispatcher(self) -> DetachedTaskDispatcher:
+        with self._lock:
+            if self._dispatcher is None:
+                self._dispatcher = DetachedTaskDispatcher(
+                    worker_count=4,
+                    name_prefix="enmotion-playground",
+                )
+            return self._dispatcher
+
+    def dispatch_current(self, generation_id: str) -> None:
+        """Run one current-tenant generation outside the HTTP lifecycle."""
+
+        runtime = self.current()
+        self._task_dispatcher().submit(runtime.service.process_generation, generation_id)
 
     def current(self) -> WorkspacePlayground:
         tenant = get_tenant(required=True)

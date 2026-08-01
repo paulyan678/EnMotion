@@ -289,6 +289,35 @@ def test_hybrid_restart_recovers_orphan_playground_generation(tmp_path, monkeypa
     assert persisted[0]["status"] == "failed"
 
 
+def test_hybrid_restart_preserves_accepted_playground_video_for_resume(tmp_path, monkeypatch):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    generation = _generation("accepted-video")
+    generation.mode = PlaygroundMode.T2V
+    generation.status = "processing"
+    generation.provider_name = "newapi"
+    generation.provider_task_id = "provider-task-123"
+    generation.provider_request_id = "provider-request-123"
+    (output_root / "playground_history.json").write_text(
+        json.dumps([generation.model_dump()]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ENMOTION_SERVER_MODE", "false")
+    monkeypatch.setenv("ENMOTION_HYBRID_MODE", "true")
+
+    storage = PlaygroundStorage(
+        output_root=str(output_root),
+        shared_workspace=True,
+    )
+
+    recovered = storage.get_generation(generation.id)
+    assert recovered is not None
+    assert recovered.status == "pending"
+    assert recovered.error is None
+    assert recovered.provider_task_id == "provider-task-123"
+    assert storage.resumable_generation_ids() == [generation.id]
+
+
 def test_server_restart_preserves_durable_playground_generation(tmp_path, monkeypatch):
     output_root = tmp_path / "output"
     output_root.mkdir()

@@ -276,10 +276,12 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
         "native startup and updater errors must remain safely localized in Chinese",
     )
     check(
-        "EnMotion 会把生成的图片和视频保存到" in info_plist_source
+        "NSDocumentsFolderUsageDescription" not in info_plist_source
+        and ".document_dir()" not in sidecar_source
+        and 'data_dir.join("enmotion-output")' in sidecar_source
         and base["bundle"]["shortDescription"] == "企业专用的本地 AI 创作工作区"
         and "企业内部使用" in base["bundle"]["longDescription"],
-        "native package descriptions must remain Simplified Chinese",
+        "native package must use private app storage and Simplified Chinese descriptions",
     )
 
     excluded_parts = {

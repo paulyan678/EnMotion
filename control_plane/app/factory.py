@@ -20,6 +20,7 @@ from .routers import account, admin, auth, gateway, releases
 from .security import ConcurrentKeyLimiter, SlidingWindowLimiter, hash_password
 from .services.ledger import recover_interrupted_reservations
 from .services.provider_config import ProviderConfigService
+from .services.provider_response_cache import ProviderResponseCache
 
 logger = logging.getLogger("enmotion.control_plane")
 
@@ -31,6 +32,11 @@ def create_app(
 ) -> FastAPI:
     db = Database(settings.database_url)
     provider_config = ProviderConfigService(settings, db)
+    provider_response_cache = ProviderResponseCache(
+        database_url=settings.database_url,
+        secret=settings.session_hmac_secret,
+        max_content_bytes=settings.max_request_body_bytes,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -39,6 +45,9 @@ def create_app(
         # Fail closed before serving billable requests if an existing managed
         # configuration cannot be decrypted with the installed master key.
         provider_config.current()
+        pruned_responses = provider_response_cache.prune()
+        if pruned_responses:
+            logger.info("Pruned %d expired provider response(s)", pruned_responses)
         with db.session() as session:
             recovered = recover_interrupted_reservations(session)
         if recovered:
@@ -82,6 +91,7 @@ def create_app(
     app.state.settings = settings
     app.state.db = db
     app.state.provider_config = provider_config
+    app.state.provider_response_cache = provider_response_cache
     app.state.login_account_limiter = SlidingWindowLimiter(settings.login_attempts_per_minute)
     app.state.login_ip_limiter = SlidingWindowLimiter(
         max(30, settings.login_attempts_per_minute * 3)

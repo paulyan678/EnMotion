@@ -39,9 +39,7 @@ def test_long_job_submission_always_returns_a_pollable_marker(monkeypatch):
     monkeypatch.setattr(
         comic_api,
         "enqueue_workspace_job",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            id="already-finished", status="completed"
-        ),
+        lambda *_args, **_kwargs: SimpleNamespace(id="already-finished", status="completed"),
     )
 
     assert comic_api.enqueue_long_workspace_job("merge", {"script_id": "project-1"}) == {
@@ -77,6 +75,7 @@ def test_long_job_submission_always_returns_a_pollable_marker(monkeypatch):
                     prompt="cinematic frame",
                     batch_size=2,
                 ),
+                comic_api.BackgroundTasks(),
             ),
             "storyboard_render",
             {
@@ -95,9 +94,7 @@ def test_long_job_submission_always_returns_a_pollable_marker(monkeypatch):
         (
             lambda: comic_api.export_project(
                 "project-1",
-                comic_api.ExportRequest(
-                    resolution="720p", format="webm", subtitles="sidecar"
-                ),
+                comic_api.ExportRequest(resolution="720p", format="webm", subtitles="sidecar"),
             ),
             "export",
             {
@@ -135,8 +132,7 @@ def test_server_routes_submit_long_operations_without_running_them(
         comic_api,
         "enqueue_long_workspace_job",
         lambda job_type, payload: (
-            captured.append((job_type, payload))
-            or {"task_id": "durable-job", "status": "queued"}
+            captured.append((job_type, payload)) or {"task_id": "durable-job", "status": "queued"}
         ),
     )
 

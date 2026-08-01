@@ -56,6 +56,7 @@ export interface ScenePropWorkbenchProps {
     options?: { modelName?: string; aspectRatio?: string },
   ) => void;
   isGenerating: boolean;
+  generatingBatchSize?: number;
   stylePrompt?: string;
   styleNegativePrompt?: string;
   onGenerateVideo?: (
@@ -95,6 +96,7 @@ export default function ScenePropWorkbench({
   onClose,
   onGenerate,
   isGenerating,
+  generatingBatchSize,
   stylePrompt = "",
   styleNegativePrompt = "",
   onGenerateVideo,
@@ -295,6 +297,7 @@ export default function ScenePropWorkbench({
               void onFavoriteVariant?.(id, favorite)
             }
             isGenerating={isGenerating}
+            generatingBatchSize={generatingBatchSize}
             disabled={mutationDisabled}
             showGenerationControls={false}
             layout="stage"

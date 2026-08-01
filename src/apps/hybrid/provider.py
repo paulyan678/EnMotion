@@ -24,8 +24,27 @@ def provider_gateway_token() -> str:
     return remote.access_token
 
 
+def refresh_provider_gateway_token() -> str:
+    """Rotate the managed access token after an explicit gateway 401."""
+
+    from .client import ControlPlaneClient
+
+    tenant = get_tenant(required=True)
+    assert tenant is not None
+    remote = session_vault.ensure_fresh(
+        tenant.user_id,
+        ControlPlaneClient().refresh,
+        # A gateway 401 is stronger evidence than the locally tracked expiry
+        # time. A deliberately large leeway forces one refresh while the
+        # SessionVault lock keeps refresh-token rotation serialized.
+        leeway_seconds=10**9,
+    )
+    return remote.access_token
+
+
 __all__ = [
     "hybrid_mode_enabled",
     "provider_gateway_base_url",
     "provider_gateway_token",
+    "refresh_provider_gateway_token",
 ]

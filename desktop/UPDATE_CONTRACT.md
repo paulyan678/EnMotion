@@ -90,7 +90,8 @@ Before installation, Rust calls the nonce-authenticated
 4. copies only global and per-account workspace metadata files into a private
    staging directory;
 5. atomically publishes that directory and an update-pending marker;
-6. records, but never copies, moves, or deletes, `Documents/enmotion-output`.
+6. records, but never deletes, the private application-data `enmotion-output`
+   directory.
 
 Only then may the signed platform installer replace the application. On the
 first successful launch, the new Rust shell requires an authenticated sidecar
@@ -121,9 +122,9 @@ A release is publishable only when all of these pass on clean machines:
 - Cold and warm sidecar startup times are measured on every supported clean
   machine; the native loading window stays responsive, and startup fails with
   a clear diagnostic rather than waiting longer than 120 seconds.
-- The default output is exactly the operating system's
-  `Documents/enmotion-output`, including when the path contains spaces or
-  non-ASCII characters.
+- The default output is exactly the operating system's private application-data
+  `enmotion-output` directory, including when the path contains spaces or
+  non-ASCII characters, and requires no Documents or Full Disk Access grant.
 - An invalid updater signature, changed archive, HTTP endpoint, missing signing
   secret, expired/reused capability, inactive employee, or unavailable asset
   fails closed.

@@ -21,8 +21,10 @@ Allowlisted AI provider
 ```
 
 The local sidecar owns media and project operations. The control plane owns
-identity and company-funded operations. It never runs media processing and does
-not retain generated media.
+identity and company-funded operations. It never runs media processing. It
+retains only a bounded, encrypted 24-hour recovery copy of synchronous image
+responses so a dropped desktop connection cannot cause a duplicate generation
+or charge.
 
 ## Desktop components
 
@@ -47,8 +49,10 @@ not retain generated media.
 - Binds only to loopback.
 - Uses an HttpOnly local session, CSRF token, and per-launch nonce.
 - Keeps access tokens in memory.
-- Keeps a rotated refresh token in the OS credential store.
-- Resolves account workspaces beneath `Documents/enmotion-output`.
+- Keeps a rotated refresh token in an owner-only file inside application data;
+  it never stores the account password or invokes the macOS Keychain.
+- Resolves account workspaces beneath the private application-data
+  `enmotion-output` directory.
 - Routes provider calls through the control plane in managed mode.
 - Fails closed when a billable operation cannot be authorized.
 
@@ -74,9 +78,12 @@ All monetary-like values use integer credit units. A billable request follows:
 2. Resolve a versioned server-side rate.
 3. Create an atomic reservation.
 4. Submit with a unique idempotency key.
-5. Settle the reservation on confirmed success.
-6. Refund a known pre-submission failure.
-7. Retain an ambiguous result for reconciliation.
+5. Retry only known pre-acceptance connection failures and explicit rate-limit
+   rejections while preserving that idempotency key.
+6. Cache a validated synchronous image response before settling it.
+7. Settle the reservation on confirmed success.
+8. Refund a known pre-submission failure.
+9. Retain an ambiguous result for reconciliation.
 
 Ledger entries are immutable. Administrative adjustments record an actor and a
 reason instead of rewriting history.
@@ -84,7 +91,7 @@ reason instead of rewriting history.
 ## Local storage
 
 ```text
-Documents/
+Application Data/
   enmotion-output/
     accounts/
       <stable-account-id>/
@@ -96,10 +103,10 @@ Documents/
           thumbnails/
 ```
 
-Application data is separate:
+Packaged application data roots are:
 
-- macOS: `~/Library/Application Support/EnMotion`
-- Windows: `%LOCALAPPDATA%\EnMotion`
+- macOS: `~/Library/Application Support/com.enmotion.desktop`
+- Windows: the Tauri-resolved EnMotion application-data directory
 
 The installer and updater replace application binaries only.
 

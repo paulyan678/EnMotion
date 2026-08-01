@@ -95,6 +95,66 @@ def test_compressed_provider_response_preserves_content_encoding(app_env):
     assert response.json()["choices"][0]["message"]["content"] == "compressed ok"
 
 
+def test_gateway_accepts_strict_multimodal_chat_content(app_env, provider_calls):
+    client, _app = app_env
+    token = login(client, "employee", "Employee-password-123")["access_token"]
+    payload = {
+        "model": "deepseek-v4-flash",
+        "messages": [
+            {"role": "system", "content": "Describe only what is visible."},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                    },
+                    {"type": "text", "text": "Polish this prompt"},
+                ],
+            },
+        ],
+    }
+
+    response = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "gateway-vision-001"},
+        json=payload,
+    )
+
+    assert response.status_code == 200, response.text
+    assert json.loads(provider_calls[-1].content) == payload
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        [{"type": "text", "text": "missing image"}],
+        [
+            {"type": "image_url", "image_url": {"url": "http://insecure/image.png"}},
+            {"type": "text", "text": "prompt"},
+        ],
+        [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U="}},
+            {"type": "input_audio", "input_audio": {"data": "abc"}},
+        ],
+    ],
+)
+def test_gateway_rejects_invalid_multimodal_chat_content(app_env, content):
+    client, _app = app_env
+    token = login(client, "employee", "Employee-password-123")["access_token"]
+
+    response = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "gateway-vision-invalid-001"},
+        json={
+            "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": content}],
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_rejection_refunds_but_ambiguous_timeout_stays_reserved(app_env):
     client, app = app_env
     token = login(client, "employee", "Employee-password-123")["access_token"]
@@ -131,6 +191,91 @@ def test_rejection_refunds_but_ambiguous_timeout_stays_reserved(app_env):
     assert pending.json()[0]["user_id"] == user.id
 
 
+def test_provider_connect_and_rate_limit_failures_retry_before_charging(
+    app_env,
+    provider_calls,
+):
+    client, app = app_env
+    token = login(client, "employee", "Employee-password-123")["access_token"]
+
+    connected = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "connect-retry-001"},
+        json=chat_payload("connect twice"),
+    )
+    assert connected.status_code == 200, connected.text
+    connect_calls = [call for call in provider_calls if b"connect twice" in call.content]
+    assert len(connect_calls) == 3
+    assert len({call.headers["idempotency-key"] for call in connect_calls}) == 1
+
+    rate_limited = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "rate-retry-001"},
+        json=chat_payload("rate limit twice"),
+    )
+    assert rate_limited.status_code == 200, rate_limited.text
+    rate_calls = [call for call in provider_calls if b"rate limit twice" in call.content]
+    assert len(rate_calls) == 3
+    assert len({call.headers["idempotency-key"] for call in rate_calls}) == 1
+
+    timed_out = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "timeout-retry-001"},
+        json=chat_payload("request timeout twice"),
+    )
+    assert timed_out.status_code == 200, timed_out.text
+    timeout_calls = [call for call in provider_calls if b"request timeout twice" in call.content]
+    assert len(timeout_calls) == 3
+    assert len({call.headers["idempotency-key"] for call in timeout_calls}) == 1
+
+    with app.state.db.session() as session:
+        usages = session.scalars(
+            select(UsageRequest).where(
+                UsageRequest.idempotency_key.in_(
+                    ["connect-retry-001", "rate-retry-001", "timeout-retry-001"]
+                )
+            )
+        ).all()
+        assert {usage.status for usage in usages} == {"settled"}
+
+
+def test_exhausted_connect_retries_refund_but_server_error_is_not_replayed(
+    app_env,
+    provider_calls,
+):
+    client, app = app_env
+    token = login(client, "employee", "Employee-password-123")["access_token"]
+
+    unavailable = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "connect-exhausted-001"},
+        json=chat_payload("connect forever"),
+    )
+    assert unavailable.status_code == 502
+    assert len([call for call in provider_calls if b"connect forever" in call.content]) == 4
+
+    ambiguous = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "server-error-001"},
+        json=chat_payload("provider server error"),
+    )
+    assert ambiguous.status_code == 502
+    assert ambiguous.json()["code"] == "provider_outcome_ambiguous"
+    assert len([call for call in provider_calls if b"provider server error" in call.content]) == 1
+
+    with app.state.db.session() as session:
+        refunded = session.scalar(
+            select(UsageRequest).where(UsageRequest.idempotency_key == "connect-exhausted-001")
+        )
+        pending = session.scalar(
+            select(UsageRequest).where(UsageRequest.idempotency_key == "server-error-001")
+        )
+        assert refunded.status == "refunded"
+        assert refunded.error_code == "provider_connect_failed"
+        assert pending.status == "pending_reconciliation"
+        assert pending.error_code == "ambiguous_provider_server_error"
+
+
 def test_image_edit_multipart_is_bounded_allowlisted_and_server_authenticated(
     app_env, provider_calls
 ):
@@ -155,6 +300,85 @@ def test_image_edit_multipart_is_bounded_allowlisted_and_server_authenticated(
         user = session.scalar(select(User).where(User.username == "employee"))
         assert user.available_credits == 87
         assert user.reserved_credits == 0
+
+
+def test_image_edit_idempotent_replay_recovers_the_cached_provider_result(
+    app_env,
+    provider_calls,
+):
+    client, _app = app_env
+    token = login(client, "employee", "Employee-password-123")["access_token"]
+    headers = {**bearer(token), "Idempotency-Key": "image-edit-cache-001"}
+    data = {
+        "model": "gpt-image-2",
+        "prompt": "make it brighter",
+        "n": "1",
+        "size": "1024x1024",
+        "quality": "high",
+    }
+    files = [("image[]", ("source.png", b"not-a-real-png", "image/png"))]
+
+    first = client.post(
+        "/api/v1/gateway/images/edits",
+        headers=headers,
+        data=data,
+        files=files,
+    )
+    assert first.status_code == 200, first.text
+    assert first.headers["x-enmotion-usage-id"]
+    first_provider_call_count = len(provider_calls)
+
+    replay = client.post(
+        "/api/v1/gateway/images/edits",
+        headers=headers,
+        data=data,
+        files=files,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first.json()
+    assert replay.headers["x-enmotion-idempotent-replay"] == "true"
+    assert len(provider_calls) == first_provider_call_count
+
+
+def test_image_generation_replay_recovers_cached_result_and_logical_errors_refund(
+    app_env,
+    provider_calls,
+):
+    client, app = app_env
+    token = login(client, "employee", "Employee-password-123")["access_token"]
+    headers = {**bearer(token), "Idempotency-Key": "image-generation-cache-001"}
+    payload = {
+        "model": "gpt-image-2",
+        "prompt": "generate an image",
+        "n": 1,
+        "size": "1024x1024",
+        "quality": "high",
+    }
+    first = client.post("/api/v1/gateway/images/generations", headers=headers, json=payload)
+    assert first.status_code == 200, first.text
+    first_provider_call_count = len(provider_calls)
+
+    replay = client.post("/api/v1/gateway/images/generations", headers=headers, json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.content == first.content
+    assert replay.headers["x-enmotion-idempotent-replay"] == "true"
+    assert len(provider_calls) == first_provider_call_count
+
+    rejected = client.post(
+        "/api/v1/gateway/images/generations",
+        headers={**bearer(token), "Idempotency-Key": "image-logical-rejection-001"},
+        json={**payload, "prompt": "logical image rejection"},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "ImagePromptRejected"
+    with app.state.db.session() as session:
+        usage = session.scalar(
+            select(UsageRequest).where(
+                UsageRequest.idempotency_key == "image-logical-rejection-001"
+            )
+        )
+        assert usage.status == "refunded"
+        assert usage.error_code == "provider_rejected"
 
 
 def test_video_task_is_bound_to_owner_and_polling_does_not_charge(app_env):
@@ -203,6 +427,47 @@ def test_video_task_is_bound_to_owner_and_polling_does_not_charge(app_env):
         assert owner.available_credits == 75
         assert owner.reserved_credits == 0
         assert session.scalar(select(ProviderTask)).user_id == owner.id
+
+
+def test_video_provider_concurrency_limit_is_refunded_and_exposed_as_retryable(app_env):
+    client, app = app_env
+    employee = login(client, "employee", "Employee-password-123")["access_token"]
+    submitted = client.post(
+        "/api/v1/gateway/video/generations",
+        headers={**bearer(employee), "Idempotency-Key": "video-concurrency-001"},
+        json={
+            "model": "doubao-seedance-2-0-fast-260128",
+            "prompt": "concurrency limited",
+            "metadata": {
+                "content": [{"type": "text", "text": "concurrency limited"}],
+                "duration": 5,
+                "resolution": "720p",
+                "ratio": "16:9",
+                "generate_audio": True,
+                "watermark": False,
+            },
+        },
+    )
+
+    assert submitted.status_code == 429, submitted.text
+    assert submitted.headers["retry-after"] == "15"
+    assert submitted.json() == {
+        "detail": "provider rejected request",
+        "code": "provider_concurrency_limited",
+        "provider_status": 403,
+    }
+    with app.state.db.session() as session:
+        owner = session.scalar(select(User).where(User.username == "employee"))
+        usage = session.scalar(
+            select(UsageRequest).where(
+                UsageRequest.idempotency_key == "video-concurrency-001"
+            )
+        )
+        assert owner.available_credits == 100
+        assert owner.reserved_credits == 0
+        assert usage.status == "refunded"
+        assert usage.error_code == "provider_concurrency_limited"
+        assert session.scalar(select(ProviderTask)) is None
 
 
 def test_video_acceptance_without_task_id_stays_reserved_for_reconciliation(app_env):

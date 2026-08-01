@@ -1285,7 +1285,6 @@ def test_exact_source_asset_patch_persists_metadata_and_prompts(tmp_path):
     assert project_asset.full_body_prompt == "Project hero reference sheet"
     assert global_type == "scene"
     assert global_asset.image_prompt == "Wide dawn plaza establishing shot"
-
     project_payload = pipeline.source_asset_response_payload(
         "project", episode.id, "character", project_asset.id
     )
@@ -1303,6 +1302,51 @@ def test_exact_source_asset_patch_persists_metadata_and_prompts(tmp_path):
     assert reloaded_global.name == "Global plaza"
     assert reloaded_global.time_of_day == "Dawn"
     assert reloaded_global.image_prompt == "Wide dawn plaza establishing shot"
+
+
+def test_exact_source_asset_patch_preserves_live_generation_object_identity(tmp_path):
+    pipeline = _pipeline(tmp_path)
+    scene = Scene(
+        id="shared-scene",
+        name="Tunnel",
+        description="A wet tunnel",
+        status=GenerationStatus.PROCESSING,
+        image_asset=ImageAsset(
+            selected_id="existing",
+            variants=[ImageVariant(id="existing", url="assets/scenes/existing.png")],
+        ),
+    )
+    series = _series("series-1", [], scenes=[scene])
+    pipeline.series_store[series.id] = series
+    pipeline._save_series_data()
+
+    # A provider worker keeps this reference while the user saves metadata.
+    worker_target = scene
+    updated, effective_type = pipeline.update_source_asset(
+        "series",
+        series.id,
+        "scene",
+        scene.id,
+        attributes={"description": "Updated while generation is running"},
+        prompts={"image_prompt": "Copper pipes under teal warning lights"},
+    )
+
+    assert effective_type == "scene"
+    assert updated is worker_target
+    assert pipeline.series_store[series.id].scenes[0] is worker_target
+
+    generated = ImageVariant(id="generated", url="assets/scenes/generated.png")
+    worker_target.image_asset.variants.insert(0, generated)
+    worker_target.image_asset.selected_id = generated.id
+    worker_target.status = GenerationStatus.COMPLETED
+    pipeline._save_series_data()
+
+    reloaded = _pipeline(tmp_path)
+    saved = reloaded.series_store[series.id].scenes[0]
+    assert saved.description == "Updated while generation is running"
+    assert saved.image_prompt == "Copper pipes under teal warning lights"
+    assert saved.status == GenerationStatus.COMPLETED
+    assert [variant.id for variant in saved.image_asset.variants] == ["generated", "existing"]
 
 
 def test_global_asset_impact_counts_only_series_episodes(tmp_path):

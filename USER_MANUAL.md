@@ -30,7 +30,7 @@ Python、Node.js，也不需要填写公司的 AI Provider API Key。
 默认生成目录：
 
 ```text
-文档/Documents/
+应用数据/Application Data/
   enmotion-output/
     accounts/
       <账户 ID>/
@@ -43,8 +43,8 @@ Python、Node.js，也不需要填写公司的 AI Provider API Key。
 
 | 系统 | 位置 |
 |---|---|
-| macOS | `~/Library/Application Support/EnMotion` |
-| Windows | `%LOCALAPPDATA%\EnMotion` |
+| macOS | `~/Library/Application Support/com.enmotion.desktop` |
+| Windows | EnMotion 的系统应用数据目录 |
 
 登录时只会将可撤销的刷新令牌保存到 EnMotion 专属应用数据目录；macOS/Linux
 目录权限为 `0700`，令牌文件权限为 `0600`。EnMotion 不保存账户密码，也不会把
@@ -86,7 +86,9 @@ EnMotion 会在启动完成后静默检查更新。
 
 ### 更新后文件在哪里
 
-仍在原来的 `Documents/enmotion-output` 或你选择的自定义输出目录。安装程序只替换应用二进制。
+仍在 EnMotion 应用数据目录中的 `enmotion-output`，或你选择的自定义输出目录。
+macOS 默认位置是 `~/Library/Application Support/com.enmotion.desktop/enmotion-output`，
+不需要“文稿”或“完全磁盘访问”权限。安装程序只替换应用二进制。
 
 ### 两个人使用同一台电脑
 

@@ -75,7 +75,7 @@ class RuntimeContractTests(unittest.TestCase):
             "nonce": "a" * 64,
             "staticDir": str(self.static_dir),
             "dataDir": str(root / "data"),
-            "outputDir": str(root / "Documents" / "enmotion-output"),
+            "outputDir": str(root / "data" / "enmotion-output"),
             "currentVersion": "1.0.0",
             "controlPlaneUrl": "https://accounts.enmotion.example",
         }
@@ -156,11 +156,15 @@ class RuntimeContractTests(unittest.TestCase):
             [sidecar.local_api_nonce("b" * 64).encode("ascii")],
         )
 
-    def test_bootstrap_cookie_survives_the_tauri_to_loopback_redirect(self) -> None:
+    def test_bootstrap_cookie_is_committed_before_the_loopback_handoff(self) -> None:
         response = sidecar.desktop_session_response("c" * 64)
         cookie = response.headers["set-cookie"].lower()
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/static/index.html")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("location", response.headers)
+        body = response.body.decode("utf-8")
+        self.assertIn('http-equiv="refresh"', body)
+        self.assertIn("url=/static/index.html", body)
+        self.assertNotIn("<script", body)
         self.assertIn("enmotion_desktop_session=", cookie)
         self.assertIn("httponly", cookie)
         self.assertIn("samesite=lax", cookie)

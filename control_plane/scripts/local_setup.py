@@ -122,7 +122,7 @@ def main() -> int:
     print(f"Administrator password file: {PASSWORD_FILE}")
     print(
         f"Run with: .venv/bin/uvicorn app.main:app --env-file {ENV_FILE} "
-        f"--host 127.0.0.1 --port {args.port}"
+        f"--host 127.0.0.1 --port {args.port} --loop asyncio"
     )
     return 0
 

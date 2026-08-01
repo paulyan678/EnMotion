@@ -236,7 +236,10 @@ export default function VideoCreator({
             );
             const polished = result.prompt_en || result.prompt_cn || prompt;
             setPrompt(polished);
-            await savePrompt(polished);
+            const saved = await savePrompt(polished);
+            if (saved && result.warning === "model_echo") {
+                toast.warning(t("aiPolishNoChanges"));
+            }
         } catch (error) {
             console.error("Shot prompt polish failed", error);
             setInlineError(t("aiPolishFailed"));

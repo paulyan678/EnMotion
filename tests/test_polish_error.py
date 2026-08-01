@@ -2,8 +2,8 @@
 
 旧实现遇到任何问题（LLM 未配置、JSON 解析失败、缺 key、API 异常）
 都静默返回原文，前端无法区分"成功"和"失败 fallback"。本套测试
-锁定新约定：每条失败路径都抛 PolishError(reason=...)，model_echo
-作为 warning 性质保留双语原文。
+锁定新约定：hard failure 都抛 PolishError(reason=...)；model_echo
+作为成功响应中的 warning，保留双语原文且不污染 API failure 指标。
 """
 
 import json
@@ -96,8 +96,8 @@ class TestPolishVideoPromptErrors:
             sp.polish_video_prompt("draft prompt")
         assert exc_info.value.reason == "missing_keys"
 
-    def test_model_echo_raises_with_prompts(self):
-        """model_echo 是 warning：抛异常但携带双语原文供前端展示。"""
+    def test_model_echo_returns_success_warning_with_prompts(self):
+        """model_echo 是成功 warning，不应抛异常或记为 API failure。"""
         sp = ScriptProcessor.__new__(ScriptProcessor)
         sp.llm = MagicMock()
         sp.llm.is_configured = True
@@ -107,11 +107,12 @@ class TestPolishVideoPromptErrors:
                 "prompt_en": "draft prompt",  # 模型偷懒回 echo
             }
         )
-        with pytest.raises(PolishError) as exc_info:
-            sp.polish_video_prompt("draft prompt")
-        assert exc_info.value.reason == "model_echo"
-        assert exc_info.value.prompt_cn == "镜头：一个英雄站在悬崖上"
-        assert exc_info.value.prompt_en == "draft prompt"
+        result = sp.polish_video_prompt("draft prompt")
+        assert result == {
+            "prompt_cn": "镜头：一个英雄站在悬崖上",
+            "prompt_en": "draft prompt",
+            "warning": "model_echo",
+        }
 
     def test_success_returns_bilingual(self):
         sp = ScriptProcessor.__new__(ScriptProcessor)
@@ -127,6 +128,75 @@ class TestPolishVideoPromptErrors:
         assert "prompt_cn" in result
         assert "prompt_en" in result
         assert "Cinematic" in result["prompt_en"]
+
+    def test_api_returns_model_echo_as_http_200_warning(self, monkeypatch):
+        class EchoProcessor:
+            def polish_video_prompt(self, *args, **kwargs):
+                return {
+                    "prompt_cn": "镜头保持原有动作",
+                    "prompt_en": "draft prompt",
+                    "warning": "model_echo",
+                }
+
+        monkeypatch.setattr(comic_api, "ScriptProcessor", EchoProcessor)
+        response = TestClient(comic_api.app).post(
+            "/video/polish_prompt",
+            json={"draft_prompt": "draft prompt"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "prompt_cn": "镜头保持原有动作",
+            "prompt_en": "draft prompt",
+            "warning": "model_echo",
+        }
+
+    def test_text_only_catalog_model_omits_available_first_frame(self, tmp_path):
+        image = tmp_path / "first-frame.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+        sp = ScriptProcessor.__new__(ScriptProcessor)
+        sp.llm = MagicMock()
+        sp.llm.require_configured.return_value = "deepseek-v4-flash"
+        sp.llm.chat.return_value = json.dumps(
+            {
+                "prompt_cn": "镜头缓慢推近，雨水沿着霓虹招牌滑落",
+                "prompt_en": "The camera slowly pushes in as rain runs over the neon sign",
+            }
+        )
+
+        sp.polish_video_prompt(
+            "camera moves through the rain",
+            image_urls=[str(image)],
+            polish_model="deepseek-v4-flash",
+            output_root=str(tmp_path),
+        )
+
+        messages = sp.llm.chat.call_args.kwargs["messages"]
+        assert messages[-1]["content"] == "camera moves through the rain"
+        assert "attached the first frame" not in messages[0]["content"]
+
+    def test_custom_prompt_keeps_json_response_contract(self):
+        sp = ScriptProcessor.__new__(ScriptProcessor)
+        sp.llm = MagicMock()
+        sp.llm.require_configured.return_value = "qwen3.7-max"
+        sp.llm.chat.return_value = json.dumps(
+            {
+                "prompt_cn": "镜头缓慢推近，雨水沿着霓虹招牌滑落",
+                "prompt_en": "The camera slowly pushes in as rain runs over the neon sign",
+            }
+        )
+
+        sp.polish_video_prompt(
+            "camera moves through the rain",
+            custom_system_prompt="只返回视频提示词。",
+            polish_model="qwen3.7-max",
+        )
+
+        system_prompt = sp.llm.chat.call_args.kwargs["messages"][0]["content"]
+        assert system_prompt.startswith("只返回视频提示词。")
+        assert "JSON" in system_prompt
+        assert '"prompt_cn"' in system_prompt
+        assert '"prompt_en"' in system_prompt
 
 
 class TestPolishStoryboardPromptErrors:

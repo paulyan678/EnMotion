@@ -3035,7 +3035,23 @@ def _video(job: ClaimedJob) -> dict[str, Any]:
     payload = job.payload
     with _worker_pipelines.locked(job.workspace_id) as pipeline:
         if job.attempts > 1:
-            pipeline.refresh_asset_video_task_input(payload["script_id"], payload["task_id"])
+            retry_script = pipeline.get_script(payload["script_id"])
+            retry_task = next(
+                (
+                    item
+                    for item in (retry_script.video_tasks if retry_script else [])
+                    if item.id == payload["task_id"]
+                ),
+                None,
+            )
+            # An accepted provider task must resume with the exact input that
+            # was originally submitted. Refreshing the source is only valid
+            # when a terminal pre-acceptance rejection is being retried with a
+            # fresh request.
+            if retry_task is None or not getattr(retry_task, "provider_task_id", None):
+                pipeline.refresh_asset_video_task_input(
+                    payload["script_id"], payload["task_id"]
+                )
         pipeline.process_video_task(payload["script_id"], payload["task_id"])
         script = pipeline.get_script(payload["script_id"])
         task = next(

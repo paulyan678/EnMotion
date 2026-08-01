@@ -31,9 +31,8 @@ import threading
 import time
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv, set_key
 from fastapi import (
@@ -84,10 +83,12 @@ from ...utils.uploads import (
 from ..hybrid import hybrid_mode_enabled, include_hybrid_mode, workspace_isolation_enabled
 from ..hybrid.activity import (
     record_asset_activity,
+    record_storyboard_activity,
     record_video_activity,
     update_asset_activity,
 )
 from ..server import include_server_mode, server_mode_enabled
+from ..web_runtime.background_dispatch import DetachedTaskDispatcher
 from ..web_runtime.asset_library_feed import (
     AssetLibraryFeedResponse,
     AssetLibraryFeedResponseV3,
@@ -460,6 +461,46 @@ pipeline = PipelineProxy(
     lambda: ComicGenPipeline({"recover_orphan_tasks": not server_mode_enabled()}),
     _workspace_pipelines,
 )
+_local_media_dispatcher = DetachedTaskDispatcher(
+    worker_count=4,
+    name_prefix="enmotion-media",
+)
+
+
+def _run_workspace_media_task(
+    workspace_id: str,
+    worker_pipeline: ComicGenPipeline,
+    function: Callable[..., Any],
+    args: tuple[Any, ...],
+) -> None:
+    """Run provider work without holding the request-scoped workspace lock."""
+
+    try:
+        function(worker_pipeline, *args)
+    finally:
+        _workspace_pipelines.release_background_writer(workspace_id, worker_pipeline)
+
+
+def _submit_workspace_media_task(
+    workspace_id: str,
+    worker_pipeline: ComicGenPipeline,
+    function: Callable[..., Any],
+    *args: Any,
+) -> None:
+    """Lease the current writer and detach one durable provider job."""
+
+    _workspace_pipelines.retain_background_writer(workspace_id, worker_pipeline)
+    try:
+        _local_media_dispatcher.submit(
+            _run_workspace_media_task,
+            workspace_id,
+            worker_pipeline,
+            function,
+            args,
+        )
+    except Exception:
+        _workspace_pipelines.release_background_writer(workspace_id, worker_pipeline)
+        raise
 
 
 def _hybrid_asset_source_route(
@@ -478,6 +519,7 @@ def _hybrid_asset_source_route(
 
 
 def _process_hybrid_asset_activity(
+    worker_pipeline: ComicGenPipeline,
     task_id: str,
     workspace_id: str,
     existing_variant_ids: frozenset[str],
@@ -486,10 +528,10 @@ def _process_hybrid_asset_activity(
 
     try:
         update_asset_activity(workspace_id, task_id, status="running")
-        pipeline.process_asset_generation_task(task_id)
-        status = pipeline.get_asset_generation_task_status(task_id) or {}
+        worker_pipeline.process_asset_generation_task(task_id)
+        status = worker_pipeline.get_asset_generation_task_status(task_id) or {}
         if status.get("status") == "completed":
-            target_asset = pipeline.asset_generation_task_result_asset(task_id)
+            target_asset = worker_pipeline.asset_generation_task_result_asset(task_id)
             outputs = _hybrid_asset_outputs(target_asset, existing_variant_ids)
             if not outputs:
                 update_asset_activity(
@@ -571,6 +613,175 @@ def _hybrid_asset_outputs(
     return outputs
 
 
+def _hybrid_storyboard_outputs(plan: Any, generated_frame: StoryboardFrame) -> list[dict[str, Any]]:
+    """Return only image variants created by one detached storyboard render."""
+
+    rendered_asset = generated_frame.rendered_image_asset
+    outputs: list[dict[str, Any]] = []
+    for variant in rendered_asset.variants if rendered_asset else []:
+        variant_id = str(getattr(variant, "id", "") or "")
+        media_path = str(getattr(variant, "url", "") or "")
+        if not variant_id or variant_id in plan.existing_variant_ids or not media_path:
+            continue
+        outputs.append(
+            {
+                "id": variant_id,
+                "media_type": "image",
+                "media_path": media_path,
+                "thumbnail_path": media_path,
+                "filename": media_path.rsplit("/", 1)[-1],
+            }
+        )
+    return outputs
+
+
+def _remove_hybrid_storyboard_outputs(
+    render_pipeline: ComicGenPipeline,
+    plan: Any,
+    generated_frame: StoryboardFrame,
+) -> None:
+    """Remove only files created by a failed detached storyboard attempt."""
+
+    output_root = Path(render_pipeline.storyboard_generator.output_dir).resolve()
+    for raw_path in render_pipeline.storyboard_render_output_paths(plan, generated_frame):
+        candidate = Path(raw_path).resolve()
+        if candidate.parent != output_root and output_root not in candidate.parents:
+            logger.error("Refusing to remove storyboard output outside its root: %s", candidate)
+            continue
+        candidate.unlink(missing_ok=True)
+
+
+def _process_hybrid_storyboard_activity(
+    task_id: str,
+    workspace_id: str,
+    render_pipeline: ComicGenPipeline,
+    plan: Any,
+) -> None:
+    """Run a detached storyboard render and mirror its lifecycle in API Calls."""
+
+    update_asset_activity(workspace_id, task_id, status="running")
+    generated_frame: StoryboardFrame | None = None
+    try:
+        generated_frame = render_pipeline.execute_storyboard_render_plan(plan)
+        render_pipeline.validate_storyboard_render_result(generated_frame)
+        outputs = _hybrid_storyboard_outputs(plan, generated_frame)
+        if not outputs:
+            raise RuntimeError("Storyboard frame generation produced no new image")
+        with _workspace_pipelines.locked(workspace_id) as current:
+            current.commit_storyboard_render_plan(plan, generated_frame)
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="completed",
+            outputs=outputs,
+        )
+    except Exception as exc:
+        logger.exception("Hybrid storyboard task %s failed", task_id)
+        try:
+            _remove_hybrid_storyboard_outputs(
+                render_pipeline,
+                plan,
+                generated_frame or plan.frame,
+            )
+        except Exception:
+            logger.exception("Hybrid storyboard task %s output cleanup failed", task_id)
+        try:
+            with _workspace_pipelines.locked(workspace_id) as current:
+                current.fail_storyboard_render_plan(plan)
+        except Exception:
+            logger.exception("Hybrid storyboard task %s state cleanup failed", task_id)
+        update_asset_activity(
+            workspace_id,
+            task_id,
+            status="failed",
+            error=str(exc) or "分镜图片生成失败，请稍后重试。",
+            error_code=str(getattr(exc, "error_code", "") or "") or None,
+            error_diagnostic=(str(getattr(exc, "diagnostic", "") or "") or None),
+        )
+
+
+def _hybrid_storyboard_input_media(composition_data: Dict[str, Any] | None) -> list[dict[str, Any]]:
+    references: list[str] = []
+    if composition_data:
+        single = str(composition_data.get("reference_image_url") or "").strip()
+        if single:
+            references.append(single)
+        for value in composition_data.get("reference_image_urls") or []:
+            normalized = str(value or "").strip()
+            if normalized and normalized not in references:
+                references.append(normalized)
+    inputs: list[dict[str, Any]] = []
+    for reference in references[:20]:
+        inputs.extend(_hybrid_input_media(reference))
+    return inputs
+
+
+def _schedule_hybrid_storyboard_render(
+    background_tasks: BackgroundTasks,
+    script_id: str,
+    request: "RenderFrameRequest",
+) -> Dict[str, str]:
+    """Prepare a local storyboard render, publish activity, then return immediately."""
+
+    tenant = get_tenant(required=True)
+    assert tenant is not None
+    task_id = str(uuid.uuid4())
+    with _workspace_pipelines.locked(tenant.workspace_id) as render_pipeline:
+        script = render_pipeline.get_script(script_id)
+        if script is None:
+            raise ValueError("Script not found")
+        frame = next((item for item in script.frames if item.id == request.frame_id), None)
+        if frame is None:
+            raise ValueError(f"Frame {request.frame_id} not found")
+        frame_index = next(
+            index for index, item in enumerate(script.frames) if item.id == request.frame_id
+        )
+        plan = render_pipeline.prepare_storyboard_render(
+            script_id,
+            request.frame_id,
+            request.composition_data,
+            request.prompt,
+            request.batch_size,
+        )
+        series_id = script.series_id
+        source_route = _hybrid_asset_source_route(
+            "project",
+            script.id,
+            series_id=series_id,
+        )
+        detail = f"{frame_index + 1}. {frame.action_description or request.frame_id}"
+
+    # The provider phase owns this detached pipeline. Future workspace writes
+    # must reload the short processing snapshot instead of sharing the object.
+    _workspace_pipelines.discard(tenant.workspace_id)
+    try:
+        record_storyboard_activity(
+            tenant.workspace_id,
+            task_id=task_id,
+            source_route=source_route,
+            project_id=script_id,
+            series_id=series_id,
+            frame_id=request.frame_id,
+            detail=detail,
+            prompt=request.prompt,
+            model_name=plan.model_name,
+            batch_size=request.batch_size,
+            input_media=_hybrid_storyboard_input_media(request.composition_data),
+        )
+    except Exception:
+        with _workspace_pipelines.locked(tenant.workspace_id) as current:
+            current.fail_storyboard_render_plan(plan)
+        raise
+    _local_media_dispatcher.submit(
+        _process_hybrid_storyboard_activity,
+        task_id,
+        tenant.workspace_id,
+        render_pipeline,
+        plan,
+    )
+    return {"task_id": task_id, "status": "queued"}
+
+
 def _hybrid_input_media(media_path: str | None) -> list[dict[str, Any]]:
     path = str(media_path or "").strip()
     if not path or path.startswith("data:"):
@@ -607,6 +818,7 @@ def _hybrid_video_output(
 
 
 def _process_hybrid_video_activity(
+    worker_pipeline: ComicGenPipeline,
     task_id: str,
     workspace_id: str,
     script_id: str,
@@ -615,8 +827,8 @@ def _process_hybrid_video_activity(
 
     update_asset_activity(workspace_id, task_id, status="running")
     try:
-        pipeline.process_video_task(script_id, task_id)
-        script = pipeline.get_script(script_id)
+        worker_pipeline.process_video_task(script_id, task_id)
+        script = worker_pipeline.get_script(script_id)
         task = next(
             (item for item in (script.video_tasks if script else []) if item.id == task_id),
             None,
@@ -666,7 +878,7 @@ def _schedule_local_video_generation(
     """Queue a clip and expose its media lifecycle in hybrid API Calls."""
 
     if not hybrid_mode_enabled():
-        background_tasks.add_task(pipeline.process_video_task, script.id, task.id)
+        _local_media_dispatcher.submit(pipeline.process_video_task, script.id, task.id)
         return
 
     tenant = get_tenant(required=True)
@@ -704,7 +916,10 @@ def _schedule_local_video_generation(
         source_context=context,
         input_media=_hybrid_input_media(source_image),
     )
-    background_tasks.add_task(
+    worker_pipeline = pipeline.current()
+    _submit_workspace_media_task(
+        tenant.workspace_id,
+        worker_pipeline,
         _process_hybrid_video_activity,
         task.id,
         tenant.workspace_id,
@@ -725,6 +940,7 @@ def _hybrid_motion_variants(
 
 
 def _process_hybrid_source_motion_activity(
+    worker_pipeline: ComicGenPipeline,
     task_id: str,
     workspace_id: str,
     source_kind: str,
@@ -738,8 +954,8 @@ def _process_hybrid_source_motion_activity(
 
     update_asset_activity(workspace_id, task_id, status="running")
     try:
-        pipeline.process_source_motion_ref_task(task_id)
-        status = pipeline.get_asset_generation_task_status(task_id) or {}
+        worker_pipeline.process_source_motion_ref_task(task_id)
+        status = worker_pipeline.get_asset_generation_task_status(task_id) or {}
         if status.get("status") != "completed":
             update_asset_activity(
                 workspace_id,
@@ -748,7 +964,7 @@ def _process_hybrid_source_motion_activity(
                 error=str(status.get("error") or "视频生成失败。"),
             )
             return
-        target_asset, _, _, _ = pipeline.find_source_asset(
+        target_asset, _, _, _ = worker_pipeline.find_source_asset(
             source_kind,
             source_id,
             asset_type,
@@ -804,7 +1020,7 @@ def _schedule_local_source_motion_generation(
     series_id: str | None,
 ) -> None:
     if not hybrid_mode_enabled():
-        background_tasks.add_task(pipeline.process_source_motion_ref_task, task_id)
+        _local_media_dispatcher.submit(pipeline.process_source_motion_ref_task, task_id)
         return
 
     tenant = get_tenant(required=True)
@@ -854,7 +1070,10 @@ def _schedule_local_source_motion_generation(
         source_context=context,
         input_media=_hybrid_input_media(source_image),
     )
-    background_tasks.add_task(
+    worker_pipeline = pipeline.current()
+    _submit_workspace_media_task(
+        tenant.workspace_id,
+        worker_pipeline,
         _process_hybrid_source_motion_activity,
         task_id,
         tenant.workspace_id,
@@ -880,7 +1099,7 @@ def _schedule_local_asset_generation(
     """Queue desktop work and persist an API Calls entry in hybrid mode."""
 
     if not hybrid_mode_enabled():
-        background_tasks.add_task(pipeline.process_asset_generation_task, task_id)
+        _local_media_dispatcher.submit(pipeline.process_asset_generation_task, task_id)
         return
 
     tenant = get_tenant(required=True)
@@ -916,7 +1135,10 @@ def _schedule_local_asset_generation(
         batch_size=request.batch_size,
         aspect_ratio=request.aspect_ratio,
     )
-    background_tasks.add_task(
+    worker_pipeline = pipeline.current()
+    _submit_workspace_media_task(
+        tenant.workspace_id,
+        worker_pipeline,
         _process_hybrid_asset_activity,
         task_id,
         tenant.workspace_id,
@@ -4786,7 +5008,25 @@ def generate_motion_ref(
             publish_workspace_job_reservations(reservations)
             pipeline.forget_motion_ref_task(task_id)
         else:
-            background_tasks.add_task(pipeline.process_motion_ref_task, script_id, task_id)
+            if hybrid_mode_enabled():
+                tenant = get_tenant(required=True)
+                assert tenant is not None
+                worker_pipeline = pipeline.current()
+                _submit_workspace_media_task(
+                    tenant.workspace_id,
+                    worker_pipeline,
+                    lambda current, current_script_id, current_task_id: (
+                        current.process_motion_ref_task(current_script_id, current_task_id)
+                    ),
+                    script_id,
+                    task_id,
+                )
+            else:
+                _local_media_dispatcher.submit(
+                    pipeline.process_motion_ref_task,
+                    script_id,
+                    task_id,
+                )
 
         # Return script with task_id for frontend polling
         response_data = script.model_dump() if hasattr(script, "model_dump") else script.dict()
@@ -6229,7 +6469,11 @@ class RenderFrameRequest(BaseModel):
 
 
 @app.post("/projects/{script_id}/storyboard/render")
-def render_frame(script_id: str, request: RenderFrameRequest):
+def render_frame(
+    script_id: str,
+    request: RenderFrameRequest,
+    background_tasks: BackgroundTasks,
+):
     """Renders a specific frame using composition data (I2I)."""
     try:
         logger.info(f"Rendering frame {request.frame_id}")
@@ -6249,6 +6493,13 @@ def render_frame(script_id: str, request: RenderFrameRequest):
                     "prompt": request.prompt,
                     "batch_size": request.batch_size,
                 },
+            )
+
+        if hybrid_mode_enabled():
+            return _schedule_hybrid_storyboard_render(
+                background_tasks,
+                script_id,
+                request,
             )
 
         updated_script = pipeline.generate_storyboard_render(
@@ -6725,8 +6976,7 @@ class PolishVideoPromptRequest(BaseModel):
 
 
 def _polish_error_response(err) -> Dict[str, Any]:
-    """把 PolishError 转成统一的 502 响应体。
-    model_echo 时附带原文双语供前端做 warning 渲染。"""
+    """把 hard-failure PolishError 转成统一的 502 响应体。"""
     body: Dict[str, Any] = {
         "reason": err.reason,
         "message_zh": err.message_zh,
@@ -6751,11 +7001,11 @@ def polish_video_prompt(request: PolishVideoPromptRequest):
     looks "stuck loading"). Sync handlers get auto-dispatched to anyio's
     threadpool, freeing the event loop for other requests.
 
-    成功：200 + {prompt_cn, prompt_en}
+    成功：200 + {prompt_cn, prompt_en, warning?}
+      warning="model_echo" 表示模型有效返回，但结果与原文基本相同。
     失败：502 + {reason, message_zh, message_en, prompt_cn?, prompt_en?}
       其中 reason ∈ {is_configured_false, api_error, json_parse_error,
-                     missing_keys, model_echo, image_unavailable}。
-      model_echo 是 warning 性质（带原文双语），其余是 hard error。
+                     missing_keys, image_unavailable}。
     """
     from .llm import PolishError
 
@@ -6773,7 +7023,13 @@ def polish_video_prompt(request: PolishVideoPromptRequest):
             polish_model=polish_model,
             output_root=current_output_root(),
         )
-        return {"prompt_cn": result.get("prompt_cn", ""), "prompt_en": result.get("prompt_en", "")}
+        response = {
+            "prompt_cn": result.get("prompt_cn", ""),
+            "prompt_en": result.get("prompt_en", ""),
+        }
+        if result.get("warning") == "model_echo":
+            response["warning"] = "model_echo"
+        return response
     except PolishError as e:
         logger.warning("polish_video_prompt failed: %s", e)
         raise HTTPException(status_code=502, detail=_polish_error_response(e))

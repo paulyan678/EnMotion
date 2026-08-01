@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import hashlib
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -33,8 +39,10 @@ from ..services.provider_config import (
     ProviderConfigSnapshot,
     ProviderConfigUnavailable,
 )
+from ..services.provider_response_cache import ProviderResponseCacheError
 
 router = APIRouter(prefix="/gateway", tags=["provider gateway"])
+logger = logging.getLogger("enmotion.control_plane.gateway")
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _TASK_ID = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
@@ -96,6 +104,100 @@ _IMAGE_QUALITIES = {"auto", "low", "medium", "high"}
 
 class _ResponseTooLarge(RuntimeError):
     pass
+
+
+class _ProviderLogicalRejection(RuntimeError):
+    def __init__(self, provider_code: str = "") -> None:
+        super().__init__("provider returned an explicit error response")
+        self.provider_code = provider_code
+
+
+def _provider_error_code(payload: Any) -> str:
+    """Extract one bounded, non-secret provider error code from JSON."""
+
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    candidates = [payload.get("code")]
+    if isinstance(error, dict):
+        candidates.extend((error.get("code"), error.get("type")))
+    for candidate in candidates:
+        normalized = str(candidate or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", normalized):
+            return normalized
+    return ""
+
+
+def _provider_rejection_code(status_code: int, provider_code: str = "") -> str:
+    normalized = provider_code.casefold()
+    if "quota_warning_concurrency_limit" in normalized:
+        return "provider_concurrency_limited"
+    if "inputimagesensitivecontentdetected.privacyinformation" in normalized:
+        return "input_image_privacy"
+    if "outputvideosensitivecontentdetected.policyviolation" in normalized:
+        return "output_video_policy"
+    return {
+        401: "provider_authentication_failed",
+        402: "provider_quota_exhausted",
+        403: "provider_access_denied",
+        404: "provider_model_unavailable",
+        408: "provider_request_timeout",
+        413: "provider_payload_too_large",
+        429: "provider_rate_limited",
+    }.get(status_code, "provider_rejected")
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int, base_delay: float) -> float:
+    retry_after = response.headers.get("retry-after") if response is not None else None
+    if retry_after:
+        try:
+            return max(0.0, min(float(retry_after), 30.0))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                return max(0.0, min(delay, 30.0))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(base_delay * (2**attempt), 30.0)
+
+
+def _validate_image_response(content: bytes) -> None:
+    try:
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("image response must be valid JSON") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    first = data[0] if isinstance(data, list) and data else None
+    if not isinstance(first, dict):
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            code = payload.get("code")
+            if isinstance(error, dict):
+                code = error.get("code") or error.get("type") or code
+            normalized_code = str(code or "").strip()
+            if normalized_code.casefold() not in {"", "0", "200", "ok", "success"} or error:
+                safe_code = (
+                    normalized_code
+                    if re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", normalized_code)
+                    else ""
+                )
+                raise _ProviderLogicalRejection(safe_code)
+        raise ValueError("image response must contain data[0]")
+    encoded = first.get("b64_json")
+    if isinstance(encoded, str) and encoded:
+        try:
+            if not base64.b64decode(encoded, validate=True):
+                raise ValueError("empty image payload")
+        except (TypeError, ValueError, binascii.Error) as exc:
+            raise ValueError("image response contains invalid base64") from exc
+        return
+    url = first.get("url")
+    if isinstance(url, str) and url.startswith(("https://", "http://")):
+        return
+    raise ValueError("image response contains neither b64_json nor a URL")
 
 
 def _canonical_fingerprint(operation: str, value: Any) -> str:
@@ -237,14 +339,90 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
                 "messages must be a non-empty list with at most 256 entries",
             )
         for message in messages:
-            if (
-                not isinstance(message, dict)
-                or message.get("role") not in {"system", "developer", "user", "assistant", "tool"}
-                or not isinstance(message.get("content"), str)
-            ):
+            if not isinstance(message, dict) or message.get("role") not in {
+                "system",
+                "developer",
+                "user",
+                "assistant",
+                "tool",
+            }:
                 raise HTTPException(
                     UNPROCESSABLE_CONTENT,
-                    "each message must contain an allowed role and string content",
+                    "each message must contain an allowed role and supported content",
+                )
+            content = message.get("content")
+            if isinstance(content, str):
+                continue
+            if message.get("role") != "user" or not isinstance(content, list):
+                raise HTTPException(
+                    UNPROCESSABLE_CONTENT,
+                    "multimodal content is supported only for user messages",
+                )
+            if not 1 <= len(content) <= 5:
+                raise HTTPException(
+                    UNPROCESSABLE_CONTENT,
+                    "multimodal chat content must contain 1-5 parts",
+                )
+            text_parts = 0
+            image_parts = 0
+            for part in content:
+                if not isinstance(part, dict):
+                    raise HTTPException(
+                        UNPROCESSABLE_CONTENT,
+                        "each multimodal chat part must be an object",
+                    )
+                if part.get("type") == "text":
+                    if set(part) != {"type", "text"} or not isinstance(
+                        part.get("text"), str
+                    ) or not part["text"].strip():
+                        raise HTTPException(
+                            UNPROCESSABLE_CONTENT,
+                            "chat text parts must contain non-empty text",
+                        )
+                    text_parts += 1
+                    continue
+                if part.get("type") == "image_url":
+                    if set(part) != {"type", "image_url"}:
+                        raise HTTPException(
+                            UNPROCESSABLE_CONTENT,
+                            "chat image parts contain unsupported fields",
+                        )
+                    image_url = part.get("image_url")
+                    if not isinstance(image_url, dict) or set(image_url) - {
+                        "url",
+                        "detail",
+                    }:
+                        raise HTTPException(
+                            UNPROCESSABLE_CONTENT,
+                            "chat image_url must be an object with url and optional detail",
+                        )
+                    url = image_url.get("url")
+                    if not isinstance(url, str) or not url.startswith(
+                        ("data:image/", "https://")
+                    ):
+                        raise HTTPException(
+                            UNPROCESSABLE_CONTENT,
+                            "chat image_url must be an HTTPS URL or image data URL",
+                        )
+                    if image_url.get("detail", "auto") not in {
+                        "auto",
+                        "low",
+                        "high",
+                    }:
+                        raise HTTPException(
+                            UNPROCESSABLE_CONTENT,
+                            "unsupported chat image detail",
+                        )
+                    image_parts += 1
+                    continue
+                raise HTTPException(
+                    UNPROCESSABLE_CONTENT,
+                    "unsupported multimodal chat part type",
+                )
+            if text_parts != 1 or not 1 <= image_parts <= 4:
+                raise HTTPException(
+                    UNPROCESSABLE_CONTENT,
+                    "multimodal chat content requires one text and 1-4 images",
                 )
     elif operation == "images.generations":
         if not isinstance(body.get("prompt"), str) or not body["prompt"].strip():
@@ -354,7 +532,36 @@ def _reserve(
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
 
-def _replay_response(outcome) -> JSONResponse:
+async def _replay_response(
+    request: Request,
+    outcome,
+    *,
+    allow_cached_provider_response: bool = False,
+) -> Response:
+    if allow_cached_provider_response and outcome.usage.status in {
+        "settled",
+        "pending_reconciliation",
+    }:
+        cached = await run_in_threadpool(
+            request.app.state.provider_response_cache.load,
+            outcome.usage.id,
+        )
+        if cached is not None:
+            if outcome.usage.status == "pending_reconciliation":
+                await run_in_threadpool(
+                    _settle,
+                    request,
+                    outcome.usage.id,
+                    upstream_status=cached.status_code,
+                )
+            headers = dict(cached.headers)
+            headers["X-EnMotion-Usage-ID"] = outcome.usage.id
+            headers["X-EnMotion-Idempotent-Replay"] = "true"
+            return Response(
+                content=cached.content,
+                status_code=cached.status_code,
+                headers=headers,
+            )
     body = IdempotentReplayResponse(
         usage_request=UsagePublic.model_validate(outcome.usage)
     ).model_dump(mode="json")
@@ -547,60 +754,121 @@ async def _send_billable(
     data: list[tuple[str, str]] | None = None,
     files: list[tuple[str, tuple[str, Any, str]]] | None = None,
     capture_video_task: tuple[str, str, int] | None = None,
+    cache_provider_response: bool = False,
     provider_base_url: str,
 ) -> Response:
     client: httpx.AsyncClient = request.app.state.provider_client
-    try:
-        upstream_request = client.build_request(
-            method,
-            _provider_url(provider_base_url, path),
-            headers=headers,
-            content=content,
-            json=json_body,
-            data=data,
-            files=files,
-        )
-        upstream = await client.send(upstream_request, stream=True)
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
-        await run_in_threadpool(
-            _refund,
-            request,
-            usage_id,
-            reason="provider connection failed before acceptance",
-            error_code="provider_connect_failed",
-        )
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            "provider connection failed",
-        ) from exc
-    except httpx.RequestError as exc:
-        await run_in_threadpool(
-            _pending,
-            request,
-            usage_id,
-            code="ambiguous_provider_transport_error",
-        )
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            "provider transport outcome is ambiguous; credits remain reserved",
-        ) from exc
+    settings = request.app.state.settings
+    upstream: httpx.Response | None = None
+    for attempt in range(settings.provider_submission_attempts):
+        try:
+            upstream_request = client.build_request(
+                method,
+                _provider_url(provider_base_url, path),
+                headers=headers,
+                content=content,
+                json=json_body,
+                data=data,
+                files=files,
+            )
+            upstream = await client.send(upstream_request, stream=True)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            if attempt + 1 < settings.provider_submission_attempts:
+                logger.warning(
+                    "Provider connection failed before acceptance; retrying usage=%s attempt=%d/%d error=%s",
+                    usage_id,
+                    attempt + 1,
+                    settings.provider_submission_attempts,
+                    type(exc).__name__,
+                )
+                await asyncio.sleep(
+                    _retry_delay(None, attempt, settings.provider_retry_backoff_seconds)
+                )
+                continue
+            await run_in_threadpool(
+                _refund,
+                request,
+                usage_id,
+                reason="provider connection failed before acceptance",
+                error_code="provider_connect_failed",
+            )
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "provider connection failed",
+            ) from exc
+        except httpx.RequestError as exc:
+            await run_in_threadpool(
+                _pending,
+                request,
+                usage_id,
+                code="ambiguous_provider_transport_error",
+            )
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "provider transport outcome is ambiguous; credits remain reserved",
+            ) from exc
+
+        if upstream.status_code in {
+            status.HTTP_408_REQUEST_TIMEOUT,
+            status.HTTP_429_TOO_MANY_REQUESTS,
+        } and (attempt + 1 < settings.provider_submission_attempts):
+            delay = _retry_delay(
+                upstream,
+                attempt,
+                settings.provider_retry_backoff_seconds,
+            )
+            await upstream.aclose()
+            logger.warning(
+                "Provider explicitly rejected a retryable submission; "
+                "retrying usage=%s status=%d attempt=%d/%d delay=%.2fs",
+                usage_id,
+                upstream.status_code,
+                attempt + 1,
+                settings.provider_submission_attempts,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            upstream = None
+            continue
+        break
+
+    if upstream is None:
+        raise RuntimeError("provider submission loop exited without a response")
 
     if 400 <= upstream.status_code < 500:
-        await upstream.aclose()
+        upstream_status = upstream.status_code
+        retry_after = upstream.headers.get("retry-after")
+        provider_code = ""
+        try:
+            rejection_body = await _read_response_limited(upstream, 64 * 1024)
+            rejection_payload = json.loads(rejection_body)
+            provider_code = _provider_error_code(rejection_payload)
+        except (_ResponseTooLarge, UnicodeDecodeError, json.JSONDecodeError, httpx.HTTPError):
+            provider_code = ""
+        finally:
+            await upstream.aclose()
+        error_code = _provider_rejection_code(upstream_status, provider_code)
         await run_in_threadpool(
             _refund,
             request,
             usage_id,
             reason="provider rejected request",
-            upstream_status=upstream.status_code,
-            error_code="provider_rejected",
+            upstream_status=upstream_status,
+            error_code=error_code,
         )
+        response_status = upstream_status
+        if error_code == "provider_concurrency_limited":
+            response_status = status.HTTP_429_TOO_MANY_REQUESTS
+            retry_after = retry_after or "15"
+        response_headers = {"Retry-After": retry_after} if retry_after else None
         return JSONResponse(
-            status_code=upstream.status_code,
+            status_code=response_status,
             content={
                 "detail": "provider rejected request",
-                "provider_status": upstream.status_code,
+                "code": error_code,
+                "provider_status": upstream_status,
             },
+            headers=response_headers,
         )
     if upstream.status_code >= 500:
         await upstream.aclose()
@@ -616,6 +884,7 @@ async def _send_billable(
             content={
                 "detail": "provider failure has an ambiguous billing outcome; "
                 "credits remain reserved",
+                "code": "provider_outcome_ambiguous",
                 "provider_status": upstream.status_code,
             },
         )
@@ -633,6 +902,7 @@ async def _send_billable(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={
                 "detail": "provider redirect was refused; credits remain reserved",
+                "code": "provider_outcome_ambiguous",
                 "provider_status": upstream.status_code,
             },
         )
@@ -728,6 +998,105 @@ async def _send_billable(
             headers=_response_headers(upstream, raw_stream=False),
         )
 
+    if cache_provider_response:
+        upstream_status = upstream.status_code
+        response_headers = _response_headers(upstream, raw_stream=False)
+        try:
+            payload_bytes = await _read_response_limited(
+                upstream,
+                request.app.state.provider_response_cache.max_content_bytes,
+            )
+            _validate_image_response(payload_bytes)
+        except _ProviderLogicalRejection as exc:
+            await upstream.aclose()
+            await run_in_threadpool(
+                _refund,
+                request,
+                usage_id,
+                reason="provider returned an explicit image error",
+                upstream_status=upstream_status,
+                error_code="provider_rejected",
+            )
+            logical_error: dict[str, Any] = {
+                "message": "provider returned an explicit error response"
+            }
+            if exc.provider_code:
+                logical_error["code"] = exc.provider_code
+            return JSONResponse(
+                status_code=UNPROCESSABLE_CONTENT,
+                content={
+                    "detail": "provider rejected request",
+                    "code": "provider_request_rejected",
+                    "provider_status": upstream_status,
+                    "error": logical_error,
+                },
+            )
+        except (_ResponseTooLarge, ValueError, httpx.HTTPError) as exc:
+            await upstream.aclose()
+            await run_in_threadpool(
+                _pending,
+                request,
+                usage_id,
+                code="invalid_image_provider_response",
+                upstream_status=upstream_status,
+            )
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "provider accepted the image request but returned an invalid response; "
+                "credits remain reserved for reconciliation",
+            ) from exc
+        await upstream.aclose()
+        try:
+            await run_in_threadpool(
+                request.app.state.provider_response_cache.store,
+                usage_id,
+                status_code=upstream_status,
+                headers=response_headers,
+                content=payload_bytes,
+            )
+        except ProviderResponseCacheError as exc:
+            await run_in_threadpool(
+                _pending,
+                request,
+                usage_id,
+                code="provider_response_cache_failed",
+                upstream_status=upstream_status,
+            )
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "provider accepted the image request but its result could not be cached; "
+                "credits remain reserved for reconciliation",
+            ) from exc
+        try:
+            await run_in_threadpool(
+                _settle,
+                request,
+                usage_id,
+                upstream_status=upstream_status,
+            )
+        except Exception as exc:
+            try:
+                await run_in_threadpool(
+                    _pending,
+                    request,
+                    usage_id,
+                    code="settlement_persistence_failed",
+                    upstream_status=upstream_status,
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "provider accepted the request but settlement persistence failed; "
+                "credits remain reserved for reconciliation",
+            ) from exc
+        response_headers["X-EnMotion-Usage-ID"] = usage_id
+        return Response(
+            content=payload_bytes,
+            status_code=upstream_status,
+            headers=response_headers,
+        )
+
     try:
         await run_in_threadpool(
             _settle,
@@ -818,7 +1187,11 @@ async def _json_gateway(
         rate_context=_rate_context(body),
     )
     if outcome.replay:
-        return _replay_response(outcome)
+        return await _replay_response(
+            request,
+            outcome,
+            allow_cached_provider_response=operation == "images.generations",
+        )
     provider_key = _provider_idempotency_key(request, principal.user_id, key)
     return await _send_reserved_billable(
         request,
@@ -836,6 +1209,7 @@ async def _json_gateway(
             if capture_video_task
             else None
         ),
+        cache_provider_response=operation == "images.generations",
         provider_base_url=provider_config.base_url,
     )
 
@@ -965,7 +1339,11 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
             },
         )
         if outcome.replay:
-            return _replay_response(outcome)
+            return await _replay_response(
+                request,
+                outcome,
+                allow_cached_provider_response=True,
+            )
         provider_key = _provider_idempotency_key(request, principal.user_id, key)
         return await _send_reserved_billable(
             request,
@@ -979,6 +1357,7 @@ async def image_edits(request: Request, principal: CurrentPrincipal) -> Response
                 "Content-Type": request.headers.get("content-type", "multipart/form-data"),
             },
             content=raw_body,
+            cache_provider_response=True,
             provider_base_url=provider_config.base_url,
         )
     finally:

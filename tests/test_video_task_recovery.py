@@ -3,7 +3,7 @@
 Covers the three regressions surfaced by the "stuck on 排队中..." user
 report:
 
-  1. Backend restart eats in-memory FastAPI BackgroundTasks. The persisted
+  1. Backend restart eats in-memory detached worker tasks. The persisted
      task on disk stays at status="pending" forever and the UI shows an
      eternal spinner. Fix: pipeline.__init__ runs _recover_orphan_tasks()
      which marks pending/processing video tasks as failed with a clear
@@ -118,6 +118,29 @@ def test_orphan_recovery_marks_pending_and_processing_as_failed(pipeline):
     # Completed + failed are untouched.
     assert by_id["t-completed"].status == "completed"
     assert by_id["t-failed"].status == "failed"
+
+
+def test_orphan_recovery_releases_interrupted_storyboard_frames(pipeline):
+    missing = StoryboardFrame(
+        id="frame-missing",
+        scene_id="scene-1",
+        status="processing",
+    )
+    existing = StoryboardFrame(
+        id="frame-existing",
+        scene_id="scene-1",
+        status="processing",
+        rendered_image_url="storyboard/existing.png",
+        image_url="storyboard/existing.png",
+    )
+    script = _script_with_tasks()
+    script.frames = [missing, existing]
+    pipeline.scripts = {script.id: script}
+
+    pipeline._recover_orphan_tasks()
+
+    assert missing.status == "failed"
+    assert existing.status == "completed"
 
 
 def test_orphan_recovery_preserves_existing_error_message(pipeline):
@@ -730,6 +753,9 @@ def test_process_video_task_preserves_provider_safety_metadata(pipeline, tmp_pat
     pipeline.output_root = str(tmp_path / "output")
     task = _video_task(status="pending", task_id="privacy-video")
     task.image_url = "https://media.example.test/source.png"
+    task.provider_name = "newapi"
+    task.provider_task_id = "terminal-provider-task"
+    task.provider_request_id = "terminal-provider-request"
     script = _script_with_tasks(task)
     pipeline.scripts = {script.id: script}
     temporary = tmp_path / "downloaded-image.png"
@@ -757,7 +783,38 @@ def test_process_video_task_preserves_provider_safety_metadata(pipeline, tmp_pat
     assert task.error == INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE
     assert task.error_code == INPUT_IMAGE_PRIVACY_ERROR_CODE
     assert "服务商错误代码：" in (task.error_diagnostic or "")
+    assert task.provider_name is None
+    assert task.provider_task_id is None
+    assert task.provider_request_id is None
     assert not temporary.exists()
+
+
+def test_process_video_task_resumes_persisted_provider_task(pipeline, tmp_path):
+    pipeline.output_root = str(tmp_path / "output")
+    task = _video_task(status="pending", task_id="resume-video")
+    task.image_url = None
+    task.provider_name = "newapi"
+    task.provider_task_id = "accepted-provider-task"
+    task.provider_request_id = "accepted-provider-request"
+    script = _script_with_tasks(task)
+    pipeline.scripts = {script.id: script}
+    captured = {}
+
+    class ResumingVideoModel:
+        def generate(self, **kwargs):
+            captured.update(kwargs)
+            output = Path(kwargs["output_path"])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"resumed provider result")
+            return str(output), None
+
+    pipeline._newapi_video_model = ResumingVideoModel()
+    with patch.object(pipeline, "_save_data"):
+        pipeline.process_video_task(script.id, task.id)
+
+    assert captured["provider_task_id"] == "accepted-provider-task"
+    assert task.status == "completed"
+    assert task.video_url == "video/video_resume-video.mp4"
 
 
 def test_process_video_task_turns_provider_poll_timeout_into_terminal_failure(pipeline, tmp_path):

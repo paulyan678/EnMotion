@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ...utils import get_logger
 from ...utils.newapi_models import MissingNewAPIKeyError, validate_model_for_mode
 from ...utils.uploads import IMAGE_UPLOAD_POLICY, save_upload_file_async
+from ..web_runtime.background_dispatch import DetachedTaskDispatcher
 from ..web_runtime.context import get_tenant
 from ..web_runtime.pipeline_registry import (
     server_mode_enabled,
@@ -44,6 +45,10 @@ MEDIA_REFERENCE_MESSAGE = "媒体文件无效或不可访问。"
 _storage = PlaygroundStorage()
 _service = PlaygroundService(_storage)
 _workspace_playgrounds = WorkspacePlaygroundRegistry()
+_local_playground_dispatcher = DetachedTaskDispatcher(
+    worker_count=4,
+    name_prefix="enmotion-playground-local",
+)
 
 
 def _current_storage() -> PlaygroundStorage:
@@ -170,7 +175,10 @@ def generate(request: GenerateRequest, background_tasks: BackgroundTasks):
             logger.warning("Playground 生成队列不可用：%s", exc)
             raise HTTPException(status_code=503, detail=GENERATION_QUEUE_MESSAGE) from exc
     else:
-        background_tasks.add_task(service.process_generation, gen.id)
+        if workspace_isolation_enabled():
+            _workspace_playgrounds.dispatch_current(gen.id)
+        else:
+            _local_playground_dispatcher.submit(service.process_generation, gen.id)
     return gen
 
 
@@ -205,6 +213,52 @@ def get_generation_status(generation_id: str):
         "outputs": gen.outputs,
         "error": gen.error,
     }
+
+
+def retry_generation(generation_id: str):
+    """Retry remaining batch work, resuming accepted provider jobs by id."""
+
+    service = _current_service()
+    try:
+        gen = service.prepare_generation_retry(generation_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="未找到此生成记录。") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="只有失败的生成任务可以重试。") from exc
+
+    if server_mode_enabled():
+        tenant = get_tenant(required=True)
+        assert tenant is not None
+        from ..server.jobs import enqueue_job
+
+        try:
+            enqueue_job(
+                workspace_id=tenant.workspace_id,
+                user_id=tenant.user_id,
+                job_type="playground",
+                payload={
+                    "generation_id": gen.id,
+                    "batch_size": gen.batch_size,
+                    "mode": gen.mode.value,
+                    "model_id": gen.model_id,
+                    "prompt": gen.prompt,
+                    "negative_prompt": gen.negative_prompt,
+                    "input_media": list(gen.input_media),
+                    "parameters": dict(gen.parameters),
+                    "activity_source": "playground",
+                },
+            )
+        except Exception as exc:
+            gen.status = "failed"
+            gen.error = GENERATION_QUEUE_MESSAGE
+            service.storage.update_generation(gen)
+            logger.warning("Playground retry queue unavailable: %s", exc)
+            raise HTTPException(status_code=503, detail=GENERATION_QUEUE_MESSAGE) from exc
+    elif workspace_isolation_enabled():
+        _workspace_playgrounds.dispatch_current(gen.id)
+    else:
+        _local_playground_dispatcher.submit(service.process_generation, gen.id)
+    return gen
 
 
 def delete_generation(generation_id: str):
@@ -245,6 +299,7 @@ def save_to_library(
 router.add_api_route("/history", list_history, methods=["GET"])
 router.add_api_route("/history/{generation_id}", get_generation, methods=["GET"])
 router.add_api_route("/history/{generation_id}/status", get_generation_status, methods=["GET"])
+router.add_api_route("/history/{generation_id}/retry", retry_generation, methods=["POST"])
 router.add_api_route("/history/{generation_id}", delete_generation, methods=["DELETE"])
 router.add_api_route(
     "/history/{generation_id}/outputs/{output_id}/save-to-library",

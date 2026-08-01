@@ -124,6 +124,19 @@ class PlaygroundService:
                 gen.error = str(exc)
                 gen.error_code = exc.error_code
                 gen.error_diagnostic = exc.diagnostic
+                # An ambiguous accepted task can safely be resumed by its
+                # provider id. A terminal rejection must allow a later retry
+                # to submit a fresh request instead of polling a known failure.
+                if exc.error_code != "provider_outcome_ambiguous":
+                    gen.provider_name = None
+                    gen.provider_task_id = None
+                    gen.provider_request_id = None
+            elif gen.outputs and len(gen.outputs) < gen.batch_size:
+                gen.error = (
+                    f"批量生成已完成 {len(gen.outputs)}/{gen.batch_size} 个输出。"
+                    "请点击重试继续生成剩余输出。"
+                )
+                gen.error_code = "partial_batch_failed"
             else:
                 gen.error = GENERATION_FAILED_MESSAGE
 
@@ -321,7 +334,7 @@ class PlaygroundService:
 
         failures: list[Exception] = []
 
-        for idx in range(gen.batch_size):
+        for idx in range(len(gen.outputs), gen.batch_size):
             ext = "png"
             out_filename = f"{gen.mode.value}_{gen.id}_{idx}.{ext}"
             out_path = os.path.join(self.image_output_dir, out_filename)
@@ -341,8 +354,12 @@ class PlaygroundService:
             except Exception as exc:
                 logger.error("Image generation %s batch %d failed: %s", gen.id, idx, exc)
                 failures.append(exc)
+                # Keep successful outputs contiguous from index zero. Retry
+                # resumes at len(outputs), so continuing after a hole would
+                # later overwrite or duplicate a higher-index file.
+                break
 
-        if failures and not gen.outputs:
+        if failures:
             from ...models.newapi import NewAPIProviderError
 
             provider_failure = next(
@@ -351,7 +368,10 @@ class PlaygroundService:
             )
             if provider_failure is not None:
                 raise provider_failure
-            raise RuntimeError(IMAGE_GENERATION_FAILED_MESSAGE)
+            raise RuntimeError(
+                f"{IMAGE_GENERATION_FAILED_MESSAGE} "
+                f"已完成 {len(gen.outputs)}/{gen.batch_size} 个输出。"
+            )
 
     def _generate_image_newapi(self, gen: PlaygroundGeneration, out_path: str, _idx: int) -> None:
         from ...models.newapi import NewAPIImageModel
@@ -389,7 +409,7 @@ class PlaygroundService:
 
         failures: list[Exception] = []
 
-        for idx in range(gen.batch_size):
+        for idx in range(len(gen.outputs), gen.batch_size):
             out_filename = f"{gen.mode.value}_{gen.id}_{idx}.mp4"
             out_path = os.path.join(self.video_output_dir, out_filename)
 
@@ -408,12 +428,19 @@ class PlaygroundService:
                     ),
                 )
                 gen.outputs.append(output_entry)
+                gen.provider_name = None
+                gen.provider_task_id = None
+                gen.provider_request_id = None
                 self.storage.update_generation(gen)
             except Exception as exc:
                 logger.error("Video generation %s batch %d failed: %s", gen.id, idx, exc)
                 failures.append(exc)
+                # Provider task ids and output indices belong to the current
+                # batch item. Stop at the first failure so a retry can resume
+                # exactly that item before advancing to the next one.
+                break
 
-        if failures and not gen.outputs:
+        if failures:
             from ...models.newapi import NewAPIProviderError
 
             provider_failure = next(
@@ -422,7 +449,10 @@ class PlaygroundService:
             )
             if provider_failure is not None:
                 raise provider_failure
-            raise RuntimeError(VIDEO_GENERATION_FAILED_MESSAGE)
+            raise RuntimeError(
+                f"{VIDEO_GENERATION_FAILED_MESSAGE} "
+                f"已完成 {len(gen.outputs)}/{gen.batch_size} 个输出。"
+            )
 
     # -- adapter delegates ------------------------------------------------
 
@@ -451,6 +481,21 @@ class PlaygroundService:
             "generation_mode": gen.mode.value,
         }
 
+        if gen.provider_task_id:
+            kwargs["provider_task_id"] = gen.provider_task_id
+
+        def persist_provider_ids(
+            provider_name: str,
+            provider_task_id: Optional[str],
+            provider_request_id: Optional[str],
+        ) -> None:
+            gen.provider_name = provider_name or None
+            gen.provider_task_id = provider_task_id or None
+            gen.provider_request_id = provider_request_id or None
+            self.storage.update_generation(gen)
+
+        kwargs["on_provider_ids"] = persist_provider_ids
+
         self._newapi_video_model.generate(
             prompt=gen.prompt,
             output_path=out_path,
@@ -458,6 +503,21 @@ class PlaygroundService:
             img_path=img_path,
             **kwargs,
         )
+
+    def prepare_generation_retry(self, generation_id: str) -> PlaygroundGeneration:
+        """Requeue failed work without duplicating accepted or completed outputs."""
+
+        gen = self.storage.get_generation(generation_id)
+        if gen is None:
+            raise LookupError("generation not found")
+        if gen.status != "failed":
+            raise ValueError("only failed generations can be retried")
+        gen.status = "pending"
+        gen.error = None
+        gen.error_code = None
+        gen.error_diagnostic = None
+        self.storage.update_generation(gen)
+        return gen
 
     # ------------------------------------------------------------------
     # Helpers

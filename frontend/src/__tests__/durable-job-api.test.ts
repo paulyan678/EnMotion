@@ -25,6 +25,7 @@ describe("durable server job API compatibility", () => {
     });
 
     afterEach(() => {
+        delete window.__ENMOTION_RUNTIME_CONFIG__;
         apiClient.defaults.adapter = originalAdapter;
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
@@ -153,6 +154,39 @@ describe("durable server job API compatibility", () => {
         apiClient.defaults.adapter = async (config) => response(config, project);
 
         await expect(api.mergeVideos("project-1")).resolves.toBe(project);
+    });
+
+    it("polls local hybrid activity for a storyboard render marker", async () => {
+        window.__ENMOTION_RUNTIME_CONFIG__ = { hybridMode: true };
+        const requestedUrls: string[] = [];
+        apiClient.defaults.adapter = async (config) => {
+            requestedUrls.push(config.url || "");
+            if (config.url?.includes("/activity/history")) {
+                return response(config, [{
+                    task_id: "hybrid-storyboard-1",
+                    status: "completed",
+                }]);
+            }
+            if (config.method === "get" && config.url?.includes("/projects/project-1")) {
+                return response(config, {
+                    id: "project-1",
+                    original_text: "hybrid source",
+                });
+            }
+            return response(config, {
+                task_id: "hybrid-storyboard-1",
+                status: "queued",
+            });
+        };
+
+        await expect(
+            api.renderFrame("project-1", "frame-3", {}, "A brass fox"),
+        ).resolves.toMatchObject({
+            id: "project-1",
+            originalText: "hybrid source",
+        });
+        expect(requestedUrls.some((url) => url.includes("/activity/history"))).toBe(true);
+        expect(requestedUrls.some((url) => url.includes("/jobs/"))).toBe(false);
     });
 
     it("surfaces a durable job failure to the existing caller promise", async () => {

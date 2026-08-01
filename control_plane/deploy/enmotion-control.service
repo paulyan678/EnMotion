@@ -10,7 +10,7 @@ Group=enmotion-control
 WorkingDirectory=/opt/enmotion-control
 EnvironmentFile=/etc/enmotion-control.env
 ExecStartPre=/opt/enmotion-control/.venv/bin/alembic upgrade head
-ExecStart=/opt/enmotion-control/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+ExecStart=/opt/enmotion-control/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080 --workers 1 --loop asyncio --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
 Restart=on-failure
 RestartSec=3
 TimeoutStartSec=120

@@ -170,10 +170,12 @@ class StoryboardGenerator:
         if not frame.rendered_image_asset:
             frame.rendered_image_asset = ImageAsset(asset_id=frame.id, asset_type="storyboard_frame")
 
-        try:
-            import uuid
+        import uuid
 
-            for _ in range(batch_size):
+        generation_error = None
+        generated_count = 0
+        for _ in range(batch_size):
+            try:
                 variant_id = str(uuid.uuid4())
                 output_filename = f"{frame.id}_{variant_id}.png"
                 output_path = os.path.join(self.output_dir, output_filename)
@@ -198,18 +200,38 @@ class StoryboardGenerator:
                     created_at=time.time()
                 )
                 frame.rendered_image_asset.variants.append(variant)
+                generated_count += 1
 
                 # Auto-select the latest one
                 frame.rendered_image_asset.selected_id = variant_id
+            except Exception as e:
+                generation_error = e
+                logger.error(
+                    "Failed to generate frame %s variant %s/%s: %s",
+                    frame.id,
+                    generated_count + 1,
+                    batch_size,
+                    e,
+                )
+                break
 
-            # Sync legacy fields
-            selected_variant = next((v for v in frame.rendered_image_asset.variants if v.id == frame.rendered_image_asset.selected_id), None)
-            if selected_variant:
-                frame.rendered_image_url = selected_variant.url
-                frame.image_url = selected_variant.url
+        # A batch is useful as soon as it has at least one valid output. Keep
+        # successful variants when a later provider call fails instead of
+        # discarding the entire (potentially billable) batch.
+        selected_variant = next((v for v in frame.rendered_image_asset.variants if v.id == frame.rendered_image_asset.selected_id), None)
+        if selected_variant and generated_count > 0:
+            frame.rendered_image_url = selected_variant.url
+            frame.image_url = selected_variant.url
 
             frame.updated_at = time.time()
             frame.status = GenerationStatus.COMPLETED
+            if generation_error is not None:
+                logger.warning(
+                    "Storyboard frame %s completed partially with %s/%s variants",
+                    frame.id,
+                    generated_count,
+                    batch_size,
+                )
 
             # Try uploading to OSS if configured - store Object Key (not full URL)
             try:
@@ -237,9 +259,10 @@ class StoryboardGenerator:
             except Exception as e:
                 logger.error(f"Failed to upload frame {frame.id} to OSS: {e}")
                 # Continue even if OSS upload fails
-
-        except Exception as e:
-            logger.error(f"Failed to generate frame {frame.id}: {e}")
+        else:
+            frame.updated_at = time.time()
             frame.status = GenerationStatus.FAILED
+            if generation_error is not None:
+                raise generation_error
 
         return frame

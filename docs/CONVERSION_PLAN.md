@@ -16,8 +16,8 @@ Acceptance:
 
 ## Phase 2 — Managed local data
 
-- Resolve OS application-data and Documents directories.
-- Default all generated media to `Documents/enmotion-output`.
+- Resolve the OS application-data directory.
+- Default all generated media to its private `enmotion-output` child.
 - Scope projects and browser state by a stable remote account identifier.
 - Keep refresh credentials in the OS credential store.
 - Use atomic writes and backup-first metadata migrations.

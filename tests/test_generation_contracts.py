@@ -18,6 +18,7 @@ from src.apps.comic_gen.models import (
     StoryboardFrame,
 )
 from src.apps.comic_gen.pipeline import ComicGenPipeline
+from src.apps.comic_gen.storyboard import StoryboardGenerator
 from src.apps.playground.models import PlaygroundGeneration, PlaygroundMode
 from src.apps.playground.service import PlaygroundService
 from src.models.newapi import NewAPIImageModel, NewAPIVideoModel
@@ -259,11 +260,18 @@ def test_storyboard_prompt_refine_rejects_missing_frame_before_calling_provider(
         pipeline.refine_frame_prompt(script.id, "missing", "draft", [])
 
 
-def test_video_polish_rejects_unreadable_image_instead_of_text_only_success(tmp_path):
+def test_video_polish_rejects_unreadable_image_for_vision_capable_model(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "src.apps.comic_gen.llm._chat_model_accepts_images",
+        lambda _model: True,
+    )
     processor = _processor_with(
         SimpleNamespace(
             is_configured=True,
-            require_configured=lambda *_args: None,
+            require_configured=lambda *_args: "future-vision-chat-model",
             chat=lambda **_kwargs: pytest.fail("provider must not run without its image"),
         )
     )
@@ -303,6 +311,77 @@ def test_storyboard_render_rejects_generator_failed_status():
 
     assert frame.status == GenerationStatus.FAILED
     assert save_calls == [True, True]
+
+
+def test_storyboard_batch_keeps_successful_variants_when_a_later_call_fails(
+    monkeypatch,
+    tmp_path,
+):
+    frame = _frame()
+    generator = StoryboardGenerator.__new__(StoryboardGenerator)
+    generator.output_root = str(tmp_path)
+    generator.output_dir = str(tmp_path / "storyboard")
+    calls = 0
+
+    class PartiallyFailingModel:
+        def generate(self, _prompt, output_path, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("provider timeout")
+            with open(output_path, "wb") as handle:
+                handle.write(b"generated image")
+
+    class DisabledUploader:
+        is_configured = False
+
+    generator.model = PartiallyFailingModel()
+    monkeypatch.setattr("src.utils.oss_utils.OSSImageUploader", DisabledUploader)
+
+    result = generator.generate_frame(
+        frame,
+        characters=[],
+        scene=None,
+        prompt="A brass fox in the rain",
+        batch_size=2,
+        model_name="gpt-image-2",
+    )
+
+    assert calls == 2
+    assert result.status == GenerationStatus.COMPLETED
+    assert len(result.rendered_image_asset.variants) == 1
+    assert result.rendered_image_asset.selected_id == result.rendered_image_asset.variants[0].id
+    assert result.rendered_image_url == result.rendered_image_asset.variants[0].url
+    assert (tmp_path / result.rendered_image_url).read_bytes() == b"generated image"
+
+
+def test_storyboard_generation_surfaces_provider_error_when_no_image_succeeds(
+    monkeypatch,
+    tmp_path,
+):
+    frame = _frame()
+    generator = StoryboardGenerator.__new__(StoryboardGenerator)
+    generator.output_root = str(tmp_path)
+    generator.output_dir = str(tmp_path / "storyboard")
+
+    class FailingModel:
+        @staticmethod
+        def generate(_prompt, _output_path, **_kwargs):
+            raise RuntimeError("provider unavailable")
+
+    generator.model = FailingModel()
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        generator.generate_frame(
+            frame,
+            characters=[],
+            scene=None,
+            prompt="A brass fox in the rain",
+            batch_size=1,
+            model_name="gpt-image-2",
+        )
+
+    assert frame.status == GenerationStatus.FAILED
 
 
 def test_storyboard_render_merge_preserves_edits_and_deletions():

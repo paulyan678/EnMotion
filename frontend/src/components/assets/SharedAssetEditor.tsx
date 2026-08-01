@@ -206,6 +206,7 @@ export default function SharedAssetEditor({
         )
       }
       isGenerating={controller.generatingTypes.length > 0}
+      generatingBatchSize={controller.generatingTypes[0]?.batchSize}
       stylePrompt={styleConfig?.positive_prompt || ""}
       styleNegativePrompt={styleConfig?.negative_prompt || ""}
       onGenerateVideo={(prompt, duration, options) =>

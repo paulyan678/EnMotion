@@ -261,17 +261,29 @@ def session_cookie_value(nonce: str) -> str:
 
 
 def desktop_session_response(cookie_value: str) -> Any:
-    """Set the loopback session before redirecting from the Tauri bootstrap page.
+    """Commit the loopback session before opening the exported application.
 
     The navigation starts on ``tauri://localhost``. ``SameSite=Strict`` cookies
-    set during that cross-site top-level navigation are withheld by WebKit on
-    the immediate redirect, so use ``Lax`` for this one loopback-only cookie.
-    All mutating requests remain protected by same-origin checks.
+    set during that cross-site top-level navigation are withheld by WebKit on an
+    immediate HTTP redirect. Some WebKit versions also start fetching the
+    redirected page's scripts before the new cookie is visible, leaving a blank
+    window until the user reloads. Return a tiny script-free handoff document
+    instead: once WebKit commits this response and its cookie, the meta refresh
+    opens the exported application in a separate navigation. All mutating
+    requests remain protected by same-origin checks.
     """
 
-    from fastapi.responses import RedirectResponse
+    from fastapi.responses import HTMLResponse
 
-    response = RedirectResponse("/static/index.html", status_code=303)
+    response = HTMLResponse(
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<meta http-equiv=\"refresh\" content=\"0;url=/static/index.html\">"
+        "<title>EnMotion</title></head><body>"
+        "<p>正在打开 EnMotion…</p>"
+        "<p><a href=\"/static/index.html\">继续</a></p>"
+        "</body></html>",
+        status_code=200,
+    )
     response.set_cookie(
         COOKIE_NAME,
         cookie_value,

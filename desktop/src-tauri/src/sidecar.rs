@@ -37,21 +37,21 @@ const GENERIC_RUNTIME_ERROR_MESSAGE: &str =
     "EnMotion 无法启动本地服务。请重新启动应用；如果问题持续，请联系管理员。";
 #[cfg(target_os = "macos")]
 const OUTPUT_ACCESS_FAILED_MESSAGE: &str =
-    "EnMotion 无法准备输出文件夹。请确认磁盘可用且“文稿/enmotion-output”可读写，然后重新启动应用。";
+    "EnMotion 无法准备本地输出文件夹。请确认磁盘可用且 EnMotion 应用数据目录可读写，然后重新启动应用。";
 #[cfg(target_os = "windows")]
 const OUTPUT_ACCESS_FAILED_MESSAGE: &str =
-    "EnMotion 无法准备输出文件夹。请确认磁盘可用且“文档/enmotion-output”可读写，然后重新启动应用。";
+    "EnMotion 无法准备本地输出文件夹。请确认磁盘可用且 EnMotion 应用数据目录可读写，然后重新启动应用。";
 #[cfg(target_os = "macos")]
 const OUTPUT_ACCESS_PERMISSION_MESSAGE: &str =
-    "EnMotion 无法访问“文稿/enmotion-output”。请在 macOS“系统设置 > 隐私与安全性 > 文件与文件夹”中允许 EnMotion 访问“文稿”文件夹，然后重新启动应用。";
+    "EnMotion 无法访问本地应用数据目录。请检查该目录的所有者和读写权限，然后重新启动应用。";
 #[cfg(target_os = "windows")]
 const OUTPUT_ACCESS_PERMISSION_MESSAGE: &str =
-    "EnMotion 无法访问“文档/enmotion-output”。请检查 Windows 安全中心的“受控文件夹访问”设置和文件夹权限，然后重新启动应用。";
+    "EnMotion 无法访问本地应用数据目录。请检查该目录的所有者和读写权限，然后重新启动应用。";
 #[cfg(target_os = "macos")]
 const OUTPUT_ACCESS_TIMED_OUT_MESSAGE: &str = OUTPUT_ACCESS_PERMISSION_MESSAGE;
 #[cfg(target_os = "windows")]
 const OUTPUT_ACCESS_TIMED_OUT_MESSAGE: &str =
-    "EnMotion 无法在 30 秒内确认“文档/enmotion-output”可用。请检查该文件夹以及 OneDrive 或网络磁盘状态，然后重新启动应用。";
+    "EnMotion 无法在 30 秒内确认本地输出文件夹可用。请检查磁盘状态和应用数据目录，然后重新启动应用。";
 
 #[derive(Clone, Debug)]
 pub struct Endpoint {
@@ -214,11 +214,7 @@ pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("cannot resolve EnMotion data directory: {error}"))?;
-    let output_dir = app
-        .path()
-        .document_dir()
-        .map_err(|error| format!("cannot resolve Documents directory: {error}"))?
-        .join("enmotion-output");
+    let output_dir = data_dir.join("enmotion-output");
     std::fs::create_dir_all(&data_dir)
         .map_err(|error| format!("cannot create EnMotion data directory: {error}"))?;
     report_startup_phase(
@@ -448,12 +444,12 @@ fn startup_error_message(error: &str) -> &'static str {
 
 #[cfg(target_os = "macos")]
 fn output_access_status_message() -> &'static str {
-    "正在等待 macOS 确认“文稿”文件夹访问权限…"
+    "正在确认本地输出文件夹…"
 }
 
 #[cfg(target_os = "windows")]
 fn output_access_status_message() -> &'static str {
-    "正在确认“文档”输出文件夹访问权限…"
+    "正在确认本地输出文件夹…"
 }
 
 fn output_access_error(operation: &str, error: std::io::Error) -> String {
@@ -493,10 +489,8 @@ fn verify_output_directory_access_blocking(output_dir: &Path) -> Result<(), Stri
     std::fs::create_dir_all(output_dir)
         .map_err(|error| output_access_error("create output directory", error))?;
 
-    // Apple allows an app to access files that the app itself creates in
-    // Documents without consent. Enumerating pre-existing contents is the
-    // read that deliberately exercises the permission needed for older
-    // EnMotion workspaces after an app update or signing-identity change.
+    // Enumerate existing contents before writing so startup fails clearly if
+    // the app-owned storage is unavailable or was assigned unsafe ownership.
     let mut entries = std::fs::read_dir(output_dir)
         .map_err(|error| output_access_error("read existing output directory", error))?;
     if let Some(entry) = entries.next() {

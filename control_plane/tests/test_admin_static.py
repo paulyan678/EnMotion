@@ -247,6 +247,7 @@ def test_production_configs_do_not_log_release_capabilities_or_csrf() -> None:
     package_config = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "--no-access-log" in service
+    assert "--loop asyncio" in service
     assert "log_skip /api/v1/releases/session/*" in caddy
     assert "request>uri delete" in caddy
     assert "request>headers delete" in caddy
