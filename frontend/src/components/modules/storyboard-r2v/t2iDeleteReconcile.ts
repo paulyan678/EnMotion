@@ -1,5 +1,5 @@
 export interface T2IWorkbenchPatch {
-    workbench_tab_mode?: "t2i_i2v";
+    workbench_tab_mode?: "t2i_i2v" | "direct_r2v";
     t2i_image_urls?: string[];
     t2i_selected_index?: number;
     workbench_generate_count?: number;

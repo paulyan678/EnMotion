@@ -1973,6 +1973,13 @@
   "creator": {
     "title": "Motion Creator",
     "i2vMode": "First Frame Driven (I2V)",
+    "t2vMode": "Prompt Driven (T2V)",
+    "generationMode": "Generation mode",
+    "i2vDescription": "Animate the exact selected storyboard image as the first frame.",
+    "t2vDescription": "Generate the shot directly from its action prompt without an image input.",
+    "t2vPromptOnly": "This mode sends only the shot prompt; no storyboard image is uploaded.",
+    "savingMode": "Saving mode…",
+    "modeSaveFailed": "Could not save this shot's generation mode.",
     "firstFrame": "Clip Start Frame",
     "clipStartFrame": "Clip Start Frame",
     "shotCount": "{count} shots",

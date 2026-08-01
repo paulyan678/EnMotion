@@ -262,6 +262,14 @@ class TestNewAPIImageModel:
         [
             (401, {"code": "provider_authentication_failed"}, PROVIDER_AUTH_ERROR_CODE),
             (402, {"code": "provider_quota_exhausted"}, PROVIDER_QUOTA_ERROR_CODE),
+            (
+                403,
+                {
+                    "code": "quota_below_block_threshold",
+                    "message": "余额不足，低于禁止阈值（10元）",
+                },
+                PROVIDER_QUOTA_ERROR_CODE,
+            ),
             (403, {"code": "provider_access_denied"}, PROVIDER_ACCESS_ERROR_CODE),
             (413, {"code": "provider_payload_too_large"}, PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE),
             (429, {"code": "provider_rate_limited"}, PROVIDER_RATE_LIMIT_ERROR_CODE),

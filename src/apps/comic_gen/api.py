@@ -5502,6 +5502,7 @@ def create_video_task(
                     request.source_image_id,
                     request.image_url,
                     canonical_frame_type,
+                    request.generation_mode,
                 )
             )
         if server_mode_enabled():

@@ -524,7 +524,7 @@ export interface VideoTask {
     /** Source tab in the storyboard workbench. Older records
      *  parse with null/undefined; CandidatesSection falls back to
      *  generation_mode to bucket them in that case. */
-    workbench_tab?: "t2i_i2v" | null;
+    workbench_tab?: "t2i_i2v" | "direct_r2v" | null;
     /** New API provider-side identifiers used by TaskQueuePanel diagnostics. */
     provider_name?: string | null;
     provider_task_id?: string | null;
@@ -532,10 +532,10 @@ export interface VideoTask {
 }
 
 export interface CreateVideoTaskPayload {
-    image_url: string;
+    image_url?: string | null;
     prompt: string;
     frame_id: string;
-    source_image_id: string;
+    source_image_id?: string | null;
     frame_type: FrameMovementType;
     duration?: number;
     seed?: number | null;
@@ -546,7 +546,7 @@ export interface CreateVideoTaskPayload {
     generation_mode?: "t2v" | "i2v";
     ratio?: string | null;
     watermark?: boolean | null;
-    workbench_tab?: "t2i_i2v" | null;
+    workbench_tab?: "t2i_i2v" | "direct_r2v" | null;
 }
 
 // ─── Storyboard Schema v2 types ─────────────────────────────────────────────
@@ -730,7 +730,7 @@ export const api = {
         scriptId: string,
         frameId: string,
         patch: {
-            workbench_tab_mode?: "t2i_i2v";
+            workbench_tab_mode?: "t2i_i2v" | "direct_r2v";
             t2i_image_urls?: string[];
             t2i_selected_index?: number;
             workbench_generate_count?: number;

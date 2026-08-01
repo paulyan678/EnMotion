@@ -93,6 +93,7 @@ export default function VideoGenerator() {
             frame_id: task.frame_id,
             source_image_id: task.source_image_id,
             frame_type: task.frame_type,
+            generation_mode: task.generation_mode,
             seed: task.seed,
             duration: task.duration,
         });

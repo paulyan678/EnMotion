@@ -289,52 +289,60 @@ export default function PlaygroundPage() {
         {/* ─── LEFT: INPUT PANEL ─── */}
         <aside
           data-testid="playground-input-panel"
-          className="flex w-full shrink-0 flex-col gap-3 overflow-visible border-b border-glass-border px-4 py-4 scrollbar-thin md:w-[420px] md:overflow-y-auto md:border-b-0 md:border-r"
+          className="flex w-full shrink-0 flex-col overflow-visible border-b border-glass-border md:h-full md:w-[420px] md:overflow-hidden md:border-b-0 md:border-r"
         >
-          {/* Mode */}
-          <section className="glass-panel atelier-card rounded-[20px] px-5 py-5">
-            <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
-              {t('compose.modeLabel')}
-            </div>
-            <ModeSelector />
-          </section>
-
-          {/* Prompt — first, the primary input */}
-          <section className="glass-panel atelier-card rounded-[20px] px-5 py-5">
-            <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
-              {t('compose.promptLabel')}
-            </div>
-            <PromptInput />
-          </section>
-
-          {/* Media Input (conditional) */}
-          {showMediaInput && (
+          <div
+            data-testid="playground-composer-scroll"
+            className="flex flex-col gap-3 px-4 pb-3 pt-4 scrollbar-thin md:min-h-0 md:flex-1 md:overflow-y-auto md:pb-4"
+          >
+            {/* Mode */}
             <section className="glass-panel atelier-card rounded-[20px] px-5 py-5">
               <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
-                {t(mode === 'i2v' ? 'compose.mediaFirstFrame' : 'compose.mediaReference')}
+                {t('compose.modeLabel')}
               </div>
-              <MediaInput />
+              <ModeSelector />
             </section>
-          )}
 
-          {/* Model & Parameters — merged into one card (mockup) */}
-          <section className="glass-panel atelier-card rounded-[20px] px-5 py-5 relative z-30">
-            <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
-              {t('compose.modelLabel')}
-            </div>
-            <ModelSelector />
-            <div className="my-4 h-px bg-border-subtle" />
-            <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
-              {t('compose.parametersLabel')}
-            </div>
-            <ParameterBar />
-          </section>
+            {/* Prompt — first, the primary input */}
+            <section className="glass-panel atelier-card rounded-[20px] px-5 py-5">
+              <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
+                {t('compose.promptLabel')}
+              </div>
+              <PromptInput />
+            </section>
 
-          {/* Spacer to push generate button to bottom */}
-          <div className="flex-1" />
+            {/* Media Input (conditional) */}
+            {showMediaInput && (
+              <section className="glass-panel atelier-card rounded-[20px] px-5 py-5">
+                <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
+                  {t(mode === 'i2v' ? 'compose.mediaFirstFrame' : 'compose.mediaReference')}
+                </div>
+                <MediaInput />
+              </section>
+            )}
 
-          {/* Generate CTA (sticky) */}
-          <div className="sticky bottom-0 -mx-4 -mb-4 border-t border-glass-border bg-transparent backdrop-blur-md px-4 pb-4 pt-4">
+            {/* Model & Parameters — merged into one card (mockup) */}
+            <section className="glass-panel atelier-card rounded-[20px] px-5 py-5">
+              <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
+                {t('compose.modelLabel')}
+              </div>
+              <ModelSelector />
+              <div className="my-4 h-px bg-border-subtle" />
+              <div className="mb-3 font-mono text-[0.625rem] font-semibold uppercase tracking-[0.16em] text-text-secondary">
+                {t('compose.parametersLabel')}
+              </div>
+              <ParameterBar />
+            </section>
+
+            {/* Spacer keeps short forms visually balanced without covering controls. */}
+            <div className="flex-1" />
+          </div>
+
+          {/* The CTA owns a separate layout row, so scrolled cards cannot cover it. */}
+          <div
+            data-testid="playground-generate-bar"
+            className="shrink-0 border-t border-glass-border bg-background/95 px-4 pb-4 pt-3 backdrop-blur-md"
+          >
             {generateBlockReason && (
               <p
                 id="playground-generate-block-reason"

@@ -182,6 +182,7 @@ export interface StoryboardFrame {
     t2i_selected_index?: number;
     clip_start_image_id?: string | null;
     clip_start_image_url?: string | null;
+    workbench_tab_mode?: "t2i_i2v" | "direct_r2v" | null;
     video_prompt?: string | null;
     camera_movement?: string | null;
     camera_movement_structured?: { primary?: string | null; description?: string | null; speed?: string | null } | null;
