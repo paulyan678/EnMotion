@@ -72,7 +72,7 @@ describe("playground responsive layout", () => {
     expect(generateBar).not.toHaveClass("sticky", "bottom-0");
     expect(composerScroll.nextElementSibling).toBe(generateBar);
     expect(generateBar.parentElement).toBe(screen.getByTestId("playground-input-panel"));
-    expect(screen.getByRole("button", { name: "生成" })).toBeWithin(generateBar);
+    expect(generateBar.contains(screen.getByRole("button", { name: "生成" }))).toBe(true);
     expect(screen.getByTestId("playground-results-panel")).toHaveClass(
       "min-h-[360px]",
       "w-full",
