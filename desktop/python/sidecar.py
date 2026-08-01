@@ -1116,12 +1116,9 @@ def verify_packaged_bundle() -> None:
     import openai  # noqa: F401
     import oss2  # noqa: F401
 
-    from src.apps.comic_gen import api as api_module
     from src.apps.hybrid.session_store import LocalCredentialStore
     from src.utils.system_check import get_ffmpeg_path
 
-    if not getattr(api_module.app, "routes", None):
-        raise RuntimeError("packaged EnMotion API has no routes")
     worker = resolve_packaged_demucs_worker()
     if worker is None:
         raise RuntimeError("packaged Demucs worker is missing")
@@ -1132,14 +1129,38 @@ def verify_packaged_bundle() -> None:
         stderr=subprocess.DEVNULL,
         timeout=120,
     )
-    with tempfile.TemporaryDirectory(prefix="enmotion-credential-store-verify-") as name:
-        credential_store = LocalCredentialStore(
-            Path(name) / "session" / "control-plane-refresh-token"
-        )
-        credential_store.write("bundle-verification-token")
-        if credential_store.read() != "bundle-verification-token":
-            raise RuntimeError("packaged local credential store is unavailable")
-        credential_store.delete()
+    with tempfile.TemporaryDirectory(prefix="enmotion-runtime-verify-") as name:
+        root = Path(name)
+        original_cwd = Path.cwd()
+        try:
+            static_dir = root / "static"
+            static_dir.mkdir()
+            (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+            config = RuntimeConfig(
+                schema_version=RUNTIME_SCHEMA_VERSION,
+                host="127.0.0.1",
+                port=24567,
+                nonce="a" * 64,
+                static_dir=static_dir,
+                data_dir=root / "data",
+                output_dir=root / "enmotion-output",
+                current_version="bundle-verification",
+                control_plane_url="https://accounts.enmotion.invalid",
+            )
+            configure_runtime_environment(config)
+            core_app, _api_module = configure_core_application(config)
+            if not getattr(core_app, "routes", None):
+                raise RuntimeError("packaged EnMotion API has no routes")
+
+            credential_store = LocalCredentialStore(
+                root / "session" / "control-plane-refresh-token"
+            )
+            credential_store.write("bundle-verification-token")
+            if credential_store.read() != "bundle-verification-token":
+                raise RuntimeError("packaged local credential store is unavailable")
+            credential_store.delete()
+        finally:
+            os.chdir(original_cwd)
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
         raise RuntimeError("packaged FFmpeg is unavailable")
