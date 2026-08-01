@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,15 @@ from ...utils.newapi_models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MANAGED_SAFE_RETRY_CODES = frozenset(
+    {
+        "provider_connection_failed",
+        "provider_rate_limited",
+        "provider_concurrency_limited",
+    }
+)
+_MANAGED_CHAT_MAX_ATTEMPTS = 3
 
 
 class LLMAdapter:
@@ -77,7 +87,16 @@ class LLMAdapter:
                 raise RuntimeError(
                     "The OpenAI-compatible client package is not installed"
                 ) from exc
-            self._client = OpenAI(api_key=api_key, base_url=base_url)
+            # The control plane owns the only safe provider-submission retry
+            # policy. A provider 5xx has an ambiguous billing outcome and the
+            # gateway intentionally answers a same-key replay with 202 instead
+            # of submitting again. The OpenAI SDK's automatic 5xx retry would
+            # misparse that 202 as a chat completion, so keep SDK retries off.
+            self._client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                max_retries=0,
+            )
             self._client_signature = signature
         return self._client
 
@@ -95,7 +114,28 @@ class LLMAdapter:
         # _get_client validates the model category and resolves only that
         # model's dedicated key before any network request is made.
         client = self._get_client(target_model)
-        return self._chat_once(client, target_model, messages, response_format)
+        from ...models.newapi import NewAPIProviderError
+        from ..hybrid.provider import hybrid_mode_enabled
+
+        attempts = _MANAGED_CHAT_MAX_ATTEMPTS if hybrid_mode_enabled() else 1
+        for attempt in range(attempts):
+            try:
+                return self._chat_once(client, target_model, messages, response_format)
+            except NewAPIProviderError as exc:
+                retryable = exc.error_code in _MANAGED_SAFE_RETRY_CODES
+                if not retryable or attempt == attempts - 1:
+                    raise
+                # These managed-gateway failures are explicit pre-acceptance
+                # rejections with refunded reservations. A fresh idempotency
+                # key is therefore safe; ambiguous outcomes are never retried.
+                logger.warning(
+                    "Retrying safely rejected managed chat request code=%s attempt=%d/%d",
+                    exc.error_code,
+                    attempt + 1,
+                    attempts,
+                )
+                time.sleep(min(2**attempt, 5))
+        raise RuntimeError("New API chat request failed")
 
     def _chat_once(
         self,
@@ -113,6 +153,30 @@ class LLMAdapter:
             response = client.chat.completions.create(**kwargs)
             return response.choices[0].message.content
         except Exception as exc:
+            from ...models.newapi import (
+                NewAPIProviderError,
+                _classified_provider_error,
+                _extract_provider_error,
+            )
+
+            status_code = getattr(exc, "status_code", None)
+            body = getattr(exc, "body", None)
+            if isinstance(status_code, int) and isinstance(body, (dict, list)):
+                code, message = _extract_provider_error(body)
+                classified = _classified_provider_error(
+                    code,
+                    message,
+                    http_status=status_code,
+                    request_id=str(getattr(exc, "request_id", "") or ""),
+                    phase="chat completion",
+                )
+                if isinstance(classified, NewAPIProviderError):
+                    logger.warning(
+                        "New API chat request failed with classified code=%s HTTP=%s",
+                        classified.error_code,
+                        status_code,
+                    )
+                    raise classified from None
             # Upstream client exception text can contain request metadata. Log
             # only the exception class and never echo the provider's text back
             # into API responses or chained tracebacks.

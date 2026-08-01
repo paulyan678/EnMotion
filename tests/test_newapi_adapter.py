@@ -1,5 +1,8 @@
 import base64
+import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -12,8 +15,16 @@ from src.models.newapi import (
     INPUT_IMAGE_PRIVACY_ERROR_CODE,
     OUTPUT_VIDEO_POLICY_ERROR_CODE,
     OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE,
+    PROVIDER_ACCESS_ERROR_CODE,
+    PROVIDER_AUTH_ERROR_CODE,
     PROVIDER_CONNECTION_ERROR_CODE,
     PROVIDER_CONNECTION_PUBLIC_MESSAGE,
+    PROVIDER_CONCURRENCY_ERROR_CODE,
+    PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+    PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE,
+    PROVIDER_QUOTA_ERROR_CODE,
+    PROVIDER_RATE_LIMIT_ERROR_CODE,
+    PROVIDER_REQUEST_ERROR_CODE,
     RATE_CARD_MISSING_ERROR_CODE,
     RATE_CARD_MISSING_PUBLIC_MESSAGE,
     NewAPIImageModel,
@@ -23,6 +34,8 @@ from src.models.newapi import (
     _extract_video_status,
     _extract_video_url,
     _media_input,
+    _request,
+    newapi_image_timeout_seconds,
     normalize_newapi_base_url,
     normalize_newapi_image_size,
 )
@@ -69,6 +82,13 @@ class TestNewAPIBaseUrl:
         with pytest.raises(ValueError, match="尺寸必须"):
             normalize_newapi_image_size("2048x2048")
 
+    def test_image_timeout_defaults_to_fifteen_minutes_and_is_bounded(self, monkeypatch):
+        monkeypatch.delenv("NEWAPI_IMAGE_TIMEOUT_SECONDS", raising=False)
+        assert newapi_image_timeout_seconds() == 960
+        assert newapi_image_timeout_seconds("60") == 60
+        with pytest.raises(ValueError, match="60 到 1800"):
+            newapi_image_timeout_seconds("59")
+
     def test_extracts_only_real_provider_progress_values(self):
         assert _extract_provider_progress({"progress": "42%"}) == 42
         assert _extract_provider_progress({"data": {"percentage": 0.73}}) == 73
@@ -95,8 +115,432 @@ class TestNewAPIChatAdapter:
             )
         assert credential_like_text not in str(exc_info.value)
 
+    def test_preserves_ambiguous_gateway_failure_without_sdk_replay(self):
+        class AmbiguousGatewayError(RuntimeError):
+            status_code = 502
+            request_id = "gateway-request-123"
+            body = {
+                "code": "provider_outcome_ambiguous",
+                "detail": "credits remain reserved",
+            }
+
+        class BrokenCompletions:
+            def create(self, **kwargs):
+                del kwargs
+                raise AmbiguousGatewayError("upstream details must stay hidden")
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=BrokenCompletions()))
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            LLMAdapter()._chat_once(
+                client,
+                "qwen3.7-max",
+                [{"role": "user", "content": "hello"}],
+                {"type": "json_object"},
+            )
+
+        assert exc_info.value.error_code == PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE
+        assert exc_info.value.http_status == 502
+        assert "upstream details" not in str(exc_info.value)
+
+    def test_managed_chat_retries_refunded_connection_failure_with_a_fresh_key(
+        self,
+        monkeypatch,
+    ):
+        keys = []
+
+        class ConnectionFailure(RuntimeError):
+            status_code = 502
+            request_id = "gateway-request-connection"
+            body = {
+                "code": "provider_connection_failed",
+                "detail": "provider connection failed before acceptance",
+            }
+
+        class FlakyCompletions:
+            def create(self, **kwargs):
+                keys.append(kwargs["extra_headers"]["Idempotency-Key"])
+                if len(keys) == 1:
+                    raise ConnectionFailure("hidden upstream details")
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="recovered"))]
+                )
+
+        adapter = LLMAdapter()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=FlakyCompletions()))
+        monkeypatch.setattr(adapter, "require_configured", lambda _model: None)
+        monkeypatch.setattr(adapter, "_get_client", lambda _model: client)
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.apps.comic_gen.llm_adapter.time.sleep", lambda _delay: None)
+
+        assert adapter.chat(
+            [{"role": "user", "content": "hello"}],
+            model="deepseek-v4-flash",
+        ) == "recovered"
+        assert len(keys) == 2
+        assert keys[0] != keys[1]
+
+    def test_managed_chat_never_retries_an_ambiguous_outcome(self, monkeypatch):
+        calls = 0
+
+        class AmbiguousFailure(RuntimeError):
+            status_code = 502
+            request_id = "gateway-request-ambiguous"
+            body = {
+                "code": "pending_reconciliation",
+                "detail": "credits remain reserved",
+            }
+
+        class AmbiguousCompletions:
+            def create(self, **kwargs):
+                nonlocal calls
+                del kwargs
+                calls += 1
+                raise AmbiguousFailure("hidden upstream details")
+
+        adapter = LLMAdapter()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=AmbiguousCompletions()))
+        monkeypatch.setattr(adapter, "require_configured", lambda _model: None)
+        monkeypatch.setattr(adapter, "_get_client", lambda _model: client)
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            adapter.chat(
+                [{"role": "user", "content": "hello"}],
+                model="qwen3.7-max",
+            )
+
+        assert exc_info.value.error_code == PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE
+        assert calls == 1
+
 
 class TestNewAPIImageModel:
+    @pytest.mark.parametrize(
+        ("status", "payload", "expected_code"),
+        [
+            (401, {"code": "provider_authentication_failed"}, PROVIDER_AUTH_ERROR_CODE),
+            (402, {"code": "provider_quota_exhausted"}, PROVIDER_QUOTA_ERROR_CODE),
+            (403, {"code": "provider_access_denied"}, PROVIDER_ACCESS_ERROR_CODE),
+            (413, {"code": "provider_payload_too_large"}, PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE),
+            (429, {"code": "provider_rate_limited"}, PROVIDER_RATE_LIMIT_ERROR_CODE),
+            (422, {"code": "provider_rejected"}, PROVIDER_REQUEST_ERROR_CODE),
+            (
+                502,
+                {"code": "provider_outcome_ambiguous", "detail": "credits remain reserved"},
+                PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+            ),
+        ],
+    )
+    def test_gateway_failure_classes_are_preserved(
+        self,
+        monkeypatch,
+        tmp_path,
+        status,
+        payload,
+        expected_code,
+    ):
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_GPT_IMAGE_2_API_KEY", "image-test-token")
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda *_args, **_kwargs: FakeResponse(payload, status=status),
+        )
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            NewAPIImageModel({}).generate(
+                "draw a fox",
+                str(tmp_path / "result.png"),
+                model_id="gpt-image-2",
+            )
+
+        assert exc_info.value.error_code == expected_code
+
+    def test_managed_submission_retries_only_pre_connection_failures_with_one_key(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if len(calls) <= 2:
+                raise requests.ConnectTimeout("connect timed out")
+            return FakeResponse({"ok": True})
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        response = _request("POST", "https://control.test/images/generations", json={})
+
+        assert response.status_code == 200
+        assert len(calls) == 3
+        assert len({call[2]["headers"]["Idempotency-Key"] for call in calls}) == 1
+
+    @pytest.mark.parametrize("phase", ["image submission", "video submission"])
+    def test_managed_submission_retries_refunded_connection_failure_with_fresh_key(
+        self,
+        monkeypatch,
+        phase,
+    ):
+        calls = []
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs["headers"]["Idempotency-Key"]))
+            if len(calls) == 1:
+                return FakeResponse(
+                    {"detail": "provider connection failed"},
+                    status=502,
+                )
+            return FakeResponse({"ok": True})
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        response = _request(
+            "POST",
+            "https://control.test/provider/submit",
+            phase=phase,
+            json={},
+        )
+
+        assert response.status_code == 200
+        assert len(calls) == 2
+        assert calls[0][2] != calls[1][2]
+
+    def test_managed_image_recovers_interrupted_response_with_cached_replay(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+        responses = iter(
+            [
+                requests.ReadTimeout("response stalled"),
+                FakeResponse(
+                    {
+                        "idempotent_replay": True,
+                        "usage_request": {"status": "reserved", "error_code": None},
+                    },
+                    status=202,
+                ),
+                FakeResponse({"data": [{"b64_json": "aW1hZ2U="}]}),
+            ]
+        )
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            result = next(responses)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        response = _request(
+            "POST",
+            "https://control.test/images/generations",
+            phase="image submission",
+            timeout=960,
+        )
+
+        assert response.status_code == 200
+        assert len(calls) == 3
+        assert len({call[2]["headers"]["Idempotency-Key"] for call in calls}) == 1
+        assert all(call[2]["headers"]["Accept-Encoding"] == "identity" for call in calls)
+        assert calls[0][2]["timeout"] == 960
+        assert calls[1][2]["timeout"] == 60
+        assert calls[2][2]["timeout"] == 60
+
+    def test_managed_image_rewinds_multipart_files_for_cached_recovery(
+        self,
+        monkeypatch,
+    ):
+        reference = io.BytesIO(b"reference-image")
+        calls = []
+
+        def fake_request(method, url, **kwargs):
+            payload = kwargs["files"][0][1][1].read()
+            calls.append((method, url, kwargs, payload))
+            if len(calls) == 1:
+                raise requests.exceptions.ChunkedEncodingError("response ended early")
+            return FakeResponse({"data": [{"b64_json": "aW1hZ2U="}]})
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        response = _request(
+            "POST",
+            "https://control.test/images/edits",
+            phase="image submission",
+            timeout=960,
+            files=[("image[]", ("reference.png", reference, "image/png"))],
+        )
+
+        assert response.status_code == 200
+        assert [call[3] for call in calls] == [b"reference-image", b"reference-image"]
+        assert calls[0][2]["headers"]["Idempotency-Key"] == calls[1][2]["headers"][
+            "Idempotency-Key"
+        ]
+
+    def test_managed_image_refreshes_expired_session_during_cached_recovery(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+        responses = iter(
+            [
+                requests.ReadTimeout("response stalled"),
+                FakeResponse({"detail": "invalid or expired access token"}, status=401),
+                FakeResponse({"data": [{"b64_json": "aW1hZ2U="}]}),
+            ]
+        )
+
+        def fake_request(method, url, **kwargs):
+            calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "authorization": kwargs["headers"]["Authorization"],
+                    "idempotency_key": kwargs["headers"]["Idempotency-Key"],
+                }
+            )
+            result = next(responses)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr(
+            "src.apps.hybrid.provider.refresh_provider_gateway_token",
+            lambda: "fresh-access-token",
+        )
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        response = _request(
+            "POST",
+            "https://control.test/images/edits",
+            phase="image submission",
+            headers={"Authorization": "Bearer expired-access-token"},
+            timeout=960,
+        )
+
+        assert response.status_code == 200
+        assert [call["authorization"] for call in calls] == [
+            "Bearer expired-access-token",
+            "Bearer expired-access-token",
+            "Bearer fresh-access-token",
+        ]
+        assert len({call["idempotency_key"] for call in calls}) == 1
+
+    def test_managed_provider_authentication_failure_is_not_session_refreshed(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr(
+            "src.apps.hybrid.provider.refresh_provider_gateway_token",
+            lambda: pytest.fail("upstream provider 401 must not refresh employee session"),
+        )
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda *_args, **_kwargs: FakeResponse(
+                {"code": "provider_authentication_failed"},
+                status=401,
+            ),
+        )
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            _request(
+                "POST",
+                "https://control.test/images/generations",
+                phase="image submission",
+                headers={"Authorization": "Bearer current-access-token"},
+            )
+
+        assert exc_info.value.error_code == PROVIDER_AUTH_ERROR_CODE
+
+    def test_managed_image_recovery_exhaustion_is_typed_ambiguous(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+
+        def fail_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            raise requests.ReadTimeout("response stalled")
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fail_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            _request(
+                "POST",
+                "https://control.test/images/generations",
+                phase="image submission",
+                timeout=960,
+            )
+
+        assert exc_info.value.error_code == PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE
+        assert len(calls) == 4
+        assert len({call[2]["headers"]["Idempotency-Key"] for call in calls}) == 1
+
+    def test_refunded_replay_and_explicit_refunded_502_rotate_keys(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+        responses = iter(
+            [
+                requests.ConnectTimeout("connect timed out"),
+                FakeResponse(
+                    {
+                        "idempotent_replay": True,
+                        "usage_request": {
+                            "status": "refunded",
+                            "error_code": "provider_connect_failed",
+                        },
+                    },
+                    status=202,
+                ),
+                FakeResponse({"ok": True}),
+            ]
+        )
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs["headers"]["Idempotency-Key"]))
+            result = next(responses)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        assert _request("POST", "https://control.test/images/generations").status_code == 200
+        assert calls[0][2] == calls[1][2]
+        assert calls[2][2] != calls[1][2]
+
+        calls.clear()
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda method, url, **kwargs: (
+                calls.append((method, url, kwargs["headers"]["Idempotency-Key"]))
+                or FakeResponse({"detail": "provider connection failed"}, status=502)
+            ),
+        )
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            _request("POST", "https://control.test/images/generations")
+        assert exc_info.value.error_code == PROVIDER_CONNECTION_ERROR_CODE
+        assert len(calls) == 4
+        assert len({call[2] for call in calls}) == 4
+
     def test_gateway_connection_failure_has_an_actionable_public_error(
         self,
         monkeypatch,
@@ -169,7 +613,8 @@ class TestNewAPIImageModel:
                 model_id="gpt-image-2",
             )
         assert configured_key not in str(exc_info.value)
-        assert "[REDACTED]" in str(exc_info.value)
+        assert isinstance(exc_info.value, NewAPIProviderError)
+        assert exc_info.value.error_code == PROVIDER_AUTH_ERROR_CODE
 
     def test_saves_base64_image(self, monkeypatch, tmp_path):
         requests_seen = []
@@ -740,6 +1185,36 @@ class TestNewAPIVideoModel:
                 generation_mode="t2v",
             )
 
+    def test_image_submission_surfaces_successful_http_error_envelope(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_GPT_IMAGE_2_API_KEY", "image-test-token")
+        monkeypatch.setenv("ENMOTION_IMAGE_MODEL", "gpt-image-2")
+        monkeypatch.setattr(
+            "src.models.newapi.requests.request",
+            lambda *_args, **_kwargs: FakeResponse(
+                {
+                    "code": "provider_rejected",
+                    "error": {
+                        "code": "ImagePromptRejected",
+                        "message": "prompt is unavailable",
+                    },
+                }
+            ),
+        )
+
+        with pytest.raises(NewAPIProviderError) as captured:
+            NewAPIImageModel({}).generate(
+                "a rejected image",
+                str(tmp_path / "error.png"),
+                model_id="gpt-image-2",
+            )
+        assert captured.value.error_code == PROVIDER_REQUEST_ERROR_CODE
+        assert captured.value.provider_code == "ImagePromptRejected"
+
     def test_timeout_includes_provider_task_and_last_status(
         self,
         monkeypatch,
@@ -760,13 +1235,199 @@ class TestNewAPIVideoModel:
             lambda: next(monotonic_values),
         )
 
-        with pytest.raises(RuntimeError, match="task-slow.*last status: processing"):
+        with pytest.raises(NewAPIProviderError) as exc_info:
             NewAPIVideoModel({}).generate(
                 "camera pushes in",
                 str(tmp_path / "slow.mp4"),
                 model_id="doubao-seedance-2-0-fast-260128",
                 generation_mode="t2v",
             )
+        assert exc_info.value.error_code == PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE
+        assert exc_info.value.provider_task_id == "task-slow"
+
+    def test_explicit_provider_concurrency_limit_waits_then_submits(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        calls = []
+        responses = iter(
+            [
+                FakeResponse(
+                    {
+                        "code": "provider_concurrency_limited",
+                        "detail": "provider rejected request",
+                    },
+                    status=429,
+                ),
+                FakeResponse({"task_id": "task-after-wait", "status": "completed"}),
+                FakeResponse(
+                    body=b"queued-video",
+                    headers={"Content-Type": "video/mp4"},
+                ),
+            ]
+        )
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return next(responses)
+
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_SEEDANCE_2_FAST_API_KEY", "video-test-token")
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        output = tmp_path / "queued.mp4"
+        NewAPIVideoModel({}).generate(
+            "camera pushes in",
+            str(output),
+            model_id="doubao-seedance-2-0-fast-260128",
+            generation_mode="t2v",
+        )
+
+        assert output.read_bytes() == b"queued-video"
+        assert [method for method, _url, _kwargs in calls].count("POST") == 2
+
+    def test_resume_provider_task_skips_submission_and_downloads_result(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        calls = []
+        responses = iter(
+            [
+                FakeResponse({"task_id": "task-resume", "status": "completed"}),
+                FakeResponse(
+                    body=b"resumed-video",
+                    headers={"Content-Type": "video/mp4"},
+                ),
+            ]
+        )
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return next(responses)
+
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_SEEDANCE_2_FAST_API_KEY", "video-test-token")
+        monkeypatch.setenv("NEWAPI_VIDEO_POLL_INTERVAL", "0.1")
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+        monkeypatch.setattr("src.models.newapi.time.sleep", lambda _delay: None)
+
+        output = tmp_path / "resumed.mp4"
+        NewAPIVideoModel({}).generate(
+            "camera pushes in",
+            str(output),
+            model_id="doubao-seedance-2-0-fast-260128",
+            generation_mode="t2v",
+            provider_task_id="task-resume",
+        )
+
+        assert output.read_bytes() == b"resumed-video"
+        assert all(method == "GET" for method, _url, _kwargs in calls)
+        assert calls[0][1].endswith("/video/generations/task-resume")
+
+    def test_accepted_task_persistence_failure_is_reported_as_ambiguous(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        calls = []
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return FakeResponse({"task_id": "task-not-persisted", "status": "processing"})
+
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_SEEDANCE_2_FAST_API_KEY", "video-test-token")
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+
+        def fail_persistence(*_args):
+            raise OSError("disk write failed")
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            NewAPIVideoModel({}).generate(
+                "camera pushes in",
+                str(tmp_path / "not-persisted.mp4"),
+                model_id="doubao-seedance-2-0-fast-260128",
+                generation_mode="t2v",
+                on_provider_ids=fail_persistence,
+            )
+
+        assert exc_info.value.error_code == PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE
+        assert exc_info.value.provider_task_id == "task-not-persisted"
+        assert [method for method, _url, _kwargs in calls] == ["POST"]
+
+    def test_video_models_share_single_flight_gate_across_callers(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        entered_first_submission = threading.Event()
+        release_first_submission = threading.Event()
+        guard = threading.Lock()
+        active_submissions = 0
+        maximum_active_submissions = 0
+        submission_count = 0
+
+        def fake_request(method, _url, **_kwargs):
+            nonlocal active_submissions, maximum_active_submissions, submission_count
+            if method == "POST":
+                with guard:
+                    submission_count += 1
+                    submission_number = submission_count
+                    active_submissions += 1
+                    maximum_active_submissions = max(
+                        maximum_active_submissions,
+                        active_submissions,
+                    )
+                try:
+                    if submission_number == 1:
+                        entered_first_submission.set()
+                        assert release_first_submission.wait(timeout=5)
+                    return FakeResponse(
+                        {
+                            "task_id": f"task-single-flight-{submission_number}",
+                            "status": "completed",
+                        }
+                    )
+                finally:
+                    with guard:
+                        active_submissions -= 1
+            return FakeResponse(
+                body=b"video",
+                headers={"Content-Type": "video/mp4"},
+            )
+
+        monkeypatch.setenv("NEWAPI_BASE_URL", "https://gateway.example/v1")
+        monkeypatch.setenv("NEWAPI_SEEDANCE_2_FAST_API_KEY", "video-test-token")
+        monkeypatch.setenv("NEWAPI_SEEDANCE_2_MINI_API_KEY", "video-test-token")
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+
+        def generate(index: int):
+            model_id = (
+                "doubao-seedance-2-0-fast-260128"
+                if index == 1
+                else "doubao-seedance-2-0-mini-260615"
+            )
+            return NewAPIVideoModel({}).generate(
+                f"camera move {index}",
+                str(tmp_path / f"single-{index}.mp4"),
+                model_id=model_id,
+                generation_mode="t2v",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(generate, 1)
+            assert entered_first_submission.wait(timeout=5)
+            second = executor.submit(generate, 2)
+            assert not second.done()
+            release_first_submission.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+
+        assert submission_count == 2
+        assert maximum_active_submissions == 1
 
     def test_surfaces_moyu_failure_reason(self, monkeypatch, tmp_path):
         responses = iter(

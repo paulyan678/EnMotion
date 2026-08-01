@@ -328,6 +328,10 @@ def test_source_asset_generate_exposes_task_and_persists_global_result(
     assert body["task_status"] == "queued"
     assert "asset" not in body
 
+    # The desktop contract returns as soon as the durable task is accepted.
+    # Wait for the detached provider worker before asserting terminal storage;
+    # otherwise this test races the intended queued response lifecycle.
+    assert comic_api._local_media_dispatcher.wait_for_idle(timeout=5)
     reloaded = _pipeline(tmp_path)
     saved = reloaded.library_store.scenes[0]
     assert saved.status is GenerationStatus.COMPLETED

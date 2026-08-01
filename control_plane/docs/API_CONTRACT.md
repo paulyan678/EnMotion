@@ -134,8 +134,11 @@ Authorization: Bearer <access token>
 Idempotency-Key: <8-128 safe characters>
 ```
 
-Routes mirror the supported provider surface under `/api/v1/gateway`. On a
-duplicate completed request, the service returns HTTP 202:
+Routes mirror the supported provider surface under `/api/v1/gateway`. For
+synchronous image generation and image editing, a duplicate completed request
+within the 24-hour recovery window returns the exact encrypted cached response
+with `X-EnMotion-Idempotent-Replay: true`. Other duplicate completed requests
+return HTTP 202:
 
 ```json
 {
@@ -149,9 +152,9 @@ duplicate completed request, the service returns HTTP 202:
 }
 ```
 
-This intentionally prevents a second charge without retaining prompts or
-provider output. The desktop must preserve the first successful response
-locally.
+This prevents a second provider call or charge. The desktop preserves every
+successful response locally. The control plane retains no prompt, and retains
+only the encrypted, bounded image response needed for short-lived recovery.
 
 ## Runtime and updates
 
@@ -221,7 +224,7 @@ The authenticated download route first stages the upstream archive in a private
 temporary file and verifies its size and SHA-256. The desktop updater must also
 verify size, SHA-256, and the Tauri signature before installation, then
 atomically replace only application binaries. It must never remove or overwrite
-OS Documents output, EnMotion app data, or credential-store entries.
+EnMotion application-data output, settings, or credential entries.
 
 For the public EnMotion repository, publish CI writes the immutable,
 version-specific GitHub URL

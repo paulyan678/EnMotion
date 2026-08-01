@@ -65,8 +65,8 @@ def test_chat_switch_rebuilds_client_with_the_matching_model_key(monkeypatch):
             )
 
     class FakeOpenAI:
-        def __init__(self, *, api_key, base_url):
-            created_clients.append((api_key, base_url))
+        def __init__(self, *, api_key, base_url, max_retries):
+            created_clients.append((api_key, base_url, max_retries))
             self.chat = SimpleNamespace(
                 completions=FakeCompletions(len(created_clients) - 1)
             )
@@ -81,8 +81,8 @@ def test_chat_switch_rebuilds_client_with_the_matching_model_key(monkeypatch):
     assert adapter.chat([{"role": "user", "content": "two"}], model="qwen3.7-max") == "ok"
 
     assert created_clients == [
-        ("credential-flash", "http://127.0.0.1:9999/v1"),
-        ("credential-qwen", "http://127.0.0.1:9999/v1"),
+        ("credential-flash", "http://127.0.0.1:9999/v1", 0),
+        ("credential-qwen", "http://127.0.0.1:9999/v1", 0),
     ]
     assert requests == [(0, "deepseek-v4-flash"), (1, "qwen3.7-max")]
 

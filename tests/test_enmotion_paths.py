@@ -11,13 +11,14 @@ from src.utils.paths import (
 )
 
 
-def test_output_defaults_to_named_documents_folder(monkeypatch, tmp_path: Path) -> None:
-    documents = tmp_path / "Documents Redirected"
-    monkeypatch.setenv("ENMOTION_DOCUMENTS_DIR", str(documents))
+def test_output_defaults_to_app_data_folder(monkeypatch, tmp_path: Path) -> None:
+    data = tmp_path / "Private App Data"
+    monkeypatch.setenv("ENMOTION_DATA_DIR", str(data))
+    monkeypatch.setenv("ENMOTION_DOCUMENTS_DIR", str(tmp_path / "Documents Redirected"))
     monkeypatch.delenv("ENMOTION_OUTPUT_DIR", raising=False)
 
-    assert output_root() == documents / "enmotion-output"
-    assert accounts_root() == documents / "enmotion-output" / "accounts"
+    assert output_root() == data / "enmotion-output"
+    assert accounts_root() == data / "enmotion-output" / "accounts"
 
 
 def test_explicit_data_and_output_roots_are_independent(monkeypatch, tmp_path: Path) -> None:

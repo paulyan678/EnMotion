@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.apps.comic_gen.pipeline import ComicGenPipeline
+from src.apps.comic_gen.models import StoryboardFrame
 from src.apps.web_runtime.context import bind_tenant, get_tenant, reset_tenant
 from src.apps.web_runtime.pipeline_registry import PipelineProxy, WorkspacePipelineRegistry
 from src.apps.web_runtime.playground_registry import WorkspacePlaygroundRegistry
@@ -59,6 +60,26 @@ def test_hybrid_registry_recovers_non_durable_orphan_tasks(tmp_path, monkeypatch
     pipeline = WorkspacePipelineRegistry(str(tmp_path / "workspaces")).get("workspace-a")
 
     assert pipeline.config["recover_orphan_tasks"] is True
+
+
+def test_hybrid_registry_only_recovers_orphans_once_per_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENMOTION_SERVER_MODE", "false")
+    monkeypatch.setenv("ENMOTION_HYBRID_MODE", "true")
+    workspace_root = tmp_path / "workspaces"
+    registry = WorkspacePipelineRegistry(str(workspace_root))
+
+    pipeline = registry.get("workspace-a")
+    project = pipeline.create_project("A", "private A", skip_analysis=True)
+    project.frames = [StoryboardFrame(id="frame-live", scene_id="scene-1", status="processing")]
+    pipeline._save_data()
+
+    registry.discard("workspace-a")
+    rebuilt = registry.get("workspace-a")
+    assert rebuilt.config["recover_orphan_tasks"] is False
+    assert rebuilt.scripts[project.id].frames[0].status == "processing"
+
+    restarted = WorkspacePipelineRegistry(str(workspace_root)).get("workspace-a")
+    assert restarted.scripts[project.id].frames[0].status == "failed"
 
 
 def test_server_registry_leaves_orphans_to_durable_job_recovery(tmp_path, monkeypatch):
@@ -148,6 +169,32 @@ def test_locked_writer_refresh_keeps_transient_task_state_after_metadata_save(
     refreshed = registry.get("workspace-a")
     assert refreshed is pipeline
     assert refreshed.asset_generation_tasks["task-visible"]["status"] == "processing"
+
+
+def test_background_writer_lease_prevents_rebuild_during_provider_work(
+    tmp_path,
+    monkeypatch,
+):
+    from src.apps.web_runtime import pipeline_registry as registry_module
+
+    monkeypatch.setattr(registry_module, "publish_workspace_snapshot", lambda _workspace_id: None)
+    registry = WorkspacePipelineRegistry(str(tmp_path / "workspaces"))
+    pipeline = registry.get("workspace-a")
+    project = pipeline.create_project("A", "private A", skip_analysis=True)
+
+    registry.retain_background_writer("workspace-a", pipeline)
+    project.title = "provider mutation"
+    pipeline._save_data()
+
+    # The changed file fingerprint must not construct a second mutable writer
+    # while a detached provider task still owns the original object.
+    assert registry.get("workspace-a") is pipeline
+    registry.discard("workspace-a")
+    assert registry.get("workspace-a") is pipeline
+
+    registry.release_background_writer("workspace-a", pipeline)
+    assert registry.get("workspace-a") is pipeline
+    assert registry.get("workspace-a").scripts[project.id].title == "provider mutation"
 
 
 def test_playground_history_and_templates_are_workspace_private(tmp_path):

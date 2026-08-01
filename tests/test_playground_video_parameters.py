@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +11,7 @@ from src.apps.playground.models import (
     PlaygroundMode,
 )
 from src.apps.playground.service import PlaygroundService
+from src.apps.playground.storage import PlaygroundStorage
 
 
 STANDARD_MODEL = "doubao-seedance-2-0-260128"
@@ -220,3 +223,100 @@ def test_service_rejects_legacy_incompatible_resolution_before_adapter_call():
 
     with pytest.raises(ValueError, match="Seedance 2.0 文生视频"):
         service._generate_video_newapi(generation, "unused.mp4")
+
+
+def test_service_persists_provider_ids_then_clears_them_after_success(tmp_path, monkeypatch):
+    output_root = tmp_path / "output"
+    storage = PlaygroundStorage(output_root=str(output_root))
+    generation = PlaygroundGeneration(
+        id="accepted-generation",
+        mode=PlaygroundMode.T2V,
+        model_id=FAST_MODEL,
+        prompt="A quiet camera push-in",
+        parameters={},
+        created_at="2026-07-21T00:00:00+00:00",
+    )
+    storage.add_generation(generation)
+    service = PlaygroundService(storage)
+    observed_provider_ids = []
+
+    class VideoModel:
+        def generate(self, *, output_path, on_provider_ids, **_kwargs):
+            on_provider_ids("newapi", "provider-task-123", "provider-request-123")
+            accepted = storage.get_generation(generation.id)
+            observed_provider_ids.append(
+                (
+                    accepted.provider_name,
+                    accepted.provider_task_id,
+                    accepted.provider_request_id,
+                )
+            )
+            from pathlib import Path
+
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"video")
+
+    service._newapi_video_model = VideoModel()
+    monkeypatch.setattr(service, "_create_video_thumbnail", lambda _path: None)
+    monkeypatch.setattr(service, "_enforce_server_file_quota", lambda _path: None)
+
+    service.process_generation(generation.id)
+
+    persisted = storage.get_generation(generation.id)
+    assert observed_provider_ids == [
+        ("newapi", "provider-task-123", "provider-request-123")
+    ]
+    assert persisted.status == "completed"
+    assert len(persisted.outputs) == 1
+    assert persisted.provider_name is None
+    assert persisted.provider_task_id is None
+    assert persisted.provider_request_id is None
+
+
+def test_partial_image_batch_is_retryable_without_duplicate_outputs(tmp_path, monkeypatch):
+    output_root = tmp_path / "output"
+    storage = PlaygroundStorage(output_root=str(output_root))
+    generation = PlaygroundGeneration(
+        id="partial-image-generation",
+        mode=PlaygroundMode.T2I,
+        model_id="gpt-image-2",
+        prompt="Three illustrated lantern studies",
+        parameters={},
+        batch_size=3,
+        created_at="2026-07-21T00:00:00+00:00",
+    )
+    storage.add_generation(generation)
+    service = PlaygroundService(storage)
+    attempts = 0
+
+    class ImageModel:
+        def generate(self, *, output_path, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise RuntimeError("transient provider failure")
+            path = Path(output_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"image")
+
+    service._newapi_image_model = ImageModel()
+    monkeypatch.setattr(service, "_assert_generated_media", lambda *_args: None)
+    monkeypatch.setattr(service, "_enforce_server_file_quota", lambda _path: None)
+
+    service.process_generation(generation.id)
+
+    partial = storage.get_generation(generation.id)
+    assert partial.status == "failed"
+    assert partial.error_code == "partial_batch_failed"
+    assert "1/3" in (partial.error or "")
+    assert len(partial.outputs) == 1
+
+    service.prepare_generation_retry(generation.id)
+    service.process_generation(generation.id)
+
+    completed = storage.get_generation(generation.id)
+    assert completed.status == "completed"
+    assert len(completed.outputs) == 3
+    assert len({output.media_path for output in completed.outputs}) == 3
+    assert attempts == 4

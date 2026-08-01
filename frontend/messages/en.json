@@ -523,6 +523,13 @@
       "inputImagePrivacy": "The video provider rejected this reference image because it may appear to show a real person. Select or generate a clearly fictional character image, then retry.",
       "outputVideoPolicy": "The video provider rejected the generated result because it may violate content or copyright policy. Adjust the prompt to avoid protected characters, brands, or recognizable work styles, then retry.",
       "providerConnection": "EnMotion could not reach the AI provider. Try again shortly; if it continues, ask an administrator to check the provider route.",
+      "providerOutcomeAmbiguous": "The provider did not confirm the task outcome. EnMotion did not retry to avoid duplicate generation or billing; ask an administrator to reconcile the API call.",
+      "providerRateLimited": "The provider is busy. EnMotion retried automatically, but the provider still did not accept the request. Try again shortly.",
+      "providerAuthentication": "The provider credential is invalid or expired. Ask an administrator to check the model configuration.",
+      "providerAccess": "The provider account cannot access the selected model. Ask an administrator to check model permissions.",
+      "providerQuota": "The EnMotion account or provider quota is exhausted. Ask an administrator to check credits and provider billing.",
+      "providerRequest": "The provider rejected the image request. Check the prompt, reference images, and generation parameters, then retry.",
+      "providerPayloadTooLarge": "The reference images or request are too large. Remove references or compress the images, then retry.",
       "requestFailed": "The request failed. Check the input and try again."
     },
     "parameterKeys": {
@@ -2020,6 +2027,7 @@
     "pollFailed": "Video polling failed: {error}",
     "submitFailed": "Submit failed",
     "aiPolishFailed": "AI polish failed",
+    "aiPolishNoChanges": "Polish completed, but the model made no notable changes. Add camera, lighting, or mood requirements and retry.",
     "promptLabel": "Action Prompt",
     "promptPlaceholder": "Describe the action and camera movement...",
     "aiPolish": "AI Polish",

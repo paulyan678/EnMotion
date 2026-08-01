@@ -161,6 +161,22 @@ describe("API Calls dashboard", () => {
     expect(apiCallsApi.list).toHaveBeenCalledWith();
   });
 
+  it("loads once when the macOS webview initially reports the document as hidden", async () => {
+    const visibility = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+
+    try {
+      renderWithIntl(<ApiCallsPage />, { locale: "en" });
+
+      expect(await screen.findByText("Storyboard image generation")).toBeInTheDocument();
+      expect(apiCallsApi.list).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText("Loading API activity…")).not.toBeInTheDocument();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
   it("shows a localized actionable message for output video policy failures", async () => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([{
       ...failed,
@@ -187,6 +203,26 @@ describe("API Calls dashboard", () => {
     expect(await screen.findByText(
       "EnMotion could not reach the AI provider. Try again shortly; if it continues, ask an administrator to check the provider route.",
     )).toBeInTheDocument();
+  });
+
+  it.each([
+    ["provider_outcome_ambiguous", "The provider did not confirm the task outcome."],
+    ["provider_rate_limited", "The provider is busy."],
+    ["provider_authentication_failed", "The provider credential is invalid or expired."],
+    ["provider_access_denied", "The provider account cannot access the selected model."],
+    ["provider_quota_exhausted", "The EnMotion account or provider quota is exhausted."],
+    ["provider_request_rejected", "The provider rejected the image request."],
+    ["provider_payload_too_large", "The reference images or request are too large."],
+  ])("shows an actionable message for %s", async (errorCode, expected) => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([{
+      ...failed,
+      error_code: errorCode,
+      error: "Internal provider text",
+    }]);
+
+    renderWithIntl(<ApiCallsPage />, { locale: "en" });
+
+    expect(await screen.findByText(new RegExp(expected))).toBeInTheDocument();
   });
 
   it("marks a newly created queued request as canceled without offering retry", async () => {

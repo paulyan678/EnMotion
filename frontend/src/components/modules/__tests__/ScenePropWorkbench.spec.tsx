@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { renderWithIntl } from "@/test/renderWithIntl";
 
 vi.mock("@/components/common/VariantSelector", () => ({
-  VariantSelector: ({ onSelect, onDelete, onFavorite, disabled }: any) => (
+  VariantSelector: ({ onSelect, onDelete, onFavorite, disabled, generatingBatchSize }: any) => (
     <div>
+      <span data-testid="active-image-batch">{generatingBatchSize ?? ""}</span>
       <button type="button" disabled={disabled} onClick={() => onSelect("variant-2")}>选择变体</button>
       <button type="button" disabled={disabled} onClick={() => onDelete("variant-2")}>删除变体</button>
       <button type="button" disabled={disabled} onClick={() => onFavorite("variant-2", true)}>收藏变体</button>
@@ -35,6 +36,24 @@ const scene = {
 };
 
 describe("ScenePropWorkbench", () => {
+  it("shows the active image batch size in the generation overlay", () => {
+    renderWithIntl(
+      <ScenePropWorkbench
+        asset={scene}
+        assetType="scene"
+        onClose={vi.fn()}
+        onGenerate={vi.fn()}
+        isGenerating
+        generatingBatchSize={3}
+        onSaveMetadata={vi.fn()}
+        supportsMotion={false}
+      />,
+      { locale: "en" },
+    );
+
+    expect(screen.getByTestId("active-image-batch")).toHaveTextContent("3");
+  });
+
   it("reuses owner-aware save, generation, and variant callbacks", async () => {
     const onSaveMetadata = vi.fn().mockResolvedValue(undefined);
     const onGenerate = vi.fn().mockResolvedValue(undefined);

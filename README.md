@@ -45,14 +45,17 @@ small control-plane server.
 Generated work defaults to:
 
 ```text
-<Documents>/enmotion-output/workspaces/<workspace-id>/output/
+<Application Data>/enmotion-output/workspaces/<workspace-id>/output/
 ```
 
 Settings, caches, logs, indexes, and the revocable session refresh token use the
 operating system's EnMotion application-data directory. The token is stored in
 an EnMotion-only owner-readable file, never in project files, browser
 localStorage, or `AGENTS.md`. EnMotion does not store the account password.
-Application upgrades do not write into the generated-media location.
+On macOS, the packaged app uses
+`~/Library/Application Support/com.enmotion.desktop/enmotion-output`; this avoids
+Documents-folder or Full Disk Access permission. Application upgrades preserve
+this generated-media location.
 
 Set `ENMOTION_OUTPUT_DIR` or use the desktop setting to select a different stable
 output root.

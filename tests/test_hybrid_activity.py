@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from src.apps.comic_gen.models import Character, ImageVariant, Script, VideoTask
+from src.apps.comic_gen.models import Character, ImageVariant, Script, StoryboardFrame, VideoTask
 from src.apps.hybrid import activity
 
 
@@ -119,6 +119,48 @@ def test_hybrid_video_activity_persists_input_parameters_and_output(
     assert row["outputs"][0]["media_path"] == "video/video-task-1.mp4"
 
 
+def test_hybrid_storyboard_activity_identifies_frame_and_input(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("ENMOTION_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    activity.record_storyboard_activity(
+        "workspace-alice",
+        task_id="storyboard-task-1",
+        source_route="#/series/series-1/episode/project-1",
+        project_id="project-1",
+        series_id="series-1",
+        frame_id="frame-3",
+        detail="3. 灯灯蹲在车头",
+        prompt="A brass fox in the rain",
+        model_name="gpt-image-2",
+        batch_size=2,
+        input_media=[
+            {
+                "id": "input-1",
+                "media_type": "image",
+                "media_path": "assets/fox.png",
+            }
+        ],
+    )
+
+    row = activity.list_activity("workspace-alice")[0]
+    assert row["type"] == "storyboard_render"
+    assert row["category"] == "image"
+    assert row["parameters"] == {"batch_size": 2}
+    assert row["source_context"] == {
+        "type": "workspace",
+        "route": "#/series/series-1/episode/project-1",
+        "asset_id": "frame-3",
+        "asset_type": "storyboard_frame",
+        "project_id": "project-1",
+        "episode_id": "project-1",
+        "frame_id": "frame-3",
+        "series_id": "series-1",
+    }
+    assert row["input_media"][0]["media_path"] == "assets/fox.png"
+
+
 def test_hybrid_asset_activity_marks_restart_orphans_as_failed(
     monkeypatch,
     tmp_path,
@@ -198,7 +240,7 @@ def test_hybrid_asset_activity_uses_the_task_owned_canonical_result(
             return generated
 
     updates: list[dict] = []
-    monkeypatch.setattr(comic_api, "pipeline", RebuiltPipeline())
+    rebuilt_pipeline = RebuiltPipeline()
     monkeypatch.setattr(
         comic_api,
         "update_asset_activity",
@@ -208,6 +250,7 @@ def test_hybrid_asset_activity_uses_the_task_owned_canonical_result(
     )
 
     comic_api._process_hybrid_asset_activity(
+        rebuilt_pipeline,
         "task-1",
         "workspace-alice",
         frozenset(),
@@ -256,7 +299,7 @@ def test_hybrid_asset_activity_rejects_a_completed_task_without_new_output(
             return generated
 
     updates: list[dict] = []
-    monkeypatch.setattr(comic_api, "pipeline", PipelineWithoutOutput())
+    pipeline_without_output = PipelineWithoutOutput()
     monkeypatch.setattr(
         comic_api,
         "update_asset_activity",
@@ -266,6 +309,7 @@ def test_hybrid_asset_activity_rejects_a_completed_task_without_new_output(
     )
 
     comic_api._process_hybrid_asset_activity(
+        pipeline_without_output,
         "task-1",
         "workspace-alice",
         frozenset(),
@@ -314,7 +358,7 @@ def test_hybrid_video_activity_resolves_canonical_completed_task(
             return script
 
     updates: list[dict] = []
-    monkeypatch.setattr(comic_api, "pipeline", RebuiltPipeline())
+    rebuilt_pipeline = RebuiltPipeline()
     monkeypatch.setattr(
         comic_api,
         "update_asset_activity",
@@ -324,6 +368,7 @@ def test_hybrid_video_activity_resolves_canonical_completed_task(
     )
 
     comic_api._process_hybrid_video_activity(
+        rebuilt_pipeline,
         "video-task-1",
         "workspace-alice",
         "project-1",
@@ -344,3 +389,161 @@ def test_hybrid_video_activity_resolves_canonical_completed_task(
             }
         ],
     }
+
+
+def test_hybrid_storyboard_activity_commits_and_publishes_new_images(monkeypatch) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from src.apps.comic_gen import api as comic_api
+
+    generated = StoryboardFrame(
+        id="frame-3",
+        scene_id="scene-1",
+        action_description="灯灯蹲在车头",
+        rendered_image_url="storyboard/generated.png",
+        image_url="storyboard/generated.png",
+        status="completed",
+    )
+    generated.rendered_image_asset.variants.append(
+        ImageVariant(id="generated", url="storyboard/generated.png")
+    )
+    generated.rendered_image_asset.selected_id = "generated"
+    plan = SimpleNamespace(
+        frame_id="frame-3",
+        frame=StoryboardFrame(
+            id="frame-3",
+            scene_id="scene-1",
+            action_description="灯灯蹲在车头",
+        ),
+        existing_variant_ids=frozenset({"existing"}),
+    )
+
+    class DetachedPipeline:
+        storyboard_generator = SimpleNamespace(output_dir="/tmp/storyboard")
+
+        @staticmethod
+        def execute_storyboard_render_plan(received_plan):
+            assert received_plan is plan
+            return generated
+
+        @staticmethod
+        def validate_storyboard_render_result(received_frame):
+            assert received_frame is generated
+
+    class CurrentPipeline:
+        committed = False
+
+        def commit_storyboard_render_plan(self, received_plan, received_frame):
+            assert (received_plan, received_frame) == (plan, generated)
+            self.committed = True
+
+    current = CurrentPipeline()
+
+    @contextmanager
+    def locked(workspace_id: str):
+        assert workspace_id == "workspace-alice"
+        yield current
+
+    updates: list[dict] = []
+    monkeypatch.setattr(comic_api, "_workspace_pipelines", SimpleNamespace(locked=locked))
+    monkeypatch.setattr(
+        comic_api,
+        "update_asset_activity",
+        lambda workspace_id, task_id, **payload: updates.append(
+            {"workspace_id": workspace_id, "task_id": task_id, **payload}
+        ),
+    )
+
+    comic_api._process_hybrid_storyboard_activity(
+        "storyboard-task-1",
+        "workspace-alice",
+        DetachedPipeline(),
+        plan,
+    )
+
+    assert current.committed is True
+    assert updates[0]["status"] == "running"
+    assert updates[-1] == {
+        "workspace_id": "workspace-alice",
+        "task_id": "storyboard-task-1",
+        "status": "completed",
+        "outputs": [
+            {
+                "id": "generated",
+                "media_type": "image",
+                "media_path": "storyboard/generated.png",
+                "thumbnail_path": "storyboard/generated.png",
+                "filename": "generated.png",
+            }
+        ],
+    }
+
+
+def test_hybrid_storyboard_activity_preserves_provider_failure_metadata(monkeypatch) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from src.apps.comic_gen import api as comic_api
+    from src.models.newapi import NewAPIProviderError
+
+    failure = NewAPIProviderError(
+        "暂时无法连接到 AI 服务商。",
+        error_code="provider_connection_failed",
+        provider_code="provider_connect_failed",
+        http_status=502,
+        request_id="request-123",
+        phase="image submission",
+    )
+    plan = SimpleNamespace(
+        frame_id="frame-4",
+        frame=StoryboardFrame(
+            id="frame-4",
+            scene_id="scene-1",
+            action_description="岚转过头",
+        ),
+        existing_variant_ids=frozenset(),
+    )
+
+    class DetachedPipeline:
+        storyboard_generator = SimpleNamespace(output_dir="/tmp/storyboard")
+
+        @staticmethod
+        def execute_storyboard_render_plan(_received_plan):
+            raise failure
+
+        @staticmethod
+        def storyboard_render_output_paths(_plan, _frame):
+            return []
+
+    class CurrentPipeline:
+        @staticmethod
+        def fail_storyboard_render_plan(received_plan):
+            assert received_plan is plan
+
+    @contextmanager
+    def locked(workspace_id: str):
+        assert workspace_id == "workspace-alice"
+        yield CurrentPipeline()
+
+    updates: list[dict] = []
+    monkeypatch.setattr(comic_api, "_workspace_pipelines", SimpleNamespace(locked=locked))
+    monkeypatch.setattr(
+        comic_api,
+        "update_asset_activity",
+        lambda workspace_id, task_id, **payload: updates.append(
+            {"workspace_id": workspace_id, "task_id": task_id, **payload}
+        ),
+    )
+
+    comic_api._process_hybrid_storyboard_activity(
+        "storyboard-task-failed",
+        "workspace-alice",
+        DetachedPipeline(),
+        plan,
+    )
+
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["error_code"] == "provider_connection_failed"
+    assert "HTTP 状态：502" in updates[-1]["error_diagnostic"]
+    assert updates[-1]["error"] == "暂时无法连接到 AI 服务商。"

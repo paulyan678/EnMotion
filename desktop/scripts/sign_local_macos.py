@@ -214,8 +214,7 @@ def sign_local_app(app: Path, expected_control_plane_url: str) -> None:
             {
                 "ENMOTION_DATA_DIR": str(smoke_root / "data"),
                 "ENMOTION_LOG_DIR": str(smoke_root / "logs"),
-                "ENMOTION_DOCUMENTS_DIR": str(smoke_root / "Documents"),
-                "ENMOTION_OUTPUT_DIR": str(smoke_root / "Documents" / "enmotion-output"),
+                "ENMOTION_OUTPUT_DIR": str(smoke_root / "data" / "enmotion-output"),
                 "ENMOTION_DEMUCS_WORKER": str(worker),
             }
         )

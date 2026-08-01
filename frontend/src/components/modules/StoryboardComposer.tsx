@@ -448,7 +448,11 @@ export default function StoryboardComposer() {
                                         />
 
                                         {/* Hover Actions - pointer-events-none to allow image click */}
-                                        <div className="absolute inset-0 bg-overlay opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 pointer-events-none">
+                                        <div className={`absolute inset-0 bg-overlay transition-opacity flex items-center justify-center gap-2 pointer-events-none ${
+                                            renderingFrames.has(frame.id) || frame.status === "processing"
+                                                ? "opacity-100"
+                                                : "opacity-0 group-hover:opacity-100"
+                                        }`}>
                                             {/* Lock Button */}
                                             <button
                                                 onClick={async (e) => {
@@ -471,8 +475,8 @@ export default function StoryboardComposer() {
                                             {/* Render Buttons with Batch Size - only show if not locked */}
                                             {!frame.locked && (
                                                 <div className="flex items-center gap-1 pointer-events-auto">
-                                                    {renderingFrames.has(frame.id) ? (
-                                                        <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 rounded-lg">
+                                                    {renderingFrames.has(frame.id) || frame.status === "processing" ? (
+                                                        <div role="status" aria-live="polite" className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 rounded-lg">
                                                             <Loader2 size={14} className="animate-spin text-white" />
                                                             <span className="text-xs text-foreground">{t("renderingFrame")}</span>
                                                         </div>

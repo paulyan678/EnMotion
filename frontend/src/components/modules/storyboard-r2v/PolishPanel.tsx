@@ -3,7 +3,8 @@
  * PolishPanel — New API I2V prompt-polish panel.
  *
  * 重构 (#114) 后的核心约定：
- *   - 后端 fallback 不再静默 (#117)：失败抛 HTTP 502 + {reason, message_zh/en, prompt_cn?, prompt_en?}
+ *   - 后端 fallback 不再静默 (#117)：hard failure 抛 HTTP 502；model_echo
+ *     是 HTTP 200 + warning，避免把成功 provider 调用记为 API failure
  *   - 双语锚点迭代 (#119)：feedback 时传 prev_cn 让模型用 CN 锚点定位反馈意图
  *   - UX (#118)：
  *     · 每栏独立 [📋 Copy] [↩ Apply]（顶部不再有总 Apply）
@@ -114,6 +115,15 @@ export default function PolishPanel({
             if (res?.prompt_cn && res?.prompt_en) {
                 setPolished({ cn: res.prompt_cn, en: res.prompt_en });
                 setFeedback("");
+                if (res.warning === "model_echo") {
+                    setError({
+                        reason: "model_echo",
+                        messageZh: t("polishWarningModelEcho"),
+                        messageEn: "Model made no notable changes. Add specific feedback below (camera, lighting, mood) and retry.",
+                        prompt_cn: res.prompt_cn,
+                        prompt_en: res.prompt_en,
+                    });
+                }
             } else {
                 // 200 但缺 key 走错误态
                 setError({
@@ -126,8 +136,8 @@ export default function PolishPanel({
             debugLog.error("Studio", "Polish failed:", err);
             const parsed = parsePolishError(err, t);
             setError(parsed);
-            // model_echo 是 warning：仍把后端附带的双语 echo 展示给用户
-            // （这样他们能在 feedback 框里参照原文追加要求）
+            // Backward compatibility for an older sidecar that still returns
+            // model_echo as 502 while a desktop update is rolling out.
             if (parsed.reason === "model_echo" && parsed.prompt_cn && parsed.prompt_en) {
                 setPolished({ cn: parsed.prompt_cn, en: parsed.prompt_en });
             }

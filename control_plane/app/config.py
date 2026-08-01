@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 import os
 import re
-import base64
-import binascii
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -149,7 +149,9 @@ class Settings:
     refresh_ttl_seconds: int = 7 * 24 * 60 * 60
     max_request_body_bytes: int = 40 * 1024 * 1024
     provider_connect_timeout_seconds: float = 10.0
-    provider_read_timeout_seconds: float = 300.0
+    provider_read_timeout_seconds: float = 900.0
+    provider_submission_attempts: int = 4
+    provider_retry_backoff_seconds: float = 0.5
     allow_insecure_upstreams: bool = False
     environment: str = "production"
     auto_create_schema: bool = False
@@ -197,8 +199,7 @@ class Settings:
         if self.public_base_url:
             public_origins.append(("ENMOTION_PUBLIC_BASE_URL", self.public_base_url))
         public_origins.extend(
-            ("ENMOTION_PUBLIC_BASE_URL_ALIASES", alias)
-            for alias in self.public_base_url_aliases
+            ("ENMOTION_PUBLIC_BASE_URL_ALIASES", alias) for alias in self.public_base_url_aliases
         )
         for name, origin in public_origins:
             normalized = validate_public_origin(
@@ -220,6 +221,13 @@ class Settings:
         ):
             if not math.isfinite(timeout) or not 0 < timeout <= 3600:
                 raise ConfigurationError(f"{name} must be between 0 and 3600 seconds")
+        if not 1 <= self.provider_submission_attempts <= 10:
+            raise ConfigurationError("provider submission attempts must be between 1 and 10")
+        if (
+            not math.isfinite(self.provider_retry_backoff_seconds)
+            or not 0 <= self.provider_retry_backoff_seconds <= 30
+        ):
+            raise ConfigurationError("provider retry backoff must be between 0 and 30 seconds")
         if self.login_attempts_per_minute < 1:
             raise ConfigurationError("login attempt limit must be positive")
         if not 300 <= self.release_session_ttl_seconds <= 24 * 60 * 60:
@@ -273,7 +281,11 @@ class Settings:
                 os.getenv("ENMOTION_PROVIDER_CONNECT_TIMEOUT_SECONDS", "10")
             ),
             provider_read_timeout_seconds=float(
-                os.getenv("ENMOTION_PROVIDER_READ_TIMEOUT_SECONDS", "300")
+                os.getenv("ENMOTION_PROVIDER_READ_TIMEOUT_SECONDS", "900")
+            ),
+            provider_submission_attempts=_env_int("ENMOTION_PROVIDER_SUBMISSION_ATTEMPTS", 4),
+            provider_retry_backoff_seconds=float(
+                os.getenv("ENMOTION_PROVIDER_RETRY_BACKOFF_SECONDS", "0.5")
             ),
             allow_insecure_upstreams=_env_bool("ENMOTION_ALLOW_INSECURE_UPSTREAMS", False),
             environment=environment,

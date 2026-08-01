@@ -144,6 +144,11 @@ export interface PlaygroundGeneration {
   outputs: PlaygroundOutput[];
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
+  error_code?: string | null;
+  error_diagnostic?: string | null;
+  provider_name?: string | null;
+  provider_task_id?: string | null;
+  provider_request_id?: string | null;
   created_at: string;
   updated_at?: string;
   finished_at?: string | null;
@@ -491,8 +496,10 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
   startGeneration: (gen) => {
     const { activeGenerationIds, history } = get();
     set({
-      activeGenerationIds: [...activeGenerationIds, gen.id],
-      history: [gen, ...history],
+      activeGenerationIds: activeGenerationIds.includes(gen.id)
+        ? activeGenerationIds
+        : [...activeGenerationIds, gen.id],
+      history: [gen, ...history.filter((item) => item.id !== gen.id)],
       isGenerating: true,
     });
   },

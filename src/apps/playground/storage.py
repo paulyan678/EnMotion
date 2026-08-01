@@ -93,13 +93,25 @@ class PlaygroundStorage:
                 self._save_templates()
 
     def _recover_orphan_generations(self) -> int:
-        """Fail unfinished non-durable work after a desktop process restart."""
+        """Fail unaccepted work and preserve accepted video tasks for resume."""
 
         recovered = 0
         for generation in self._history:
             if str(generation.status).lower() not in {"pending", "processing"}:
                 continue
             now = datetime.now(timezone.utc).isoformat()
+            if generation.provider_task_id:
+                # The provider already accepted and identified this paid job.
+                # Keep it resumable so the registry can continue polling and
+                # downloading without submitting a duplicate request.
+                generation.status = "pending"
+                generation.error = None
+                generation.error_code = None
+                generation.error_diagnostic = None
+                generation.finished_at = None
+                generation.updated_at = now
+                recovered += 1
+                continue
             generation.status = "failed"
             if not generation.error:
                 generation.error = self.ORPHAN_RECOVERY_REASON
@@ -109,6 +121,18 @@ class PlaygroundStorage:
         if recovered:
             logger.warning("Recovered %s interrupted Playground generation(s)", recovered)
         return recovered
+
+    def resumable_generation_ids(self) -> list[str]:
+        """Return accepted provider jobs that can resume without resubmission."""
+
+        with self._lock, self._shared_lock():
+            self._refresh_history()
+            return sorted(
+                generation.id
+                for generation in self._history
+                if str(generation.status).lower() in {"pending", "processing"}
+                and bool(generation.provider_task_id)
+            )
 
     @staticmethod
     def _load_file(path: str, model_cls):

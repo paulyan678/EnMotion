@@ -261,11 +261,11 @@ export default function ApiCallsPage() {
         runCycle();
       }, delay);
     };
-    const runCycle = () => {
+    const runCycle = (allowHidden = false) => {
       if (
         stopped
         || cycle
-        || document.visibilityState !== "visible"
+        || (!allowHidden && document.visibilityState !== "visible")
       ) {
         return;
       }
@@ -285,7 +285,10 @@ export default function ApiCallsPage() {
       runCycle();
     };
 
-    runCycle();
+    // WKWebView can briefly report a newly mounted page as hidden while the
+    // native window is still activating. Always perform the first load; only
+    // pause subsequent polling while the document is actually backgrounded.
+    runCycle(true);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       stopped = true;
@@ -467,6 +470,20 @@ export default function ApiCallsPage() {
                     ? t("errors.outputVideoPolicy")
                   : job.error_code === "provider_connection_failed"
                     ? t("errors.providerConnection")
+                  : job.error_code === "provider_outcome_ambiguous"
+                    ? t("errors.providerOutcomeAmbiguous")
+                  : job.error_code === "provider_rate_limited"
+                    ? t("errors.providerRateLimited")
+                  : job.error_code === "provider_authentication_failed"
+                    ? t("errors.providerAuthentication")
+                  : job.error_code === "provider_access_denied"
+                    ? t("errors.providerAccess")
+                  : job.error_code === "provider_quota_exhausted"
+                    ? t("errors.providerQuota")
+                  : job.error_code === "provider_request_rejected"
+                    ? t("errors.providerRequest")
+                  : job.error_code === "provider_payload_too_large"
+                    ? t("errors.providerPayloadTooLarge")
                   : job.error && !/[A-Za-z]{2,}/.test(job.error)
                     ? job.error
                     : t("errors.requestFailed");
@@ -664,6 +681,20 @@ function JobDetailDrawer({
       ? t("errors.outputVideoPolicy")
     : job.error_code === "provider_connection_failed"
       ? t("errors.providerConnection")
+    : job.error_code === "provider_outcome_ambiguous"
+      ? t("errors.providerOutcomeAmbiguous")
+    : job.error_code === "provider_rate_limited"
+      ? t("errors.providerRateLimited")
+    : job.error_code === "provider_authentication_failed"
+      ? t("errors.providerAuthentication")
+    : job.error_code === "provider_access_denied"
+      ? t("errors.providerAccess")
+    : job.error_code === "provider_quota_exhausted"
+      ? t("errors.providerQuota")
+    : job.error_code === "provider_request_rejected"
+      ? t("errors.providerRequest")
+    : job.error_code === "provider_payload_too_large"
+      ? t("errors.providerPayloadTooLarge")
     : job.error && !/[A-Za-z]{2,}/.test(job.error)
       ? job.error
       : t("errors.requestFailed");

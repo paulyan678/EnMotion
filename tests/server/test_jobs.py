@@ -499,6 +499,58 @@ def test_retried_video_refreshes_replacement_and_preserves_structured_failure(
     assert "InputImageSensitiveContentDetected" in exc_info.value.diagnostic
 
 
+def test_retried_accepted_video_resumes_without_refreshing_original_input(monkeypatch):
+    from src.apps.server import jobs as jobs_module
+
+    task = SimpleNamespace(
+        id="accepted-video-task",
+        status="failed",
+        error=None,
+        error_code=None,
+        error_diagnostic=None,
+        provider_task_id="provider-task-accepted",
+        video_url=None,
+        image_url="video_inputs/original.png",
+    )
+
+    class FakePipeline:
+        refreshed: list[tuple[str, str]] = []
+
+        def get_script(self, script_id):
+            assert script_id == "project-1"
+            return SimpleNamespace(video_tasks=[task])
+
+        def refresh_asset_video_task_input(self, script_id, task_id):
+            self.refreshed.append((script_id, task_id))
+            return True
+
+        def process_video_task(self, script_id, task_id):
+            assert (script_id, task_id) == ("project-1", "accepted-video-task")
+            task.status = "completed"
+            task.video_url = "video/resumed.mp4"
+
+    pipeline = FakePipeline()
+
+    @contextmanager
+    def locked(_workspace_id):
+        yield pipeline
+
+    monkeypatch.setattr(jobs_module._worker_pipelines, "locked", locked)
+    claimed = jobs_module.ClaimedJob(
+        id="accepted-video-task",
+        workspace_id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        job_type="video",
+        payload={"script_id": "project-1", "task_id": "accepted-video-task"},
+        attempts=2,
+    )
+
+    result = jobs_module._video(claimed)
+
+    assert pipeline.refreshed == []
+    assert result["_output_references"][0]["path"] == "video/resumed.mp4"
+
+
 def test_playground_provider_wait_does_not_hold_workspace_lock(database, monkeypatch):
     from src.apps.server import jobs as jobs_module
 

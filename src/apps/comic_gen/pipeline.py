@@ -560,8 +560,8 @@ class ComicGenPipeline:
         if os.getenv("ENMOTION_PRELOAD_DEMUCS", "").strip() == "1":
             self._start_demucs_warmup()
 
-        # Recover orphan async tasks. FastAPI BackgroundTasks live in
-        # process memory — any restart between submit + execute leaves
+        # Recover orphan async tasks. Detached desktop workers live in process
+        # memory — any restart between submit + execute leaves
         # them permanently `pending` (or `processing` if interrupted
         # mid-call) on disk. We mark such tasks `failed` with a clear
         # reason so the user sees a Retry affordance instead of an
@@ -582,7 +582,7 @@ class ComicGenPipeline:
     _ORPHAN_RECOVERY_REASON = "EnMotion 在此任务运行期间重新启动。您可以点击重试再次运行。"
 
     def _recover_orphan_tasks(self) -> None:
-        """Sweep persisted state for video tasks left in pending/processing.
+        """Sweep persisted video tasks and storyboard renders left in progress.
 
         FastAPI's BackgroundTasks queue lives entirely in process memory:
         if uvicorn restarts (dev --reload, OOM, OS reboot, ctrl-C) every
@@ -623,6 +623,19 @@ class ComicGenPipeline:
                     if not getattr(task, "error_diagnostic", None):
                         task.error_diagnostic = self._ORPHAN_RECOVERY_REASON
                     recovered += 1
+
+            # Storyboard rendering has no separately persisted task object. Its
+            # processing marker lives on the frame itself, so an interrupted
+            # desktop process must release that marker on the next launch. A
+            # prior selected image remains valid; otherwise expose a retryable
+            # failed frame instead of an eternal spinner.
+            for frame in getattr(script, "frames", None) or []:
+                if frame.status != GenerationStatus.PROCESSING:
+                    continue
+                has_image = bool(frame.rendered_image_url or frame.image_url)
+                frame.status = GenerationStatus.COMPLETED if has_image else GenerationStatus.FAILED
+                frame.updated_at = time.time()
+                recovered += 1
 
         if recovered > 0:
             try:
@@ -1015,6 +1028,7 @@ class ComicGenPipeline:
         error_diagnostic: Optional[str] = None,
         overwrite: bool = False,
         allow_completed: bool = False,
+        clear_provider_ids: bool = False,
     ) -> bool:
         """Belt-and-suspenders setter used by BG-task wrappers when an
         exception escapes the pipeline's own try/except. Writes
@@ -1040,6 +1054,10 @@ class ComicGenPipeline:
                         task.error_code = error_code
                     if overwrite or not getattr(task, "error_diagnostic", None):
                         task.error_diagnostic = error_diagnostic
+                    if clear_provider_ids:
+                        task.provider_name = None
+                        task.provider_task_id = None
+                        task.provider_request_id = None
                 except Exception:
                     pass
                 if getattr(task, "asset_id", None):
@@ -3396,20 +3414,23 @@ class ComicGenPipeline:
                     raise ValueError(f"Asset {asset_id} already exists as {effective_type}")
                 candidate = self._converted_asset(asset, asset_type, effective_type, source_kind)
             else:
-                candidate = asset.model_copy(deep=True)
+                # Keep the canonical object identity stable. Detached provider
+                # workers retain this exact object while a long generation is
+                # running. Replacing it for an ordinary metadata edit leaves
+                # the worker mutating a stale copy, which can orphan completed
+                # image files and make the activity report no new outputs.
+                candidate = asset
 
             validated_attributes = _validated_asset_attribute_values(
                 candidate, effective_type, attributes or {}
             )
             validated_prompts = _validated_asset_prompt_values(effective_type, prompts or {})
+            rollback_snapshot = candidate.model_copy(deep=True)
             for key, value in validated_attributes.items():
                 setattr(candidate, key, value)
             self._set_asset_prompts(candidate, effective_type, validated_prompts)
 
-            if effective_type == asset_type:
-                owner_list = self._asset_list_for_owner(owner, asset_type)
-                owner_list[owner_list.index(asset)] = candidate
-            else:
+            if effective_type != asset_type:
                 old_list = self._asset_list_for_owner(owner, asset_type)
                 new_list = self._asset_list_for_owner(owner, effective_type)
                 old_index = old_list.index(asset)
@@ -3420,7 +3441,23 @@ class ComicGenPipeline:
                 self._save_after_asset_mutation(storage_source)
             except Exception:
                 if effective_type == asset_type:
-                    owner_list[owner_list.index(candidate)] = asset
+                    candidate.__dict__.clear()
+                    candidate.__dict__.update(copy.deepcopy(rollback_snapshot.__dict__))
+                    object.__setattr__(
+                        candidate,
+                        "__pydantic_fields_set__",
+                        set(rollback_snapshot.__pydantic_fields_set__),
+                    )
+                    object.__setattr__(
+                        candidate,
+                        "__pydantic_extra__",
+                        copy.deepcopy(rollback_snapshot.__pydantic_extra__),
+                    )
+                    object.__setattr__(
+                        candidate,
+                        "__pydantic_private__",
+                        copy.deepcopy(rollback_snapshot.__pydantic_private__),
+                    )
                 else:
                     new_list.remove(candidate)
                     old_list.insert(old_index, asset)
@@ -6936,10 +6973,7 @@ class ComicGenPipeline:
                 task.provider_name = provider_name
                 task.provider_task_id = ptask_id
                 task.provider_request_id = preq_id
-                try:
-                    self._save_data()
-                except Exception:
-                    logger.warning("Failed to persist New API provider IDs mid-flight")
+                self._save_data()
 
             video_path, _ = self._newapi_video_model.generate(
                 prompt=_motion_prompt_with_frame_type(task.prompt, task.frame_type),
@@ -6954,6 +6988,7 @@ class ComicGenPipeline:
                 generate_audio=task.generate_audio,
                 watermark=bool(task.watermark) if task.watermark is not None else False,
                 generation_mode=task.generation_mode,
+                provider_task_id=task.provider_task_id or None,
                 on_provider_ids=_capture_newapi_provider_ids,
             )
 
@@ -7025,6 +7060,10 @@ class ComicGenPipeline:
                     error_code=failure.code,
                     error_diagnostic=failure.diagnostic,
                     overwrite=True,
+                    clear_provider_ids=(
+                        isinstance(e, NewAPIProviderError)
+                        and e.error_code != "provider_outcome_ambiguous"
+                    ),
                 )
                 authoritative_script = self.get_script(script_id)
                 authoritative_task = (
@@ -7042,6 +7081,9 @@ class ComicGenPipeline:
                         "error",
                         "error_code",
                         "error_diagnostic",
+                        "provider_name",
+                        "provider_task_id",
+                        "provider_request_id",
                     ):
                         setattr(
                             task,

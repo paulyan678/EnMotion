@@ -5,11 +5,6 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Sparkles, Grid3x3, GalleryHorizontal } from 'lucide-react';
 import { usePlaygroundStore, type PlaygroundGeneration } from './usePlaygroundStore';
 import { playgroundApi } from '@/lib/api';
-import {
-  getEffectivePlaygroundInputMedia,
-  getEffectivePlaygroundParameters,
-  supportsPlaygroundNegativePrompt,
-} from './playgroundModels';
 import ResultCard from './ResultCard';
 import GalleryView from './GalleryView';
 import DetailPanel from './DetailPanel';
@@ -86,23 +81,7 @@ export default function ResultGallery() {
 
   const handleRetry = useCallback(async (gen: PlaygroundGeneration) => {
     try {
-      const inputMedia = getEffectivePlaygroundInputMedia(gen.mode, gen.input_media);
-      const parameters = getEffectivePlaygroundParameters(
-        gen.mode,
-        gen.model_id,
-        gen.parameters,
-      );
-      const resp = await playgroundApi.generate({
-        mode: gen.mode,
-        model_id: gen.model_id,
-        prompt: gen.prompt,
-        negative_prompt: supportsPlaygroundNegativePrompt(gen.mode, gen.model_id)
-          ? gen.negative_prompt || undefined
-          : undefined,
-        input_media: inputMedia.length > 0 ? inputMedia : undefined,
-        parameters,
-        batch_size: gen.batch_size > 1 ? gen.batch_size : undefined,
-      });
+      const resp = await playgroundApi.retryGeneration(gen.id);
       const newGen: PlaygroundGeneration = {
         id: resp.id,
         mode: resp.mode as PlaygroundGeneration['mode'],
@@ -112,9 +91,21 @@ export default function ResultGallery() {
         input_media: resp.input_media,
         parameters: resp.parameters,
         batch_size: resp.batch_size,
-        outputs: [],
+        outputs: resp.outputs.map((o) => ({
+          id: o.id,
+          media_path: o.media_path,
+          media_type: o.media_type as 'image' | 'video',
+          thumbnail_path: o.thumbnail_path,
+          saved_to_library: o.saved_to_library,
+          library_category: o.library_category,
+        })),
         status: resp.status as PlaygroundGeneration['status'],
         error: resp.error,
+        error_code: resp.error_code,
+        error_diagnostic: resp.error_diagnostic,
+        provider_name: resp.provider_name,
+        provider_task_id: resp.provider_task_id,
+        provider_request_id: resp.provider_request_id,
         created_at: resp.created_at,
         updated_at: resp.updated_at,
         finished_at: resp.finished_at,
@@ -138,6 +129,11 @@ export default function ResultGallery() {
             library_category: o.library_category,
           })),
           error: full.error,
+          error_code: full.error_code,
+          error_diagnostic: full.error_diagnostic,
+          provider_name: full.provider_name,
+          provider_task_id: full.provider_task_id,
+          provider_request_id: full.provider_request_id,
           updated_at: full.updated_at,
           finished_at: full.finished_at,
         });

@@ -317,10 +317,7 @@ function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
-/**
- * Wait for a server-mode durable job. Desktop endpoints never return a job
- * marker, so their original synchronous response path is unchanged.
- */
+/** Wait for a server-mode durable job. */
 export async function waitForDurableJob(
     jobId: string,
     options: {
@@ -352,13 +349,50 @@ export async function waitForDurableJob(
     }
 }
 
+/** Wait for a managed desktop background job exposed by local activity. */
+export async function waitForHybridActivity(
+    jobId: string,
+    options: {
+        pollIntervalMs?: number;
+        timeoutMs?: number;
+        signal?: AbortSignal;
+    } = {},
+): Promise<ApiCallActivity> {
+    const pollIntervalMs = options.pollIntervalMs ?? DURABLE_JOB_POLL_INTERVAL_MS;
+    const timeoutMs = options.timeoutMs ?? DURABLE_JOB_TIMEOUT_MS;
+    const signal = options.signal;
+    const startedAt = Date.now();
+
+    while (true) {
+        if (signal?.aborted) throw abortedOperationError(signal);
+        const response = await axios.get<ApiCallActivity[]>(`${API_URL}/activity/history`, {
+            params: { limit: 200 },
+            signal,
+            timeout: API_ACTIVITY_SOURCE_TIMEOUT_MS,
+        });
+        const activity = response.data.find((item) => item.task_id === jobId);
+        if (activity?.status === "completed") return activity;
+        if (activity?.status === "failed" || activity?.status === "canceled") {
+            throw new Error(activity.error || `Job ${activity.status}`);
+        }
+        if (Date.now() - startedAt >= timeoutMs) {
+            throw new Error("等待本地任务完成超时");
+        }
+        await wait(pollIntervalMs, signal);
+    }
+}
+
 async function resolveProjectJobResponse<T>(
     data: T,
     scriptId: string,
     options: { signal?: AbortSignal } = {},
 ): Promise<T> {
     if (!isDurableJobMarker(data)) return data;
-    await waitForDurableJob(data.task_id, options);
+    if (isHybridModeEnabled()) {
+        await waitForHybridActivity(data.task_id, options);
+    } else {
+        await waitForDurableJob(data.task_id, options);
+    }
     const response = await axios.get(`${API_URL}/projects/${scriptId}`, {
         signal: options.signal,
     });
@@ -985,10 +1019,11 @@ export const api = {
     // NOTE: polishPrompt removed - use refineFramePrompt for storyboard prompts
     //
     // 后端契约（#117）：
-    //   成功 → 200 + { prompt_cn, prompt_en }
+    //   成功 → 200 + { prompt_cn, prompt_en, warning? }
+    //     warning="model_echo" means the provider returned a valid result that
+    //     is effectively unchanged; callers render it as a warning, not an API failure.
     //   失败 → 502 + { detail: { reason, message_zh, message_en, prompt_cn?, prompt_en? } }
-    //     reason ∈ is_configured_false | api_error | json_parse_error | missing_keys | model_echo
-    //     model_echo 是 warning（带原文），其余是 hard error。
+    //     reason ∈ is_configured_false | api_error | json_parse_error | missing_keys | image_unavailable
     //
     // prevCn（#119）：迭代时传入上一次 CN 实现双语锚点；首次留空。
     // image_urls passes the active I2V first frame when available.
@@ -1001,8 +1036,8 @@ export const api = {
         prevCn: string = "",
         imageUrls: string[] = [],
         polishModel: string = "",
-    ) => {
-        const res = await axios.post(`${API_URL}/video/polish_prompt`, {
+    ): Promise<{ prompt_cn: string; prompt_en: string; warning?: "model_echo" }> => {
+        const res = await axios.post<{ prompt_cn: string; prompt_en: string; warning?: "model_echo" }>(`${API_URL}/video/polish_prompt`, {
             draft_prompt: draftPrompt,
             feedback: feedback,
             script_id: scriptId,
@@ -2124,6 +2159,9 @@ export interface PlaygroundGenerationResponse {
   error?: string;
   error_code?: string | null;
   error_diagnostic?: string | null;
+  provider_name?: string | null;
+  provider_task_id?: string | null;
+  provider_request_id?: string | null;
   created_at: string;
   updated_at?: string;
   finished_at?: string | null;
@@ -2161,6 +2199,11 @@ export const playgroundApi = {
     axios.get<{ id: string; status: string; outputs: any[]; error?: string }>(
       API_URL + "/playground/history/" + id + "/status",
       { signal: options.signal },
+    ).then(r => r.data),
+
+  retryGeneration: (id: string) =>
+    axios.post<PlaygroundGenerationResponse>(
+      API_URL + "/playground/history/" + id + "/retry",
     ).then(r => r.data),
 
   deleteGeneration: (id: string) =>

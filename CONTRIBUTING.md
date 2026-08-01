@@ -18,8 +18,8 @@ Use Conventional Commit prefixes such as `feat:`, `fix:`, `test:`, `docs:`,
 
 ## Invariants
 
-- Generated media remains local under `Documents/enmotion-output` unless the user
-  explicitly chooses another stable folder.
+- Generated media remains local under the private EnMotion application-data
+  `enmotion-output` directory unless the user explicitly chooses another stable folder.
 - Company provider credentials remain in the control plane.
 - Employee clients cannot bypass server-authoritative rates or credit
   reservations.

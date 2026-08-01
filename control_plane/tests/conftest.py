@@ -22,6 +22,8 @@ def provider_calls() -> list[httpx.Request]:
 
 @pytest.fixture
 def provider_transport(provider_calls: list[httpx.Request]) -> httpx.MockTransport:
+    attempts_by_prompt: dict[str, int] = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         provider_calls.append(request)
         if request.url.host == "private-downloads.test":
@@ -42,6 +44,16 @@ def provider_transport(provider_calls: list[httpx.Request]) -> httpx.MockTranspo
             )
         if request.url.path.endswith("/video/generations"):
             body = json.loads(request.content)
+            if body.get("prompt") == "concurrency limited":
+                return httpx.Response(
+                    403,
+                    json={
+                        "error": {
+                            "code": "quota_warning_concurrency_limit",
+                            "message": "another video task is still running",
+                        }
+                    },
+                )
             if body.get("prompt") == "missing task id":
                 return httpx.Response(200, json={"status": "queued"})
             if body.get("prompt") == "nested task id":
@@ -63,6 +75,34 @@ def provider_transport(provider_calls: list[httpx.Request]) -> httpx.MockTranspo
             return httpx.Response(200, json={"data": [{"url": "https://media.test/image.png"}]})
         body = json.loads(request.content) if request.content else {}
         prompt = body.get("prompt") or str(body.get("messages", ""))
+        attempts_by_prompt[prompt] = attempts_by_prompt.get(prompt, 0) + 1
+        attempt = attempts_by_prompt[prompt]
+        if request.url.path.endswith("/images/generations"):
+            if prompt == "logical image rejection":
+                return httpx.Response(
+                    200,
+                    json={
+                        "code": "provider_rejected",
+                        "error": {
+                            "code": "ImagePromptRejected",
+                            "message": "prompt rejected",
+                        },
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={"data": [{"b64_json": base64.b64encode(b"image").decode()}]},
+            )
+        if "connect twice" in prompt and attempt <= 2:
+            raise httpx.ConnectError("provider connect failed", request=request)
+        if "connect forever" in prompt:
+            raise httpx.ConnectError("provider connect failed", request=request)
+        if "rate limit twice" in prompt and attempt <= 2:
+            return httpx.Response(429, headers={"retry-after": "0"}, json={"error": "busy"})
+        if "request timeout twice" in prompt and attempt <= 2:
+            return httpx.Response(408, json={"error": "request timeout"})
+        if "provider server error" in prompt:
+            return httpx.Response(503, json={"error": "ambiguous provider failure"})
         if "reject" in prompt:
             return httpx.Response(400, json={"error": "rejected"})
         if "ambiguous" in prompt:
@@ -141,6 +181,7 @@ def app_env(
         environment="test",
         auto_create_schema=True,
         login_attempts_per_minute=1000,
+        provider_retry_backoff_seconds=0.001,
     )
     app = create_app(settings, provider_transport=provider_transport)
     with TestClient(app, base_url="https://control.test") as client:

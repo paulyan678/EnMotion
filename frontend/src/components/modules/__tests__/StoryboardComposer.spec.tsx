@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import StoryboardComposer from "@/components/modules/StoryboardComposer";
-import { crudApi } from "@/lib/api";
+import { api, crudApi } from "@/lib/api";
 import { renderWithIntl } from "@/test/renderWithIntl";
 import { useProjectStore, type Project } from "@/store/projectStore";
 
@@ -83,6 +83,41 @@ describe("StoryboardComposer frame navigation", () => {
 
     expect(screen.getByTestId("frame-editor")).toHaveTextContent("frame-clickable");
     expect(useProjectStore.getState().selectedFrameId).toBe("frame-clickable");
+  });
+
+  it("keeps generation progress visible after the thumbnail hover ends", async () => {
+    let resolveRender!: (value: Project) => void;
+    const pendingRender = new Promise<Project>((resolve) => {
+      resolveRender = resolve;
+    });
+    useProjectStore.setState({
+      currentProject: project,
+      renderingFrames: new Set<string>(),
+    });
+    vi.spyOn(api, "renderFrame").mockReturnValue(pendingRender);
+    renderWithIntl(<StoryboardComposer />, { locale: "zh" });
+
+    fireEvent.click(screen.getByTitle("生成 1 张候选图"));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("生成中…");
+    expect(screen.getByRole("status").parentElement?.parentElement).toHaveClass("opacity-100");
+
+    resolveRender(project);
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+  });
+
+  it("restores visible progress from a persisted processing frame", () => {
+    useProjectStore.setState({
+      currentProject: {
+        ...project,
+        frames: [{ ...project.frames[0], status: "processing" }],
+      },
+      renderingFrames: new Set<string>(),
+    });
+    renderWithIntl(<StoryboardComposer />, { locale: "en" });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Generating…");
+    expect(screen.getByRole("status").parentElement?.parentElement).toHaveClass("opacity-100");
   });
 
   it("keeps the frame when the localized deletion confirmation is canceled", () => {

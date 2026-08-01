@@ -35,6 +35,16 @@ class WorkspacePipelineRegistry:
         ] = {}
         self._reader_pipelines: Dict[str, tuple[ComicGenPipeline, int]] = {}
         self._build_locks: Dict[str, threading.Lock] = {}
+        # Recovery is a process-start concern, not a pipeline-cache concern.
+        # A writer can be rebuilt during a live background job after a normal
+        # cache discard or metadata refresh; sweeping again would incorrectly
+        # mark that in-flight work as an orphan.
+        self._recovered_workspaces: set[str] = set()
+        # Long provider phases must not hold the interprocess workspace lock:
+        # doing so prevents the next UI submission from even being persisted.
+        # A lease keeps the shared writer object authoritative while detached
+        # workers mutate it under its own save/assembly locks.
+        self._background_writer_leases: Dict[str, tuple[ComicGenPipeline, int]] = {}
 
     @staticmethod
     def validate_workspace_id(workspace_id: str) -> str:
@@ -82,6 +92,9 @@ class WorkspacePipelineRegistry:
 
         with self._lock:
             cached = self._writer_pipelines.get(workspace_id)
+            leased = self._background_writer_leases.get(workspace_id)
+        if cached is not None and leased is not None and leased[0] is cached[0]:
+            return cached[0]
         fingerprint = self._fingerprint(workspace_id)
         if cached is not None and cached[1] == fingerprint:
             return cached[0]
@@ -89,24 +102,34 @@ class WorkspacePipelineRegistry:
         with self._build_lock_for(workspace_id):
             with self._lock:
                 cached = self._writer_pipelines.get(workspace_id)
+                leased = self._background_writer_leases.get(workspace_id)
+            if cached is not None and leased is not None and leased[0] is cached[0]:
+                return cached[0]
             fingerprint = self._fingerprint(workspace_id)
             if cached is not None and cached[1] == fingerprint:
                 return cached[0]
 
             output_root = self.output_root_for(workspace_id)
             output_root.mkdir(parents=True, exist_ok=True)
+            recover_orphans = (
+                not server_mode_enabled() and workspace_id not in self._recovered_workspaces
+            )
             for _attempt in range(3):
                 before = self._fingerprint(workspace_id)
                 pipeline = ComicGenPipeline(
                     {
                         "output_root": str(output_root),
                         # Server jobs have their own durable recovery state,
-                        # while hybrid tasks use in-process BackgroundTasks and
-                        # must be released from pending/processing after a
+                        # while hybrid tasks use detached in-process workers
+                        # and must be released from pending/processing after a
                         # process restart.
-                        "recover_orphan_tasks": not server_mode_enabled(),
+                        "recover_orphan_tasks": recover_orphans,
                     }
                 )
+                if recover_orphans:
+                    with self._lock:
+                        self._recovered_workspaces.add(workspace_id)
+                    recover_orphans = False
                 after = self._fingerprint(workspace_id)
                 if before == after:
                     with self._lock:
@@ -211,8 +234,71 @@ class WorkspacePipelineRegistry:
 
         safe_id = self.validate_workspace_id(workspace_id)
         with self._lock:
+            if safe_id in self._background_writer_leases:
+                # A storyboard render may request a cache discard while video
+                # or asset provider work still owns this writer.  Retaining it
+                # prevents two mutable objects from diverging over one set of
+                # metadata files; the final lease release refreshes the cache.
+                self._reader_pipelines.pop(safe_id, None)
+                return
             self._writer_pipelines.pop(safe_id, None)
             self._reader_pipelines.pop(safe_id, None)
+
+    def retain_background_writer(
+        self,
+        workspace_id: str,
+        pipeline: ComicGenPipeline,
+    ) -> None:
+        """Keep one writer authoritative while provider work runs unlocked."""
+
+        safe_id = self.validate_workspace_id(workspace_id)
+        with self._lock:
+            cached = self._writer_pipelines.get(safe_id)
+            if cached is None or cached[0] is not pipeline:
+                raise RuntimeError("Background writer is not the current workspace writer")
+            leased = self._background_writer_leases.get(safe_id)
+            if leased is not None and leased[0] is not pipeline:
+                raise RuntimeError("Workspace already has a different background writer")
+            self._background_writer_leases[safe_id] = (
+                pipeline,
+                (leased[1] if leased is not None else 0) + 1,
+            )
+
+    def release_background_writer(
+        self,
+        workspace_id: str,
+        pipeline: ComicGenPipeline,
+    ) -> None:
+        """Publish and release one detached provider-worker lease."""
+
+        safe_id = self.validate_workspace_id(workspace_id)
+        with interprocess_lock(self.lock_path_for(safe_id)):
+            try:
+                publish_workspace_snapshot(safe_id)
+            except Exception:
+                logger.exception(
+                    "Could not publish background workspace read model workspace=%s",
+                    safe_id,
+                )
+            fingerprint = self._fingerprint(safe_id)
+            with self._lock:
+                leased = self._background_writer_leases.get(safe_id)
+                if leased is None or leased[0] is not pipeline:
+                    logger.error(
+                        "Background writer lease mismatch workspace=%s",
+                        safe_id,
+                    )
+                    return
+                cached = self._writer_pipelines.get(safe_id)
+                if cached is not None and cached[0] is pipeline:
+                    self._writer_pipelines[safe_id] = (pipeline, fingerprint)
+                if leased[1] <= 1:
+                    self._background_writer_leases.pop(safe_id, None)
+                else:
+                    self._background_writer_leases[safe_id] = (
+                        pipeline,
+                        leased[1] - 1,
+                    )
 
     def transient_task_status(self, workspace_id: str, task_id: str) -> dict[str, Any] | None:
         """Read one in-memory task without waiting for its provider-call lock.

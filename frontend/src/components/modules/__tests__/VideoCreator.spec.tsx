@@ -213,6 +213,35 @@ describe("shot-specific Motion Creator", () => {
     );
   });
 
+  it("treats a model-echo polish result as a successful warning", async () => {
+    const selectedFrame = frame(5);
+    seed([selectedFrame]);
+    const polishSpy = vi.spyOn(api, "polishVideoPrompt").mockResolvedValue({
+      prompt_cn: "镜头五保持原有动作",
+      prompt_en: selectedFrame.video_prompt!,
+      warning: "model_echo",
+    });
+    const updateSpy = vi.spyOn(api, "updateFrameWorkbench");
+    renderCreator();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure clip for shot 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Smart Prompt Polish" }));
+
+    await waitFor(() => expect(polishSpy).toHaveBeenCalledWith(
+      selectedFrame.video_prompt,
+      "",
+      "motion-project",
+      "",
+      ["storyboard/shot-5.png"],
+    ));
+    await waitFor(() => expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      kind: "warning",
+      title: expect.stringContaining("model made no notable changes"),
+    }));
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText("AI polish failed")).not.toBeInTheDocument();
+  });
+
   it("submits the exact shot, selected image, frame type, prompt, model, and parameters", async () => {
     const selectedFrame = frame(7);
     seed([selectedFrame]);

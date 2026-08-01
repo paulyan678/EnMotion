@@ -32,7 +32,7 @@ export ENMOTION_PROVIDER_CONFIG_MASTER_KEY="$(
 )"
 .venv/bin/alembic upgrade head
 .venv/bin/python -m app.cli bootstrap-admin --username admin
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080 --loop asyncio
 ```
 
 The bootstrap command reads the password without echoing it. Open
@@ -64,15 +64,20 @@ stored. An upstream submission follows this state machine:
    card, subtracts available credits, adds reserved credits, and writes an
    immutable ledger entry.
 2. A successful provider acceptance captures the reservation.
-3. A definite connection failure or provider 4xx releases it.
-4. A read/write timeout or provider 5xx has an ambiguous billing outcome, so
+3. A connection failure known to precede provider acceptance is retried with
+   the same provider idempotency key. An explicit 429 rejection is also retried.
+   Exhausted pre-acceptance retries or another provider 4xx release the credit.
+4. A read/write timeout, redirect, or provider 5xx has an ambiguous billing outcome, so
    the request becomes `pending_reconciliation` and credits remain reserved.
 5. An administrator settles or refunds an ambiguous request after checking the
    provider.
 
 `(user_id, idempotency_key)` is unique. A duplicate with an identical
-fingerprint receives HTTP 202 and the existing usage record without a second
-provider call or charge. Reusing the key for different content receives 409.
+fingerprint never makes a second provider call or charge. Synchronous image
+responses are validated and kept for up to 24 hours in an AES-GCM encrypted,
+owner-only replay cache next to the database. A duplicate image request returns
+that exact cached result; other duplicates receive HTTP 202 with the existing
+usage record. Reusing the key for different content receives 409.
 
 ## Provider boundary
 
@@ -98,12 +103,16 @@ mode `0600`; never reuse the session HMAC secret. Provider task records retain
 the configuration version used at submission so later status/content requests
 continue with the matching credential after rotation.
 
-Provider responses and verified release files are streamed. Release archives
-are first staged in private temporary storage and checked against manifest
-size/SHA-256; served downloads are capped globally and per account. Image-edit uploads may be spooled
-transiently by the multipart parser but are never retained by the application.
-The service does not log request bodies, provider credentials, authorization
-headers, cookies, prompts, or generated media.
+Chat/video provider responses and verified release files are streamed. Image
+generation responses are bounded, validated, and encrypted temporarily so a
+desktop disconnect can recover the exact provider result without a duplicate
+charge. Expired entries are deleted automatically and are not included in the
+SQLite backup. Release archives are first staged in private temporary storage
+and checked against manifest size/SHA-256; served downloads are capped globally
+and per account. Image-edit uploads may be spooled transiently by the multipart
+parser but are never retained by the application. The service does not log
+request bodies, provider credentials, authorization headers, cookies, prompts,
+or generated media.
 
 See [API contract](docs/API_CONTRACT.md) for desktop-sidecar and administrator
 payloads.
@@ -148,7 +157,10 @@ The production layout assumed by `deploy/` is:
 7. Run `systemctl daemon-reload`, then enable the application, Caddy, and
    backup timer.
 
-Keep one Uvicorn worker. Add 1–2 GB swap on the 1 GB VPS, expose only SSH/80/443,
+Keep one Uvicorn worker and force the standard asyncio loop. The approved
+provider endpoint is reachable from this Linux host through asyncio, while the
+optional uvloop transport can time out during TCP connect. Add 1–2 GB swap on
+the 1 GB VPS, expose only SSH/80/443,
 use key-only SSH, and build desktop/static artifacts off-server.
 
 The backup job uses SQLite's online backup API and verifies the resulting
@@ -168,7 +180,7 @@ Before each update:
 5. verify administrator login, a mock/non-billable gateway call, ledger
    invariants, and the published revision;
 6. roll application code back if unhealthy, without overwriting SQLite or
-   desktop Documents/app-data directories.
+   desktop application-data/output directories.
 
 The API is versioned at `/api/v1` so employee desktop updates can be staggered.
 

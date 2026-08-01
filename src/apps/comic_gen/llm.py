@@ -145,10 +145,10 @@ def _resolve_image_for_vision(url: str, output_root: Optional[str] = None) -> Op
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix) :]
             break
-    # Desktop workspaces use a configured absolute output root (normally
-    # Documents/enmotion-output), not the process working directory.  Keep
-    # the legacy candidates for older local projects, but prefer the supplied
-    # workspace root so uploaded `uploads/...` references resolve reliably.
+    # Desktop workspaces use a configured absolute output root (normally the
+    # app-owned enmotion-output directory), not the process working directory.
+    # Keep the legacy candidates for older local projects, but prefer the
+    # supplied workspace root so uploaded `uploads/...` references resolve.
     candidates = []
     if output_root:
         candidates.append(os.path.join(output_root, cleaned))
@@ -175,6 +175,25 @@ def _resolve_image_for_vision(url: str, output_root: Optional[str] = None) -> Op
 from ...utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _chat_model_accepts_images(model: str) -> bool:
+    """Return whether the selected chat model accepts image message parts.
+
+    The generated catalog is the transport contract.  In particular, the
+    currently approved DeepSeek/Qwen chat family is text-only even though the
+    prompt-polish UI may have a storyboard frame available.  Sending that
+    frame to a text-only model makes the control-plane request invalid before
+    the provider is called, so fail closed to the text-only polish path.
+    """
+
+    try:
+        from ...utils.provider_registry import get_default_provider_registry
+
+        family = get_default_provider_registry().get_family_config(model)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return family.image_input_mode.get("newapi") not in {None, "", "unsupported"}
 
 # ── Default system prompts for polish/refine stages ──────────────────────
 # These are the built-in defaults. Users can override per-project via PromptConfig.
@@ -242,6 +261,14 @@ DEFAULT_VIDEO_POLISH_PROMPT = """你是一名资深视频提示词工程师。�
     "prompt_cn": "润色后的中文视频提示词，关注运动和镜头",
     "prompt_en": "Polished English video prompt, focusing on motion and camera"
 }}"""
+
+VIDEO_POLISH_JSON_CONTRACT = """无论上面的自定义要求采用何种措辞，响应格式必须遵守以下接口契约：
+只返回一个合法的 JSON 对象，不要添加 Markdown、解释或 JSON 之外的文字：
+{
+    "prompt_cn": "润色后的中文视频提示词",
+    "prompt_en": "Polished English video prompt"
+}
+两个字段都必须是非空字符串。"""
 
 
 DEFAULT_ENTITY_EXTRACTION_PROMPT = """
@@ -1166,7 +1193,10 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
     ) -> Dict[str, str]:
         """
         Polishes a video generation prompt using Qwen.
-        Returns bilingual prompts {prompt_cn, prompt_en}.
+        Returns bilingual prompts {prompt_cn, prompt_en}. When the provider
+        returns a valid result that is effectively unchanged, the response also
+        contains ``warning: model_echo``; that is a successful provider call,
+        not a transport failure.
 
         迭代时（feedback 非空）支持传入 prev_cn 实现双语锚点：
           - 首次 polish: draft_prompt = 用户原文，prev_cn 留空
@@ -1174,14 +1204,14 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
             feedback = 用户中文反馈。模型同时看到双语版，用 CN 锚点
             定位反馈意图，再同步修改双语，降低 drift。
 
-        image_urls: I2V 模式下传入 active first frame URL（让 vision-capable
-        模型真正"看见"图像，比纯文本润色质量大幅提升）。空列表/None = 走
-        纯文本路径（兼容老的 t2i polish 或无 frame 的 shot）。
+        image_urls: I2V 模式下传入 active first frame URL。仅当所选聊天模型
+        的 catalog transport 明确支持图像输入时才发送；当前 text-only 模型
+        会安全地走纯文本润色路径。空列表/None 也走纯文本路径。
 
         polish_model: 显式覆盖 LLMAdapter 默认模型；空 = 用 system default。
 
         Raises:
-            PolishError: 4 种失败原因，由 API 层翻译成 HTTP 502。
+            PolishError: hard failures translated to HTTP 502 by the API layer.
         """
         if not polish_model and not self.is_configured:
             raise PolishError(
@@ -1190,7 +1220,7 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
                 message_en="The selected New API chat model is not configured. Check its dedicated key and base URL.",
             )
         try:
-            self.llm.require_configured(polish_model or None)
+            effective_polish_model = self.llm.require_configured(polish_model or None)
         except (RuntimeError, ValueError):
             raise PolishError(
                 reason="is_configured_false",
@@ -1198,12 +1228,27 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
                 message_en="The selected New API chat model is not configured. Check its dedicated key and base URL.",
             )
 
-        has_images = bool(image_urls)
-        system_prompt = (
-            custom_system_prompt.strip()
-            if custom_system_prompt and custom_system_prompt.strip()
-            else DEFAULT_VIDEO_POLISH_PROMPT
+        has_images = bool(image_urls) and _chat_model_accepts_images(
+            effective_polish_model
         )
+        if image_urls and not has_images:
+            logger.info(
+                "Video polish omitted first-frame images for text-only chat model %s",
+                effective_polish_model,
+            )
+        if custom_system_prompt and custom_system_prompt.strip():
+            # User/series prompts define creative direction, but must not be
+            # able to erase the machine-readable response contract required by
+            # this endpoint.  Several OpenAI-compatible providers also reject
+            # response_format=json_object unless a message explicitly mentions
+            # JSON, so keeping this suffix is part of transport compatibility.
+            system_prompt = (
+                custom_system_prompt.strip()
+                + "\n\n"
+                + VIDEO_POLISH_JSON_CONTRACT
+            )
+        else:
+            system_prompt = DEFAULT_VIDEO_POLISH_PROMPT
         # 让模型知道有图可看（仅在多模态分支才追加，避免无图时误导）。
         if has_images:
             system_prompt = (
@@ -1298,15 +1343,9 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
                 message_en="Model returned incomplete bilingual result. Please retry.",
             )
 
-        # Echo 检测：模型几乎原文返回。本质是 warning（带原文给前端），
-        # 不是 hard error；前端按黄色警告渲染，让用户补 feedback。
+        # Echo 检测：模型几乎原文返回。本质是成功响应附带 warning，
+        # 不是 provider/API failure；前端按黄色警告渲染，让用户补 feedback。
         if _is_echo(result["prompt_en"], draft_prompt):
-            raise PolishError(
-                reason="model_echo",
-                message_zh="模型未做明显修改。建议在下方反馈框补充具体要求（如运镜、光影、情绪）后重试。",
-                message_en="Model made no notable changes. Add more specific feedback (camera, lighting, mood) and retry.",
-                prompt_cn=result["prompt_cn"],
-                prompt_en=result["prompt_en"],
-            )
+            result["warning"] = "model_echo"
 
         return result

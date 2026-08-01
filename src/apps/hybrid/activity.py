@@ -102,6 +102,8 @@ def record_asset_activity(
     model_name: str | None,
     batch_size: int,
     aspect_ratio: str | None,
+    source_context_overrides: dict[str, Any] | None = None,
+    input_media: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Insert a queued activity before the background task starts."""
 
@@ -120,6 +122,7 @@ def record_asset_activity(
         source_context["episode_id"] = source_id
         if series_id:
             source_context["series_id"] = series_id
+    source_context.update(dict(source_context_overrides or {}))
 
     parameters: dict[str, str | int | bool] = {"batch_size": max(1, int(batch_size))}
     if aspect_ratio:
@@ -149,7 +152,7 @@ def record_asset_activity(
         "model_name": _compact(model_name, limit=120) or None,
         "parameters": parameters,
         "source_context": source_context,
-        "input_media": [],
+        "input_media": [dict(item) for item in (input_media or [])[:20]],
         "outputs": [],
         "attempts": 1,
         "created_at": timestamp,
@@ -165,6 +168,49 @@ def record_asset_activity(
         rows = [candidate for candidate in _read(path) if candidate.get("task_id") != task_id]
         _write(path, [row, *rows])
     return row
+
+
+def record_storyboard_activity(
+    workspace_id: str,
+    *,
+    task_id: str,
+    source_route: str,
+    project_id: str,
+    series_id: str | None,
+    frame_id: str,
+    detail: str,
+    prompt: str | None,
+    model_name: str | None,
+    batch_size: int,
+    input_media: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Insert a queued storyboard-image lifecycle for a hybrid desktop."""
+
+    context: dict[str, Any] = {
+        "project_id": project_id,
+        "episode_id": project_id,
+        "frame_id": frame_id,
+    }
+    if series_id:
+        context["series_id"] = series_id
+    return record_asset_activity(
+        workspace_id,
+        task_id=task_id,
+        job_type="storyboard_render",
+        source="workspace",
+        source_route=source_route,
+        source_id=project_id,
+        series_id=series_id,
+        asset_id=frame_id,
+        asset_type="storyboard_frame",
+        asset_name=detail,
+        prompt=prompt,
+        model_name=model_name,
+        batch_size=batch_size,
+        aspect_ratio=None,
+        source_context_overrides=context,
+        input_media=input_media,
+    )
 
 
 def record_video_activity(

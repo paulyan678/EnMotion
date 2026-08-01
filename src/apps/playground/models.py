@@ -269,6 +269,21 @@ class PlaygroundGeneration(BaseModel):
         None,
         description="Redacted diagnostic context for a failed generation",
     )
+    provider_name: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Provider adapter that accepted the current resumable task",
+    )
+    provider_task_id: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="Provider task id for safe polling/download recovery",
+    )
+    provider_request_id: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="Redacted provider request id for support diagnostics",
+    )
     created_at: str = Field(..., description="Creation timestamp in ISO 8601 format")
     updated_at: str = Field(..., description="Last record update in ISO 8601 format")
     finished_at: Optional[str] = Field(

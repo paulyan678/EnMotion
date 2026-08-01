@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.config import ConfigurationError, Settings
 
 
@@ -33,6 +32,14 @@ def settings(**overrides) -> Settings:
         (
             {"provider_read_timeout_seconds": float("nan")},
             "between 0 and 3600",
+        ),
+        (
+            {"provider_submission_attempts": 0},
+            "submission attempts",
+        ),
+        (
+            {"provider_retry_backoff_seconds": float("inf")},
+            "retry backoff",
         ),
         (
             {"provider_config_master_key": "dG9vLXNob3J0"},
@@ -75,3 +82,5 @@ def test_public_base_url_aliases_are_parsed_as_normalized_origins(monkeypatch) -
         "https://legacy-one.test",
         "https://legacy-two.test:9443",
     )
+    assert configured.provider_read_timeout_seconds == 900
+    assert configured.provider_submission_attempts == 4

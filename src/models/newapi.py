@@ -10,9 +10,11 @@ import mimetypes
 import os
 import re
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import ExitStack
+from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
@@ -41,6 +43,7 @@ VIDEO_ACTIVE_STATUSES = frozenset(
     {"pending", "queued", "processing", "running", "in_progress", "in-progress"}
 )
 PROVIDER_SUCCESS_CODES = frozenset({"0", "200", "ok", "success", "succeeded"})
+IMAGE_REPLAY_TIMEOUT_SECONDS = 60
 INPUT_IMAGE_PRIVACY_ERROR_CODE = "input_image_privacy"
 INPUT_IMAGE_PRIVACY_PROVIDER_CODE = "InputImageSensitiveContentDetected.PrivacyInformation"
 INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE = (
@@ -57,9 +60,36 @@ PROVIDER_CONNECTION_ERROR_CODE = "provider_connection_failed"
 PROVIDER_CONNECTION_PUBLIC_MESSAGE = (
     "暂时无法连接到 AI 服务商。请稍后重试；如果持续失败，请联系管理员检查服务商线路。"
 )
+PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE = "provider_outcome_ambiguous"
+PROVIDER_OUTCOME_AMBIGUOUS_PUBLIC_MESSAGE = (
+    "AI 服务商未确认本次任务结果。为避免重复生成或计费，EnMotion 没有发起新的生成；"
+    "请联系管理员核对接口调用记录。"
+)
+PROVIDER_RATE_LIMIT_ERROR_CODE = "provider_rate_limited"
+PROVIDER_RATE_LIMIT_PUBLIC_MESSAGE = (
+    "AI 服务商当前繁忙。EnMotion 已自动重试，但服务商仍未接受请求，请稍后再试。"
+)
+PROVIDER_CONCURRENCY_ERROR_CODE = "provider_concurrency_limited"
+PROVIDER_CONCURRENCY_PUBLIC_MESSAGE = (
+    "当前视频模型的服务商并发队列已满。EnMotion 已排队重试，"
+    "但在等待时间内仍未获得生成名额，请稍后再试。"
+)
+PROVIDER_AUTH_ERROR_CODE = "provider_authentication_failed"
+PROVIDER_AUTH_PUBLIC_MESSAGE = "AI 服务商凭证无效或已过期，请联系管理员检查模型配置。"
+PROVIDER_ACCESS_ERROR_CODE = "provider_access_denied"
+PROVIDER_ACCESS_PUBLIC_MESSAGE = "当前服务商账户无权使用所选模型，请联系管理员检查模型权限。"
+PROVIDER_QUOTA_ERROR_CODE = "provider_quota_exhausted"
+PROVIDER_QUOTA_PUBLIC_MESSAGE = (
+    "EnMotion 点数或 AI 服务商额度不足，请联系管理员检查账户余额和服务商账单。"
+)
+PROVIDER_REQUEST_ERROR_CODE = "provider_request_rejected"
+PROVIDER_REQUEST_PUBLIC_MESSAGE = "AI 服务商拒绝了请求，请检查提示词和生成参数后重试。"
+PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE = "provider_payload_too_large"
+PROVIDER_PAYLOAD_TOO_LARGE_PUBLIC_MESSAGE = "参考图片或请求内容过大，请减少参考图或压缩图片后重试。"
 RATE_CARD_MISSING_ERROR_CODE = "rate_card_missing"
 RATE_CARD_MISSING_PUBLIC_MESSAGE = "当前模型尚未配置计费规则，请联系管理员在管理中心添加后重试。"
 _PHASE_LABELS = {
+    "chat completion": "生成文本",
     "image submission": "提交图像任务",
     "image request": "请求图像服务",
     "video generation": "视频生成",
@@ -76,6 +106,10 @@ IMAGE_SIZE_ALIASES = {
     "1536x1024": "1536x1024",
     "1024x1024": "1024x1024",
 }
+# Keep the desktop wait longer than the control plane's provider read timeout
+# so a provider timeout is returned as a structured API result instead of the
+# desktop abandoning the connection first.
+DEFAULT_IMAGE_REQUEST_TIMEOUT_SECONDS = 960.0
 
 
 class NewAPIProviderError(RuntimeError):
@@ -139,6 +173,23 @@ def _classified_provider_error(
     """Map known provider failures to stable, non-technical application errors."""
 
     normalized = f"{code} {message}".casefold().replace("_", "")
+    is_provider_concurrency_limited = (
+        "providerconcurrencylimited" in normalized
+        or "quotawarningconcurrencylimit" in normalized
+        or ("concurrency" in normalized and "limit" in normalized)
+    )
+    if is_provider_concurrency_limited:
+        return NewAPIProviderError(
+            PROVIDER_CONCURRENCY_PUBLIC_MESSAGE,
+            error_code=PROVIDER_CONCURRENCY_ERROR_CODE,
+            provider_code=code or PROVIDER_CONCURRENCY_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
     is_provider_connection_failure = (
         "provider connection failed" in normalized or "providerconnectfailed" in normalized
     )
@@ -153,6 +204,82 @@ def _classified_provider_error(
             PROVIDER_CONNECTION_PUBLIC_MESSAGE,
             error_code=PROVIDER_CONNECTION_ERROR_CODE,
             provider_code=code or PROVIDER_CONNECTION_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    is_ambiguous_outcome = (
+        "provideroutcomeambiguous" in normalized
+        or "outcome is ambiguous" in normalized
+        or "credits remain reserved" in normalized
+        or "pendingreconciliation" in normalized
+    )
+    if is_ambiguous_outcome:
+        return NewAPIProviderError(
+            PROVIDER_OUTCOME_AMBIGUOUS_PUBLIC_MESSAGE,
+            error_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+            provider_code=code or PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    is_quota_exhausted = http_status == 402 or any(
+        marker in normalized
+        for marker in (
+            "providerquotaexhausted",
+            "insufficientquota",
+            "insufficient available credits",
+            "no balance left",
+        )
+    )
+    if is_quota_exhausted:
+        return NewAPIProviderError(
+            PROVIDER_QUOTA_PUBLIC_MESSAGE,
+            error_code=PROVIDER_QUOTA_ERROR_CODE,
+            provider_code=code or PROVIDER_QUOTA_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    is_rate_limited = http_status == 429 or "providerratelimited" in normalized
+    if is_rate_limited:
+        return NewAPIProviderError(
+            PROVIDER_RATE_LIMIT_PUBLIC_MESSAGE,
+            error_code=PROVIDER_RATE_LIMIT_ERROR_CODE,
+            provider_code=code or PROVIDER_RATE_LIMIT_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    if http_status == 401 or "providerauthenticationfailed" in normalized:
+        return NewAPIProviderError(
+            PROVIDER_AUTH_PUBLIC_MESSAGE,
+            error_code=PROVIDER_AUTH_ERROR_CODE,
+            provider_code=code or PROVIDER_AUTH_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    if http_status == 413 or "providerpayloadtoolarge" in normalized:
+        return NewAPIProviderError(
+            PROVIDER_PAYLOAD_TOO_LARGE_PUBLIC_MESSAGE,
+            error_code=PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE,
+            provider_code=code or PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE,
             provider_message=message,
             http_status=http_status,
             request_id=request_id,
@@ -205,27 +332,54 @@ def _classified_provider_error(
     is_input_privacy = INPUT_IMAGE_PRIVACY_PROVIDER_CODE.casefold() in normalized or (
         "inputimage" in normalized and "privacyinformation" in normalized
     )
-    if not is_input_privacy:
-        return None
-    logger.warning(
-        "AI 服务请求被拒绝：阶段=%s HTTP=%s 错误代码=%s " "请求ID=%s 任务ID=%s 服务商消息=%s",
-        phase,
-        http_status,
-        redact_newapi_secrets(code)[:200],
-        redact_newapi_secrets(request_id)[:200],
-        redact_newapi_secrets(provider_task_id)[:200],
-        redact_newapi_secrets(message)[:1000],
-    )
-    return NewAPIProviderError(
-        INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE,
-        error_code=INPUT_IMAGE_PRIVACY_ERROR_CODE,
-        provider_code=code or INPUT_IMAGE_PRIVACY_PROVIDER_CODE,
-        provider_message=message,
-        http_status=http_status,
-        request_id=request_id,
-        phase=phase,
-        provider_task_id=provider_task_id,
-    )
+    if is_input_privacy:
+        logger.warning(
+            "AI 服务请求被拒绝：阶段=%s HTTP=%s 错误代码=%s " "请求ID=%s 任务ID=%s 服务商消息=%s",
+            phase,
+            http_status,
+            redact_newapi_secrets(code)[:200],
+            redact_newapi_secrets(request_id)[:200],
+            redact_newapi_secrets(provider_task_id)[:200],
+            redact_newapi_secrets(message)[:1000],
+        )
+        return NewAPIProviderError(
+            INPUT_IMAGE_PRIVACY_PUBLIC_MESSAGE,
+            error_code=INPUT_IMAGE_PRIVACY_ERROR_CODE,
+            provider_code=code or INPUT_IMAGE_PRIVACY_PROVIDER_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    if http_status in {403, 404} or any(
+        marker in normalized
+        for marker in ("provideraccessdenied", "providermodelunavailable", "modelnotfound")
+    ):
+        return NewAPIProviderError(
+            PROVIDER_ACCESS_PUBLIC_MESSAGE,
+            error_code=PROVIDER_ACCESS_ERROR_CODE,
+            provider_code=code or PROVIDER_ACCESS_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+
+    if http_status in {400, 408, 409, 422}:
+        return NewAPIProviderError(
+            PROVIDER_REQUEST_PUBLIC_MESSAGE,
+            error_code=PROVIDER_REQUEST_ERROR_CODE,
+            provider_code=code or PROVIDER_REQUEST_ERROR_CODE,
+            provider_message=message,
+            http_status=http_status,
+            request_id=request_id,
+            phase=phase,
+            provider_task_id=provider_task_id,
+        )
+    return None
 
 
 def _request_id_from_text(value: str) -> str:
@@ -278,6 +432,17 @@ def normalize_newapi_image_size(value: Optional[str]) -> str:
         return IMAGE_SIZE_ALIASES[normalized]
     except KeyError as exc:
         raise ValueError("GPT Image 2 尺寸必须是 1024x1024、1024x1536 或 1536x1024") from exc
+
+
+def newapi_image_timeout_seconds(value: Optional[str] = None) -> float:
+    raw = value if value is not None else os.getenv("NEWAPI_IMAGE_TIMEOUT_SECONDS", "")
+    try:
+        timeout = float(raw or DEFAULT_IMAGE_REQUEST_TIMEOUT_SECONDS)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("NEWAPI_IMAGE_TIMEOUT_SECONDS 必须是数字") from exc
+    if not 60 <= timeout <= 1800:
+        raise ValueError("NEWAPI_IMAGE_TIMEOUT_SECONDS 必须在 60 到 1800 秒之间")
+    return timeout
 
 
 def newapi_image_configured(model_id: Optional[str] = None) -> bool:
@@ -343,6 +508,56 @@ def _response_error(response: requests.Response) -> str:
     return ": ".join(details)
 
 
+def _safe_pre_submission_transport_error(exc: requests.RequestException) -> bool:
+    if isinstance(
+        exc,
+        (
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.ProxyError,
+            requests.exceptions.SSLError,
+        ),
+    ):
+        return True
+    if not isinstance(exc, requests.exceptions.ConnectionError):
+        return False
+    normalized = str(exc).casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "failed to establish a new connection",
+            "name resolution",
+            "nodename nor servname provided",
+            "connection refused",
+            "network is unreachable",
+        )
+    )
+
+
+def _rewind_request_files(kwargs: Dict[str, Any]) -> None:
+    """Reset multipart file streams before an idempotent gateway replay."""
+
+    for _field_name, value in kwargs.get("files") or []:
+        file_value = value[1] if isinstance(value, tuple) and len(value) >= 2 else None
+        seek = getattr(file_value, "seek", None)
+        if callable(seek):
+            seek(0)
+
+
+def _managed_session_was_rejected(response: requests.Response) -> bool:
+    """Distinguish an expired employee bearer from an upstream provider 401."""
+
+    if response.status_code != 401:
+        return False
+    try:
+        provider_code, _message = _extract_provider_error(response.json())
+    except Exception:
+        provider_code = ""
+    # Gateway-wrapped upstream authentication failures always carry a stable
+    # provider code. The control plane's own authentication dependency returns
+    # only a bounded detail string.
+    return not provider_code
+
+
 def _request(
     method: str,
     url: str,
@@ -353,46 +568,190 @@ def _request(
 ) -> requests.Response:
     """Issue a request with bounded, idempotency-aware retries.
 
-    Generation submissions can create a billable job even when the gateway
-    drops its response, so unsafe methods are never retried implicitly.  GET
-    polling and downloads retain bounded transient retries.
+    Managed submissions reuse one idempotency key while retrying failures that
+    happened before a connection was established. When the control plane
+    explicitly reports that the provider never accepted a request and its
+    reservation was refunded, the next attempt uses a fresh key. Managed image
+    endpoints also support bounded same-key recovery after an ambiguous response
+    failure: the control plane either reports the original request as still
+    reserved or replays its encrypted cached result, so this path cannot create
+    a second provider charge. GET polling and downloads retain bounded transient
+    retries.
     """
 
     normalized_method = method.upper()
     from ..apps.hybrid.provider import hybrid_mode_enabled
 
     hybrid = hybrid_mode_enabled()
+    safe_method = normalized_method in {"GET", "HEAD", "OPTIONS"}
+    hybrid_submission = hybrid and not safe_method
+    recoverable_image_submission = hybrid_submission and phase == "image submission"
     if hybrid:
         # The account gateway must stream results itself. Never carry an
         # employee bearer, request body, or idempotency key across a redirect.
         kwargs["allow_redirects"] = False
-    if hybrid and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
+    if hybrid_submission:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Idempotency-Key", uuid.uuid4().hex)
+        if recoverable_image_submission:
+            # Base64 image JSON is already compressed poorly and can be several
+            # megabytes. Identity encoding keeps a deterministic Content-Length
+            # across Caddy/VPN paths instead of relying on a long-lived chunked
+            # gzip response.
+            headers.setdefault("Accept-Encoding", "identity")
         kwargs["headers"] = headers
     attempts = (
         max_attempts
         if max_attempts is not None
-        else (3 if normalized_method in {"GET", "HEAD", "OPTIONS"} else 1)
+        else (4 if hybrid_submission else (3 if safe_method else 1))
     )
     if attempts < 1:
         raise ValueError("max_attempts 必须至少为 1")
     last_response: Optional[requests.Response] = None
     last_exception: Optional[requests.RequestException] = None
+    recovering_image_response = False
     for attempt in range(attempts):
+        request_kwargs = kwargs
+        if recovering_image_response:
+            request_kwargs = dict(kwargs)
+            configured_timeout = kwargs.get("timeout")
+            request_kwargs["timeout"] = (
+                min(float(configured_timeout), IMAGE_REPLAY_TIMEOUT_SECONDS)
+                if isinstance(configured_timeout, (int, float))
+                else IMAGE_REPLAY_TIMEOUT_SECONDS
+            )
+            _rewind_request_files(request_kwargs)
         try:
-            response = requests.request(normalized_method, url, **kwargs)
+            response = requests.request(normalized_method, url, **request_kwargs)
         except requests.RequestException as exc:
             last_exception = exc
-            if attempt == attempts - 1:
+            safe_pre_submission_failure = hybrid_submission and _safe_pre_submission_transport_error(
+                exc
+            )
+            retryable_transport = safe_method or safe_pre_submission_failure
+            ambiguous_image_failure = (
+                recoverable_image_submission and not safe_pre_submission_failure
+            )
+            if ambiguous_image_failure and attempt < attempts - 1:
+                recovering_image_response = True
+                logger.warning(
+                    "Managed image response was interrupted; recovering the exact "
+                    "result with the same idempotency key attempt=%d/%d error=%s",
+                    attempt + 1,
+                    attempts,
+                    type(exc).__name__,
+                )
+                time.sleep(min(2**attempt, 5))
+                continue
+            if ambiguous_image_failure:
+                raise NewAPIProviderError(
+                    PROVIDER_OUTCOME_AMBIGUOUS_PUBLIC_MESSAGE,
+                    error_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                    provider_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                    provider_message=type(exc).__name__,
+                    phase=phase,
+                ) from exc
+            if not retryable_transport or attempt == attempts - 1:
+                if hybrid_submission and _safe_pre_submission_transport_error(exc):
+                    raise NewAPIProviderError(
+                        PROVIDER_CONNECTION_PUBLIC_MESSAGE,
+                        error_code=PROVIDER_CONNECTION_ERROR_CODE,
+                        provider_code=PROVIDER_CONNECTION_ERROR_CODE,
+                        provider_message=type(exc).__name__,
+                        phase=phase,
+                    ) from exc
                 message = redact_newapi_secrets(str(exc))[:500]
                 raise RuntimeError(f"New API request failed: {message}") from exc
             time.sleep(min(2**attempt, 5))
             continue
         last_response = response
         if 200 <= response.status_code < 300:
+            if hybrid_submission and response.status_code == 202:
+                try:
+                    replay = response.json()
+                except Exception:
+                    replay = None
+                usage = replay.get("usage_request") if isinstance(replay, dict) else None
+                if isinstance(usage, dict) and replay.get("idempotent_replay") is True:
+                    replay_status = str(usage.get("status") or "")
+                    replay_error = str(usage.get("error_code") or "")
+                    if (
+                        recoverable_image_submission
+                        and replay_status == "reserved"
+                        and attempt < attempts - 1
+                    ):
+                        recovering_image_response = True
+                        time.sleep(min(2**attempt, 5))
+                        continue
+                    if (
+                        replay_status == "refunded"
+                        and replay_error == "provider_connect_failed"
+                        and attempt < attempts - 1
+                    ):
+                        kwargs["headers"]["Idempotency-Key"] = uuid.uuid4().hex
+                        recovering_image_response = False
+                        time.sleep(min(2**attempt, 5))
+                        continue
+                    classified = _classified_provider_error(
+                        replay_error or PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                        "idempotent replay did not include a recoverable provider result",
+                        http_status=response.status_code,
+                        request_id=_response_request_id(response),
+                        phase=phase,
+                    )
+                    if classified is not None:
+                        raise classified
             return response
-        if response.status_code not in RETRYABLE_STATUS_CODES or attempt == attempts - 1:
+        if hybrid and _managed_session_was_rejected(response) and attempt < attempts - 1:
+            from ..apps.hybrid.provider import refresh_provider_gateway_token
+
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
+            kwargs["headers"]["Authorization"] = (
+                f"Bearer {refresh_provider_gateway_token()}"
+            )
+            _rewind_request_files(kwargs)
+            logger.warning(
+                "Managed gateway session expired during a request; refreshed "
+                "the employee session and retained the same idempotency key"
+            )
+            time.sleep(min(2**attempt, 5))
+            continue
+        if hybrid_submission and attempt < attempts - 1:
+            try:
+                provider_payload = response.json()
+                provider_code, provider_message = _extract_provider_error(provider_payload)
+            except Exception:
+                provider_code, provider_message = "", getattr(response, "text", "") or ""
+            classified = _classified_provider_error(
+                provider_code,
+                provider_message,
+                http_status=response.status_code,
+                request_id=(
+                    _response_request_id(response) or _request_id_from_text(provider_message)
+                ),
+                phase=phase,
+            )
+            if classified is not None and classified.error_code == PROVIDER_CONNECTION_ERROR_CODE:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
+                kwargs["headers"]["Idempotency-Key"] = uuid.uuid4().hex
+                recovering_image_response = False
+                _rewind_request_files(kwargs)
+                logger.warning(
+                    "Managed provider submission was explicitly rejected before "
+                    "acceptance and refunded; retrying with a fresh idempotency key "
+                    "attempt=%d/%d phase=%s",
+                    attempt + 1,
+                    attempts,
+                    phase,
+                )
+                time.sleep(min(2**attempt, 5))
+                continue
+        retryable_response = safe_method and response.status_code in RETRYABLE_STATUS_CODES
+        if not retryable_response or attempt == attempts - 1:
             try:
                 provider_payload = response.json()
                 provider_code, provider_message = _extract_provider_error(provider_payload)
@@ -610,6 +969,37 @@ def _save_image_result(result: Dict[str, Any], output_path: str) -> None:
         return
     response = _request("GET", str(url), timeout=120, stream=True)
     _save_streaming_result(response, output_path, "image")
+
+
+def _validated_image_result(response: requests.Response) -> Dict[str, Any]:
+    payload = _parse_json_object(response, "image submission")
+    data = payload.get("data")
+    first = data[0] if isinstance(data, list) and data else None
+    if isinstance(first, dict) and (first.get("b64_json") or first.get("url")):
+        return payload
+
+    code, message = _extract_provider_error(payload)
+    normalized_code = str(code).strip().casefold()
+    if message or (normalized_code and normalized_code not in PROVIDER_SUCCESS_CODES):
+        classified = _classified_provider_error(
+            code,
+            message,
+            http_status=response.status_code,
+            request_id=(_response_request_id(response) or _request_id_from_text(message)),
+            phase="image submission",
+        )
+        if classified is not None:
+            raise classified
+        raise NewAPIProviderError(
+            PROVIDER_REQUEST_PUBLIC_MESSAGE,
+            error_code=PROVIDER_REQUEST_ERROR_CODE,
+            provider_code=code or PROVIDER_REQUEST_ERROR_CODE,
+            provider_message=message,
+            http_status=response.status_code,
+            request_id=_response_request_id(response),
+            phase="image submission",
+        )
+    return payload
 
 
 def _open_image_ref(reference: str, stack: ExitStack) -> Tuple[str, Any, str]:
@@ -861,11 +1251,11 @@ def _extract_video_task_id(payload: Dict[str, Any]) -> Optional[str]:
     for candidate in _walk_provider_payload(payload):
         value = candidate.get("task_id")
         if value is not None and str(value).strip():
-            return str(value).strip()
+            return redact_newapi_secrets(str(value).strip())[:200]
     for candidate in _walk_provider_payload(payload):
         value = candidate.get("id")
         if value is not None and str(value).strip():
-            return str(value).strip()
+            return redact_newapi_secrets(str(value).strip())[:200]
     return None
 
 
@@ -1015,6 +1405,7 @@ class NewAPIImageModel(ImageGenModel):
         headers = _auth_headers(model, IMAGE)
         size = normalize_newapi_image_size(kwargs.get("size"))
         quality = kwargs.get("quality", "high")
+        request_timeout = newapi_image_timeout_seconds()
         refs: List[str] = []
         if kwargs.get("ref_image_path"):
             refs.append(kwargs["ref_image_path"])
@@ -1044,7 +1435,7 @@ class NewAPIImageModel(ImageGenModel):
                         "size": size,
                         "quality": quality,
                     },
-                    timeout=300,
+                    timeout=request_timeout,
                 )
         else:
             response = _request(
@@ -1059,7 +1450,7 @@ class NewAPIImageModel(ImageGenModel):
                     "size": size,
                     "quality": quality,
                 },
-                timeout=300,
+                timeout=request_timeout,
             )
 
         report_generation_progress(
@@ -1072,7 +1463,7 @@ class NewAPIImageModel(ImageGenModel):
             "图像已生成，正在获取结果",
             75,
         )
-        _save_image_result(_parse_json_object(response, "image submission"), output_path)
+        _save_image_result(_validated_image_result(response), output_path)
         report_generation_progress(
             "persisting_media",
             "正在将生成的图像保存到工作区",
@@ -1081,9 +1472,93 @@ class NewAPIImageModel(ImageGenModel):
         return output_path, time.time() - start
 
 
+_VIDEO_PROVIDER_LOCK = threading.Lock()
+
+
+def _serialize_video_model_calls(function):
+    """Prevent EnMotion surfaces and model tiers from oversubscribing video."""
+
+    @wraps(function)
+    def wrapped(self, prompt, output_path, img_url=None, img_path=None, **kwargs):
+        if _VIDEO_PROVIDER_LOCK.locked():
+            report_generation_progress(
+                "waiting_for_video_slot",
+                "视频服务已有任务在处理，当前任务正在本地排队",
+                24,
+                estimated=True,
+            )
+        with _VIDEO_PROVIDER_LOCK:
+            return function(
+                self,
+                prompt,
+                output_path,
+                img_url=img_url,
+                img_path=img_path,
+                **kwargs,
+            )
+
+    return wrapped
+
+
+def _video_concurrency_wait_seconds() -> float:
+    raw = os.getenv("NEWAPI_VIDEO_CONCURRENCY_WAIT_SECONDS", "3600")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("NEWAPI_VIDEO_CONCURRENCY_WAIT_SECONDS 必须是数字") from exc
+    if not 0 <= value <= 3600:
+        raise ValueError("NEWAPI_VIDEO_CONCURRENCY_WAIT_SECONDS 必须在 0 到 3600 秒之间")
+    return value
+
+
+def _submit_video_request(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    body: Dict[str, Any],
+) -> requests.Response:
+    """Wait out an explicit provider concurrency rejection without duplicating work."""
+
+    wait_seconds = _video_concurrency_wait_seconds()
+    deadline: float | None = None
+    while True:
+        try:
+            return _request(
+                "POST",
+                url,
+                phase="video submission",
+                headers=headers,
+                json=body,
+                timeout=120,
+            )
+        except NewAPIProviderError as exc:
+            if exc.error_code != PROVIDER_CONCURRENCY_ERROR_CODE:
+                raise
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + wait_seconds
+            remaining = deadline - now
+            if remaining <= 0:
+                raise
+            delay = min(15.0, remaining)
+            logger.info(
+                "Video provider concurrency slot unavailable; retrying model=%s in %.1fs",
+                body.get("model"),
+                delay,
+            )
+            report_generation_progress(
+                "waiting_for_provider_slot",
+                "视频服务商并发名额已满，EnMotion 正在排队等待",
+                26,
+                estimated=True,
+            )
+            time.sleep(delay)
+
+
 class NewAPIVideoModel(VideoGenModel):
     """Seedance-compatible async video generation through New API."""
 
+    @_serialize_video_model_calls
     def generate(
         self,
         prompt: str,
@@ -1170,56 +1645,65 @@ class NewAPIVideoModel(VideoGenModel):
             "prompt": prompt,
             "metadata": metadata,
         }
-
-        response = _request(
-            "POST",
-            f"{base_url}/video/generations",
-            phase="video submission",
-            headers=headers,
-            json=body,
-            timeout=120,
-            max_attempts=1,
-        )
-        report_generation_progress(
-            "submitted_to_provider",
-            "视频请求已提交给服务商",
-            30,
-        )
-        payload = _parse_json_object(response, "video submission")
-        task_id = _extract_video_task_id(payload)
-        if not task_id:
-            code, message = _extract_provider_error(payload)
-            normalized_code = str(code).strip().lower()
-            if message or (
-                normalized_code and normalized_code not in {"0", "200", "ok", "success"}
-            ):
-                classified = _classified_provider_error(
-                    code,
-                    message,
-                    http_status=response.status_code,
-                    request_id=(_response_request_id(response) or _request_id_from_text(message)),
-                    phase="video submission",
-                )
-                if classified is not None:
-                    raise classified
-                detail = ": ".join(value for value in (code, message) if value)
-                raise RuntimeError(
-                    "New API video submission failed: " f"{redact_newapi_secrets(detail)[:500]}"
-                )
-            raise RuntimeError("New API video response did not contain a task_id")
-
-        callback: Optional[Callable[[str, Optional[str], Optional[str]], None]] = kwargs.get(
-            "on_provider_ids"
-        )
-        if callback:
-            request_id = response.headers.get("x-request-id") or response.headers.get(
-                "X-Request-Id"
+        resumed_task_id = str(kwargs.get("provider_task_id") or "").strip()
+        if resumed_task_id:
+            task_id = resumed_task_id
+            payload: Dict[str, Any] = {"id": task_id, "status": "processing"}
+            logger.info("Resuming accepted New API video task %s", task_id)
+        else:
+            response = _submit_video_request(
+                f"{base_url}/video/generations",
+                headers=headers,
+                body=body,
             )
-            try:
-                callback("newapi", str(task_id), request_id)
-            except Exception as exc:
-                logger.warning("New API provider-id callback failed: %s", exc)
-        logger.info("New API video task %s submitted", task_id)
+            report_generation_progress(
+                "submitted_to_provider",
+                "视频请求已提交给服务商",
+                30,
+            )
+            payload = _parse_json_object(response, "video submission")
+            task_id = _extract_video_task_id(payload)
+            if not task_id:
+                code, message = _extract_provider_error(payload)
+                normalized_code = str(code).strip().lower()
+                if message or (
+                    normalized_code and normalized_code not in {"0", "200", "ok", "success"}
+                ):
+                    classified = _classified_provider_error(
+                        code,
+                        message,
+                        http_status=response.status_code,
+                        request_id=(
+                            _response_request_id(response) or _request_id_from_text(message)
+                        ),
+                        phase="video submission",
+                    )
+                    if classified is not None:
+                        raise classified
+                    detail = ": ".join(value for value in (code, message) if value)
+                    raise RuntimeError(
+                        "New API video submission failed: "
+                        f"{redact_newapi_secrets(detail)[:500]}"
+                    )
+                raise RuntimeError("New API video response did not contain a task_id")
+
+            callback: Optional[Callable[[str, Optional[str], Optional[str]], None]] = kwargs.get(
+                "on_provider_ids"
+            )
+            if callback:
+                request_id = _response_request_id(response)
+                try:
+                    callback("newapi", str(task_id), request_id)
+                except Exception as exc:
+                    raise NewAPIProviderError(
+                        PROVIDER_OUTCOME_AMBIGUOUS_PUBLIC_MESSAGE,
+                        error_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                        provider_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                        provider_message="accepted task identity could not be persisted",
+                        phase="video submission",
+                        provider_task_id=str(task_id),
+                    ) from exc
+            logger.info("New API video task %s submitted", task_id)
         report_generation_progress(
             "accepted_by_provider",
             "服务商已接收视频任务",
@@ -1236,6 +1720,7 @@ class NewAPIVideoModel(VideoGenModel):
         max_wait = max(float(os.getenv("NEWAPI_VIDEO_MAX_WAIT", "3600")), 1.0)
         deadline = time.monotonic() + max_wait
         result = payload
+        last_poll_error: RuntimeError | None = None
         excluded_urls = {primary_image} if primary_image else set()
         while True:
             status = _extract_video_status(result)
@@ -1268,30 +1753,56 @@ class NewAPIVideoModel(VideoGenModel):
                 break
             if time.monotonic() >= deadline:
                 last_status = status or "unknown"
-                raise RuntimeError(
-                    f"New API video task {task_id} did not finish within "
-                    f"{max_wait:g} seconds (last status: {last_status}); "
-                    "the provider may still be processing it"
+                detail = (
+                    str(last_poll_error)
+                    if last_poll_error is not None
+                    else f"provider task remained {last_status} for {max_wait:g} seconds"
                 )
-            time.sleep(poll_interval)
-            for parse_attempt in range(3):
-                poll = _request(
-                    "GET",
-                    f"{base_url}/video/generations/{task_id}",
+                raise NewAPIProviderError(
+                    PROVIDER_OUTCOME_AMBIGUOUS_PUBLIC_MESSAGE,
+                    error_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                    provider_code=PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
+                    provider_message=detail,
                     phase="video processing",
-                    headers=_auth_headers(model, VIDEO),
-                    timeout=30,
-                    max_attempts=8,
+                    provider_task_id=str(task_id),
                 )
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+            for parse_attempt in range(3):
                 try:
+                    poll = _request(
+                        "GET",
+                        f"{base_url}/video/generations/{task_id}",
+                        phase="video processing",
+                        headers=_auth_headers(model, VIDEO),
+                        timeout=30,
+                        max_attempts=8,
+                    )
                     result = _parse_json_object(poll, "video status poll")
+                    last_poll_error = None
                     break
-                except RuntimeError:
-                    if parse_attempt == 2:
-                        raise
-                    # Polling is idempotent, so a transient malformed 200 can
-                    # be retried safely. Submission parsing remains fail-fast.
-                    time.sleep(min(2**parse_attempt, 5))
+                except NewAPIProviderError:
+                    raise
+                except RuntimeError as exc:
+                    last_poll_error = exc
+                    if parse_attempt < 2:
+                        time.sleep(min(2**parse_attempt, 5))
+                        continue
+                    # Polling is idempotent, so a transient malformed 200 or
+                    # a provider/gateway outage can be retried until the
+                    # accepted task's overall deadline without resubmitting it.
+                    logger.warning(
+                        "New API video status temporarily unavailable task=%s error=%s",
+                        task_id,
+                        redact_newapi_secrets(str(exc))[:500],
+                    )
+                    report_generation_progress(
+                        "provider_processing",
+                        "服务商状态暂时不可用，EnMotion 正在继续查询已接收的任务",
+                        50,
+                        estimated=True,
+                    )
+                    result = {"id": str(task_id), "status": "processing"}
+                    break
 
         video_url = _extract_video_url(result, excluded_urls=excluded_urls)
         report_generation_progress(

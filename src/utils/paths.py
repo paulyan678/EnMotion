@@ -85,13 +85,13 @@ def documents_dir() -> Path:
 
 
 def output_root() -> Path:
-    """Return the user-visible root for all generated EnMotion media."""
+    """Return the app-owned root for all generated EnMotion media."""
 
     override = _expanded_env("ENMOTION_OUTPUT_DIR")
     return (
         override.resolve()
         if override is not None
-        else (documents_dir() / "enmotion-output").resolve()
+        else (app_data_dir() / "enmotion-output").resolve()
     )
 
 
