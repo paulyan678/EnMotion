@@ -19,7 +19,7 @@
       "positive_prompt": "cinematic photorealism, live-action film still, natural human proportions, realistic skin texture, motivated lighting, 35mm lens, shallow depth of field, subtle film grain, volumetric atmosphere, professional color grading, realistic production design, grounded emotional performance, high-end movie frame",
       "negative_prompt": "cartoon, anime, 3d render, plastic skin, over-smoothed face, over-sharpened, low quality, blurry, watermark, logo, text, captions, deformed hands, extra fingers",
       "sample_prompt": "A young creator stands on a rain-wet train platform at dusk, holding a brass compass glowing faint blue, distant city lights behind the mist, medium-wide shot, three-quarter view, quiet emotional tension",
-      "thumbnail": "/assets/styles/live_action__cinematic_realism__rooftop_sunrise__landscape.png"
+      "thumbnail": "/assets/styles/live_action__cinematic_realism__rooftop_sunrise__landscape.webp"
     },
     {
       "id": "classic_film_noir",
@@ -33,7 +33,7 @@
       "positive_prompt": "classic black-and-white noir, low-key lighting, strong chiaroscuro, deep shadows, wet pavement reflections, venetian blind shadow patterns, smoky atmosphere, vintage film grain, dramatic silhouette, moody urban night, tense cinematic composition",
       "negative_prompt": "bright daylight, colorful palette, flat lighting, cheerful mood, glossy 3d, cartoon, anime, low contrast, watermark, logo, text, captions, blurry",
       "sample_prompt": "A lone investigator waits under a station roof at night, rain dripping from the metal beams, holding a small compass that catches a pale highlight, steam crossing the tracks, strong silhouette",
-      "thumbnail": "/assets/styles/live_action__classic_film_noir__rain_alley_detective__landscape.png"
+      "thumbnail": "/assets/styles/live_action__classic_film_noir__rain_alley_detective__landscape.webp"
     },
     {
       "id": "japanese_film_look",
@@ -47,7 +47,7 @@
       "positive_prompt": "Japanese live-action film look, quiet naturalism, soft overcast daylight, muted color palette, gentle contrast, realistic everyday locations, subtle film grain, restrained composition, emotional stillness, lived-in details, seasonal atmosphere, understated cinematic framing",
       "negative_prompt": "overly dramatic lighting, Hollywood blockbuster look, neon cyberpunk, high saturation, glossy commercial render, anime, cartoon, 3d, excessive bokeh, text, logo, watermark",
       "sample_prompt": "A young traveler stands at a small rural train station after rain, holding a brass compass, grey-blue sky, vending machine glow in the background, quiet emotional pause",
-      "thumbnail": "/assets/styles/live_action__japanese_film_look__bookstore_cafe_couple__landscape.png"
+      "thumbnail": "/assets/styles/live_action__japanese_film_look__bookstore_cafe_couple__landscape.webp"
     },
     {
       "id": "hong_kong_cinema",
@@ -61,7 +61,7 @@
       "positive_prompt": "Hong Kong cinema mood, dense urban street, wet asphalt, neon signs, sodium vapor streetlights, handheld camera energy, dramatic backlight, smoky alley atmosphere, expressive close framing, gritty romantic tension, 1990s urban film color, cinematic motion blur",
       "negative_prompt": "clean futuristic city, empty street, sterile studio lighting, pastel fantasy, anime, cartoon, glossy 3d, low quality, blurry, watermark, logo, readable text, captions",
       "sample_prompt": "A young courier stands in a rain-soaked Hong Kong alley at night, holding a brass compass glowing blue, neon signs reflected on wet asphalt, steam rising from a food stall, tense expression",
-      "thumbnail": "/assets/styles/live_action__hong_kong_cinema__cha_chaan_teng_night__landscape.png"
+      "thumbnail": "/assets/styles/live_action__hong_kong_cinema__cha_chaan_teng_night__landscape.webp"
     },
     {
       "id": "symmetric_pastel_cinema",
@@ -75,7 +75,7 @@
       "positive_prompt": "symmetrical cinematic composition, centered character framing, pastel color palette, retro production design, flat frontal camera angle, carefully arranged props, storybook-like live-action scene, whimsical deadpan mood, vintage costume details, clean geometric set design, soft diffused lighting",
       "negative_prompt": "chaotic composition, handheld realism, gritty darkness, horror mood, high saturation neon, anime, cartoon, 3d toy look, text, logo, watermark, blurry",
       "sample_prompt": "A young inventor stands perfectly centered on a tiny retro train platform, holding a brass compass, pastel luggage and neatly arranged props around them, flat frontal camera angle",
-      "thumbnail": "/assets/styles/live_action__symmetric_pastel_cinema__retro_hotel_lobby__landscape.png"
+      "thumbnail": "/assets/styles/live_action__symmetric_pastel_cinema__retro_hotel_lobby__landscape.webp"
     },
     {
       "id": "warm_hand_drawn_anime",
@@ -89,7 +89,7 @@
       "positive_prompt": "warm hand-drawn animated film look, painterly watercolor backgrounds, soft cel-shaded characters, gentle natural light, detailed lived-in environments, whimsical adventure mood, organic shapes, warm earthy palette, handcrafted illustration texture, emotional storybook atmosphere",
       "negative_prompt": "photorealistic, hard 3d render, CGI plastic look, gritty realism, horror, low quality, blurry, watermark, logo, text, captions, deformed hands",
       "sample_prompt": "A young adventurer stands on an old countryside train platform after rain, holding a brass compass glowing soft blue, grass moving in the wind, distant hills and warm clouds",
-      "thumbnail": "/assets/styles/japanese_anime__warm_hand_drawn_anime__forest_creature_valley_v2__landscape.png"
+      "thumbnail": "/assets/styles/japanese_anime__warm_hand_drawn_anime__forest_creature_valley_v2__landscape.webp"
     },
     {
       "id": "modern_cel_anime",
@@ -103,7 +103,7 @@
       "positive_prompt": "modern cel-shaded anime, clean linework, expressive eyes, crisp silhouettes, vibrant but controlled colors, detailed character design, cinematic anime background, polished key visual composition, dynamic readable pose, sharp lighting accents, high-quality 2D animation still",
       "negative_prompt": "photorealistic, western cartoon, 3d render, watercolor blur, muddy colors, low detail, distorted anatomy, extra fingers, text, logo, watermark",
       "sample_prompt": "A young anime protagonist stands on a rain-wet train platform at sunset, holding a brass compass glowing blue, wind lifting the jacket, dramatic clouds behind",
-      "thumbnail": "/assets/styles/japanese_anime__modern_cel_anime__rooftop_sunset_v2__landscape.png"
+      "thumbnail": "/assets/styles/japanese_anime__modern_cel_anime__rooftop_sunset_v2__landscape.webp"
     },
     {
       "id": "80s_90s_urban_anime",
@@ -117,7 +117,7 @@
       "positive_prompt": "1980s-1990s Japanese urban anime, retro cel animation, hand-painted city background, analog film grain, mature character proportions, stylish vintage fashion, night city lights, clean ink lines, soft airbrushed highlights, dramatic yet elegant pose, nostalgic television anime frame",
       "negative_prompt": "modern digital anime gloss, chibi, 3d render, photorealistic, super deformed, overly cute, low quality, blurry, text, logo, watermark, speech bubbles",
       "sample_prompt": "A stylish young private investigator stands near a city train platform at night, teal jacket, brass compass in hand, skyline lights and passing train reflections",
-      "thumbnail": "/assets/styles/japanese_anime__80s_90s_urban_anime__showa_beauty_sports_car__square.png",
+      "thumbnail": "/assets/styles/japanese_anime__80s_90s_urban_anime__showa_beauty_sports_car__square.webp",
       "object_position": "top"
     },
     {
@@ -132,7 +132,7 @@
       "positive_prompt": "fashion-forward battle anime, tall elegant character proportions, sharp black ink lines, high-contrast graphic composition, stylish streetwear, dramatic white and black balance, spiritual energy aura, clean negative space, dynamic pose, urban supernatural mood, refined character silhouette",
       "negative_prompt": "photorealistic, 3d render, cute chibi style, soft watercolor, cluttered background, copied existing character, logo, text, watermark, blurry, deformed hands, extra fingers",
       "sample_prompt": "A tall young supernatural fighter stands on an empty train platform under a stormy sky, wearing minimalist black-and-white streetwear, holding a brass compass glowing with blue energy, sharp silhouette",
-      "thumbnail": "/assets/styles/japanese_anime__fashion_battle_anime__man__portrait.png",
+      "thumbnail": "/assets/styles/japanese_anime__fashion_battle_anime__man__portrait.webp",
       "object_position": "top"
     },
     {
@@ -147,7 +147,7 @@
       "positive_prompt": "stylized feature-quality 3D animation, expressive rounded character design, appealing shape language, warm cinematic lighting, rich color design, soft subsurface skin shading, detailed but friendly environment, polished animation render, clear emotional storytelling, family adventure tone",
       "negative_prompt": "photorealistic, flat 2d drawing, low-poly model, horror mood, uncanny face, rough texture, plastic toy look, low quality, blurry, text, logo, watermark",
       "sample_prompt": "A young explorer stands on a colorful train platform after rain, holding a brass compass glowing blue, eyes full of wonder",
-      "thumbnail": "/assets/styles/american_animation__stylized_3d_animation__garage_inventor_v2__landscape.png"
+      "thumbnail": "/assets/styles/american_animation__stylized_3d_animation__garage_inventor_v2__landscape.webp"
     },
     {
       "id": "graphic_novel",
@@ -161,7 +161,7 @@
       "positive_prompt": "American graphic novel style, bold ink outlines, strong heroic silhouettes, halftone shading, dramatic panel composition, dynamic action framing, high-contrast cinematic lighting, detailed city backdrop, vibrant color blocking with intense accents, printed paper texture, expressive face, energetic perspective, premium cover art composition",
       "negative_prompt": "known superhero costume, copyrighted emblem, photorealistic, soft watercolor, blurry, 3d render, muted colors, speech bubbles, captions, readable text, logo, watermark, distorted anatomy, cute cartoon",
       "sample_prompt": "An original masked guardian stands on a rain-slick rooftop at night, holding a brass compass glowing electric blue, cape caught in the wind, city skyline behind, dramatic heroic silhouette",
-      "thumbnail": "/assets/styles/american_animation__superhero_graphic_novel__rainy_city_rooftop__landscape.png",
+      "thumbnail": "/assets/styles/american_animation__superhero_graphic_novel__rainy_city_rooftop__landscape.webp",
       "object_position": "top"
     },
     {
@@ -176,7 +176,7 @@
       "positive_prompt": "painterly 3D animated series style, stylized realistic proportions, hand-painted texture overlays, brushstroke shading, dramatic rim light, gritty urban fantasy atmosphere, expressive angular face design, cinematic color contrast, rich material texture, emotional close framing, premium adult animation look",
       "negative_prompt": "cute family cartoon, glossy plastic 3d, flat anime cel shading, photorealistic live action, low-poly, oversaturated colors, text, logo, watermark, blurry, copied existing character",
       "sample_prompt": "A young mechanic-mage stands on an industrial train platform at night, holding a brass compass glowing blue through the rain, pipes and city towers in the background",
-      "thumbnail": "/assets/styles/american_animation__painterly_3d_series__undercity_inventor_v2__landscape.png"
+      "thumbnail": "/assets/styles/american_animation__painterly_3d_series__undercity_inventor_v2__landscape.webp"
     },
     {
       "id": "dark_fantasy",
@@ -190,7 +190,7 @@
       "positive_prompt": "dark fantasy illustration, dramatic chiaroscuro, ancient ruins, enchanted mist, ornate costume details, moody color palette, painterly brushwork, epic atmosphere, mystical backlight, high-detail fantasy concept art, solemn heroic mood",
       "negative_prompt": "cute cartoon, bright cheerful colors, modern city, sci-fi neon, flat lighting, low detail, blurry, text, logo, watermark, copied fantasy character",
       "sample_prompt": "A young knight stands before a ruined cathedral gate, holding a compass glowing with ancient light, mist swirling around crumbling pillars",
-      "thumbnail": "/assets/styles/style_lab__dark_fantasy__ruined_cathedral_knight_v2__portrait.png",
+      "thumbnail": "/assets/styles/style_lab__dark_fantasy__ruined_cathedral_knight_v2__portrait.webp",
       "object_position": "center 25%"
     },
     {
@@ -205,7 +205,7 @@
       "positive_prompt": "Chinese ink fantasy illustration, flowing ink wash, xuan paper texture, elegant brush lines, misty mountains, poetic negative space, subtle mineral color accents, ancient costume silhouette, ethereal atmosphere, refined composition",
       "negative_prompt": "western medieval fantasy, cyberpunk, glossy 3d, photorealistic, heavy comic outlines, oversaturated colors, low quality, blurry, text, logo, watermark",
       "sample_prompt": "A young swordsman stands on a misty mountain bridge, ink brush strokes forming the distant peaks, holding a compass that glows through the fog",
-      "thumbnail": "/assets/styles/style_lab__chinese_ink_fantasy__swordswoman_mountain_v2__portrait.png",
+      "thumbnail": "/assets/styles/style_lab__chinese_ink_fantasy__swordswoman_mountain_v2__portrait.webp",
       "object_position": "center 30%"
     },
     {
@@ -220,7 +220,7 @@
       "positive_prompt": "clay stop-motion miniature style, handcrafted character, tactile clay texture, tiny practical set, soft studio lighting, charming imperfections, shallow depth of field, handmade props, whimsical physical animation look, cozy storybook mood",
       "negative_prompt": "photorealistic human, glossy 3d render, flat 2d anime, hard plastic toy, horror doll look, low quality, blurry, text, logo, watermark",
       "sample_prompt": "A tiny clay adventurer stands on a handmade miniature train platform, holding a brass compass, warm lamp light, cozy storybook atmosphere",
-      "thumbnail": "/assets/styles/style_lab__clay_stop_motion__attic_star_lamp_v1__landscape.png"
+      "thumbnail": "/assets/styles/style_lab__clay_stop_motion__attic_star_lamp_v1__landscape.webp"
     }
   ]
 }

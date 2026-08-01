@@ -44,6 +44,15 @@ from ..services.provider_response_cache import ProviderResponseCacheError
 router = APIRouter(prefix="/gateway", tags=["provider gateway"])
 logger = logging.getLogger("enmotion.control_plane.gateway")
 
+_PROVIDER_RETRY_EXHAUSTED_HEADER = "X-EnMotion-Provider-Retry-Exhausted"
+_PROVIDER_RETRY_EXHAUSTED_CODES = frozenset(
+    {
+        "provider_connect_failed",
+        "provider_rate_limited",
+        "provider_request_timeout",
+    }
+)
+
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _TASK_ID = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 
@@ -372,9 +381,11 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
                         "each multimodal chat part must be an object",
                     )
                 if part.get("type") == "text":
-                    if set(part) != {"type", "text"} or not isinstance(
-                        part.get("text"), str
-                    ) or not part["text"].strip():
+                    if (
+                        set(part) != {"type", "text"}
+                        or not isinstance(part.get("text"), str)
+                        or not part["text"].strip()
+                    ):
                         raise HTTPException(
                             UNPROCESSABLE_CONTENT,
                             "chat text parts must contain non-empty text",
@@ -397,9 +408,7 @@ async def _json_body(request: Request, operation: str) -> dict[str, Any]:
                             "chat image_url must be an object with url and optional detail",
                         )
                     url = image_url.get("url")
-                    if not isinstance(url, str) or not url.startswith(
-                        ("data:image/", "https://")
-                    ):
+                    if not isinstance(url, str) or not url.startswith(("data:image/", "https://")):
                         raise HTTPException(
                             UNPROCESSABLE_CONTENT,
                             "chat image_url must be an HTTPS URL or image data URL",
@@ -565,7 +574,17 @@ async def _replay_response(
     body = IdempotentReplayResponse(
         usage_request=UsagePublic.model_validate(outcome.usage)
     ).model_dump(mode="json")
-    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=body)
+    headers = None
+    if (
+        outcome.usage.status == "refunded"
+        and outcome.usage.error_code in _PROVIDER_RETRY_EXHAUSTED_CODES
+    ):
+        headers = {_PROVIDER_RETRY_EXHAUSTED_HEADER: "true"}
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content=body,
+        headers=headers,
+    )
 
 
 def _provider_idempotency_key(request: Request, user_id: str, client_key: str) -> str:
@@ -795,6 +814,7 @@ async def _send_billable(
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
                 "provider connection failed",
+                headers={_PROVIDER_RETRY_EXHAUSTED_HEADER: "true"},
             ) from exc
         except httpx.RequestError as exc:
             await run_in_threadpool(
@@ -860,7 +880,9 @@ async def _send_billable(
         if error_code == "provider_concurrency_limited":
             response_status = status.HTTP_429_TOO_MANY_REQUESTS
             retry_after = retry_after or "15"
-        response_headers = {"Retry-After": retry_after} if retry_after else None
+        response_headers = {"Retry-After": retry_after} if retry_after else {}
+        if error_code in _PROVIDER_RETRY_EXHAUSTED_CODES:
+            response_headers[_PROVIDER_RETRY_EXHAUSTED_HEADER] = "true"
         return JSONResponse(
             status_code=response_status,
             content={
@@ -868,7 +890,7 @@ async def _send_billable(
                 "code": error_code,
                 "provider_status": upstream_status,
             },
-            headers=response_headers,
+            headers=response_headers or None,
         )
     if upstream.status_code >= 500:
         await upstream.aclose()

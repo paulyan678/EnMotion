@@ -26,6 +26,27 @@ def provider_transport(provider_calls: list[httpx.Request]) -> httpx.MockTranspo
 
     def handler(request: httpx.Request) -> httpx.Response:
         provider_calls.append(request)
+        if request.url.path.endswith("/models"):
+            if request.headers.get("authorization") == "Bearer rejected-provider-secret":
+                return httpx.Response(401, json={"error": "invalid credential"})
+            return httpx.Response(
+                200,
+                json={
+                    "object": "list",
+                    "data": [
+                        {"id": model}
+                        for model in (
+                            "deepseek-v4-flash",
+                            "deepseek-v4-pro",
+                            "qwen3.7-max",
+                            "gpt-image-2",
+                            "doubao-seedance-2-0-260128",
+                            "doubao-seedance-2-0-fast-260128",
+                            "doubao-seedance-2-0-mini-260615",
+                        )
+                    ],
+                },
+            )
         if request.url.host == "private-downloads.test":
             return httpx.Response(
                 302,

@@ -8,6 +8,7 @@ import requests
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.apps.hybrid.activity import record_asset_activity
 from src.apps.hybrid.client import ControlPlaneClient, ControlPlaneError, RemoteLogin
 from src.apps.hybrid.config import (
     HybridConfigurationError,
@@ -99,6 +100,54 @@ def test_authenticated_hybrid_read_does_not_wait_for_busy_workspace_writer(
     assert response.status_code == 200
     assert response.json() == {"workspace_id": local.user.workspace_id}
     assert response.headers["x-enmotion-workspace-id"] == local.user.workspace_id
+
+
+def test_hybrid_activity_task_endpoint_returns_only_the_requested_lifecycle(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("ENMOTION_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    monkeypatch.setenv("ENMOTION_HYBRID_MODE", "true")
+    monkeypatch.setenv("ENMOTION_CONTROL_PLANE_URL", "http://127.0.0.1:8123")
+    settings = HybridSettings(
+        enabled=True,
+        control_plane_url="http://127.0.0.1:8123",
+    )
+    local = LocalSession(
+        token="local-session",
+        csrf_token="csrf-token",
+        user=_user("focused-activity"),
+    )
+    monkeypatch.setattr(session_vault, "get_local", lambda _token: local)
+    for task_id in ("task-requested", "task-unrelated"):
+        record_asset_activity(
+            local.user.workspace_id,
+            task_id=task_id,
+            job_type="project_asset",
+            source="workspace",
+            source_route="#/project/project-1",
+            source_id="project-1",
+            series_id=None,
+            asset_id=f"asset-{task_id}",
+            asset_type="character",
+            asset_name=task_id,
+            prompt="A focused lifecycle",
+            model_name="gpt-image-2",
+            batch_size=1,
+            aspect_ratio="1:1",
+        )
+
+    app = FastAPI()
+    app.include_router(hybrid_router)
+    app.add_middleware(HybridAuthMiddleware, settings=settings)
+    with TestClient(app, base_url="http://testserver") as client:
+        client.cookies.set(settings.session_cookie_name, local.token)
+        response = client.get("/activity/task/task-requested")
+        missing = client.get("/activity/task/not-found")
+
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "task-requested"
+    assert missing.status_code == 404
 
 
 def test_playground_admission_does_not_wait_for_busy_workspace_writer(tmp_path) -> None:

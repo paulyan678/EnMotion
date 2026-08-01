@@ -121,7 +121,10 @@
                   maxlength="2048"
                   placeholder="https://provider.example.com/v1"
                 >
-                <small>必须使用 HTTPS；本地测试环境除外。地址中不能包含账号、密钥或查询参数。</small>
+                <small>
+                  必须使用 HTTPS；本地测试环境除外。地址中不能包含账号、密钥或查询参数。
+                  保存前会通过非计费的模型列表接口验证 TLS、密钥和模型访问权限。
+                </small>
               </label>
 
               <div class="full provider-summary" aria-live="polite">

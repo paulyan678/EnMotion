@@ -7,6 +7,7 @@ import StepPageHeader from "@/components/shared/StepPageHeader";
 import { useLocale, useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import { api, crudApi, type VideoTask, type RefineSSEEvent } from "@/lib/api";
+import { observeProjectTasks } from "@/lib/projectTaskObserver";
 import { extractErrorDetail, getAssetUrl } from "@/lib/utils";
 import { debugLog } from "@/lib/debugLog";
 import { readWorkspaceItem, removeWorkspaceItem, writeWorkspaceItem } from "@/lib/workspaceStorage";
@@ -1175,42 +1176,31 @@ export default function StoryboardR2V() {
         }
     }, [shots, currentProject, locale, videoConfig, t]);
 
-    // Project-level task refresh: when any task on any shot is in
-    // flight, refetch the whole project every 5s. The candidates
-    // panel + queue read from currentProject.video_tasks for canonical
-    // state. Cheap because it's just a GET; cancels when nothing is
-    // in flight. This is independent of the per-shot poll above (the
-    // per-shot poll updates shot.videoStatus / videoUrl which drives
-    // the ShotCard preview; the project refresh fills in candidate
-    // metadata like is_starred / label / error / final video_url).
-    useEffect(() => {
-        if (!currentProject?.id) return;
-        const allTasks: any[] = (currentProject as any).video_tasks ?? [];
-        const anyInFlight = allTasks.some(
-            (t) => t.status === "pending" || t.status === "processing",
-        );
-        // Also poll if any shot's locally-tracked videoTaskId is not
-        // yet reflected in the project record (closes the just-created
-        // window). With the Phase-2 derive-from-tasks model, we only
-        // care about the legacy single-id mirror on the shot.
-        const localInFlight = shots.some((s) => {
-            const id = s.videoTaskId;
-            if (!id) return false;
-            const t = allTasks.find((tt) => tt.id === id);
-            return !t || t.status === "pending" || t.status === "processing";
+    const projectTaskRefreshRequired = useMemo(() => {
+        const allTasks = (currentProject?.video_tasks ?? []) as VideoTask[];
+        if (allTasks.some((task) => task.status === "pending" || task.status === "processing")) {
+            return true;
+        }
+        return shots.some((shot) => {
+            if (!shot.videoTaskId) return false;
+            const task = allTasks.find((candidate) => candidate.id === shot.videoTaskId);
+            return !task || task.status === "pending" || task.status === "processing";
         });
-        if (!anyInFlight && !localInFlight) return;
+    }, [currentProject?.video_tasks, shots]);
+
+    // Candidate metadata needs the canonical project record, while the
+    // task observer below handles lightweight per-task state. Multiple
+    // mounted project workflows share this single non-overlapping refresh.
+    useEffect(() => {
+        if (!currentProject?.id || !projectTaskRefreshRequired) return;
         const projectId = currentProject.id;
-        const id = window.setInterval(async () => {
-            try {
-                const fresh = await api.getProject(projectId);
+        return observeProjectTasks(projectId, {
+            onProject: (fresh) => {
                 updateProject(projectId, fresh);
-            } catch {
-                /* swallow — network blips are fine, next tick retries */
-            }
-        }, 5000);
-        return () => window.clearInterval(id);
-    }, [currentProject?.id, (currentProject as any)?.video_tasks, shots, updateProject]);
+            },
+            onError: (error) => debugLog.warn("Studio", "Project task refresh failed:", error),
+        });
+    }, [currentProject?.id, projectTaskRefreshRequired, updateProject]);
 
     // Poll for task completion (both T2I and video)
     useEffect(() => {
@@ -1220,15 +1210,35 @@ export default function StoryboardR2V() {
         );
         if (processingShots.length === 0) return;
 
-        const interval = setInterval(async () => {
+        const controller = new AbortController();
+        let inFlight = false;
+        const poll = async () => {
+            if (inFlight || document.visibilityState !== "visible") return;
+            inFlight = true;
+            const taskIds = processingShots.flatMap((shot) => [
+                shot.videoTaskId,
+                shot.t2iTaskId,
+            ]).filter((taskId): taskId is string => Boolean(taskId));
+            let taskStatuses: Awaited<ReturnType<typeof api.getTaskStatuses>>;
+            try {
+                taskStatuses = await api.getTaskStatuses(taskIds, { signal: controller.signal });
+            } catch (error) {
+                if (controller.signal.aborted) return;
+                debugLog.error("Studio", "Batch task poll failed:", error);
+                return;
+            } finally {
+                inFlight = false;
+            }
+
             for (const shot of processingShots) {
                 // Poll video task
                 if (shot.videoTaskId && (shot.videoStatus === "processing" || shot.videoStatus === "pending")) {
-                    try {
-                        const status = await api.getTaskStatus(shot.videoTaskId);
+                    const status = taskStatuses.get(shot.videoTaskId);
+                    if (status) {
                         if (status.status === "completed" && status.video_url) {
+                            const completedVideoUrl = status.video_url;
                             setShots(prev => prev.map(s =>
-                                s.id === shot.id ? { ...s, videoStatus: "completed", videoUrl: status.video_url } : s
+                                s.id === shot.id ? { ...s, videoStatus: "completed", videoUrl: completedVideoUrl } : s
                             ));
                             // Persist as the frame's active take so reloads, refines, and
                             // cross-device opens see the same hero video. Backend skips
@@ -1254,18 +1264,17 @@ export default function StoryboardR2V() {
                                     .catch(err => debugLog.warn("Studio", "autoSelectLatestVideo failed:", err));
                             }
                         } else if (status.status === "failed" || status.status === "canceled") {
+                            const terminalStatus = status.status;
                             setShots(prev => prev.map(s =>
-                                s.id === shot.id ? { ...s, videoStatus: status.status } : s
+                                s.id === shot.id ? { ...s, videoStatus: terminalStatus } : s
                             ));
                         }
-                    } catch (error) {
-                        debugLog.error("Studio", "Video poll failed for shot:", shot.id, error);
                     }
                 }
                 // Poll T2I task
                 if (shot.t2iTaskId && (shot.t2iStatus === "processing" || shot.t2iStatus === "pending")) {
-                    try {
-                        const status = await api.getTaskStatus(shot.t2iTaskId);
+                    const status = taskStatuses.get(shot.t2iTaskId);
+                    if (status) {
                         if (status.status === "completed") {
                             const imageUrl = status.image_url || status.video_url || status.result_url;
                             if (imageUrl) {
@@ -1284,15 +1293,24 @@ export default function StoryboardR2V() {
                                 s.id === shot.id ? { ...s, t2iStatus: "failed" } : s
                             ));
                         }
-                    } catch (error) {
-                        debugLog.error("Studio", "T2I poll failed for shot:", shot.id, error);
                     }
                 }
             }
-        }, 5000);
+        };
 
-        return () => clearInterval(interval);
-    }, [shots, persistWorkbench]);
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === "visible") void poll();
+        };
+        const interval = window.setInterval(() => void poll(), 5000);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+        void poll();
+
+        return () => {
+            controller.abort();
+            window.clearInterval(interval);
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+        };
+    }, [shots, persistWorkbench, currentProject?.id, updateProject]);
 
     // Insert asset tag from drawer into target shot
     const insertAssetFromDrawer = useCallback((type: string, name: string, _ref: AssetRef) => {

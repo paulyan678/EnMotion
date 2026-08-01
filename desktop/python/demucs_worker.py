@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import sys
 from pathlib import Path
@@ -12,7 +13,8 @@ from pathlib import Path
 def verify_bundle() -> None:
     import demucs.pretrained  # noqa: F401
     import demucs.separate  # noqa: F401
-    import soundfile  # noqa: F401
+    import lameenc  # noqa: F401
+    import sphn  # noqa: F401
     import torch  # noqa: F401
 
 
@@ -59,8 +61,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # PyInstaller's one-file bootloader re-enters this executable for Python's
+    # resource tracker. Handle that control path before argparse sees the
+    # interpreter flags as EnMotion worker arguments.
+    multiprocessing.freeze_support()
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"Demucs worker failed: {type(exc).__name__}", file=sys.stderr)
+        missing = f" ({exc.name})" if isinstance(exc, ModuleNotFoundError) and exc.name else ""
+        print(f"Demucs worker failed: {type(exc).__name__}{missing}", file=sys.stderr)
         raise SystemExit(1)

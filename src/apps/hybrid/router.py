@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .activity import list_activity
+from .activity import get_activity, list_activity
 from .client import ControlPlaneClient, ControlPlaneError
 from .config import HybridSettings
 from .session import (
@@ -233,6 +233,17 @@ def activity_history(
 
     local = _required_session(request)
     return list_activity(local.user.workspace_id, limit=limit)
+
+
+@router.get("/activity/task/{task_id}")
+def activity_task(task_id: str, request: Request) -> dict[str, Any]:
+    """Return one managed desktop lifecycle for low-overhead task polling."""
+
+    local = _required_session(request)
+    row = get_activity(local.user.workspace_id, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="未找到此任务。")
+    return row
 
 
 @router.get("/auth/users")

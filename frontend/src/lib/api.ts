@@ -152,7 +152,43 @@ export interface DurableJobStatus {
     status: "queued" | "running" | "completed" | "failed" | "canceled";
     progress?: number;
     error?: string | null;
+    error_code?: string | null;
+    error_diagnostic?: string | null;
     result?: Record<string, unknown> | null;
+}
+
+export class GenerationTaskError extends Error {
+    readonly taskId: string;
+    readonly status: "failed" | "canceled";
+    readonly code: string | null;
+    readonly diagnostic: string | null;
+
+    constructor(
+        taskId: string,
+        status: "failed" | "canceled",
+        message: string,
+        code?: string | null,
+        diagnostic?: string | null,
+    ) {
+        super(message);
+        this.name = "GenerationTaskError";
+        this.taskId = taskId;
+        this.status = status;
+        this.code = code?.trim() || null;
+        this.diagnostic = diagnostic?.trim() || null;
+    }
+}
+
+export interface TransientTaskStatus {
+    task_id?: string;
+    id?: string;
+    status: "pending" | "queued" | "processing" | "running" | "completed" | "failed" | "canceled";
+    progress?: number;
+    error?: string | null;
+    image_url?: string | null;
+    video_url?: string | null;
+    result_url?: string | null;
+    [key: string]: unknown;
 }
 
 export type AssetOwnerKind = "project" | "series" | "global";
@@ -287,6 +323,7 @@ export interface ApiCallActivity {
 
 const DURABLE_JOB_POLL_INTERVAL_MS = 1000;
 const DURABLE_JOB_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const DURABLE_JOB_MAX_POLL_INTERVAL_MS = 5_000;
 
 function isDurableJobMarker(value: unknown): value is DurableJobMarker {
     if (!value || typeof value !== "object") return false;
@@ -317,6 +354,14 @@ function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
+function adaptivePollInterval(baseIntervalMs: number, startedAt: number): number {
+    if (baseIntervalMs !== DURABLE_JOB_POLL_INTERVAL_MS) return baseIntervalMs;
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs < 10_000) return baseIntervalMs;
+    if (elapsedMs < 60_000) return Math.min(baseIntervalMs * 2, DURABLE_JOB_MAX_POLL_INTERVAL_MS);
+    return DURABLE_JOB_MAX_POLL_INTERVAL_MS;
+}
+
 /** Wait for a server-mode durable job. */
 export async function waitForDurableJob(
     jobId: string,
@@ -340,12 +385,18 @@ export async function waitForDurableJob(
         const job = response.data;
         if (job.status === "completed") return job;
         if (job.status === "failed" || job.status === "canceled") {
-            throw new Error(job.error || `Job ${job.status}`);
+            throw new GenerationTaskError(
+                jobId,
+                job.status,
+                job.error || `Job ${job.status}`,
+                job.error_code,
+                job.error_diagnostic,
+            );
         }
         if (Date.now() - startedAt >= timeoutMs) {
             throw new Error("等待服务器任务完成超时");
         }
-        await wait(pollIntervalMs, signal);
+        await wait(adaptivePollInterval(pollIntervalMs, startedAt), signal);
     }
 }
 
@@ -365,20 +416,28 @@ export async function waitForHybridActivity(
 
     while (true) {
         if (signal?.aborted) throw abortedOperationError(signal);
-        const response = await axios.get<ApiCallActivity[]>(`${API_URL}/activity/history`, {
-            params: { limit: 200 },
-            signal,
-            timeout: API_ACTIVITY_SOURCE_TIMEOUT_MS,
-        });
-        const activity = response.data.find((item) => item.task_id === jobId);
+        const response = await axios.get<ApiCallActivity>(
+            `${API_URL}/activity/task/${encodeURIComponent(jobId)}`,
+            {
+                signal,
+                timeout: API_ACTIVITY_SOURCE_TIMEOUT_MS,
+            },
+        );
+        const activity = response.data;
         if (activity?.status === "completed") return activity;
         if (activity?.status === "failed" || activity?.status === "canceled") {
-            throw new Error(activity.error || `Job ${activity.status}`);
+            throw new GenerationTaskError(
+                jobId,
+                activity.status,
+                activity.error || `Job ${activity.status}`,
+                activity.error_code,
+                activity.error_diagnostic,
+            );
         }
         if (Date.now() - startedAt >= timeoutMs) {
             throw new Error("等待本地任务完成超时");
         }
-        await wait(pollIntervalMs, signal);
+        await wait(adaptivePollInterval(pollIntervalMs, startedAt), signal);
     }
 }
 
@@ -829,11 +888,34 @@ export const api = {
     getTaskStatus: async (
         taskId: string,
         options: { signal?: AbortSignal } = {},
-    ) => {
-        const res = await axios.get(`${API_URL}/tasks/${taskId}`, {
+    ): Promise<TransientTaskStatus> => {
+        const res = await axios.get<TransientTaskStatus>(`${API_URL}/tasks/${taskId}`, {
             signal: options.signal,
         });
         return res.data;
+    },
+
+    getTaskStatuses: async (
+        taskIds: string[],
+        options: { signal?: AbortSignal } = {},
+    ): Promise<Map<string, TransientTaskStatus>> => {
+        const uniqueIds = [...new Set(taskIds.map((value) => value.trim()).filter(Boolean))];
+        if (uniqueIds.length === 0) return new Map();
+        const params = new URLSearchParams();
+        uniqueIds.forEach((taskId) => params.append("task_id", taskId));
+        const response = await axios.get<{
+            tasks: TransientTaskStatus[];
+            missing: string[];
+        }>(`${API_URL}/tasks/status`, {
+            params,
+            signal: options.signal,
+        });
+        return new Map(
+            response.data.tasks.flatMap((task) => {
+                const identifier = String(task.task_id || task.id || "").trim();
+                return identifier ? [[identifier, task] as const] : [];
+            }),
+        );
     },
 
     generateAssetVideo: async (scriptId: string, assetType: string, assetId: string, data: { prompt?: string, duration?: number, aspect_ratio?: string }) => {

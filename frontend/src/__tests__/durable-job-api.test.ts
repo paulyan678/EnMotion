@@ -2,7 +2,7 @@
 
 import type { InternalAxiosRequestConfig } from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, waitForDurableJob } from "@/lib/api";
+import { api, GenerationTaskError, waitForDurableJob } from "@/lib/api";
 import { WORKSPACE_RESPONSE_HEADER, apiClient } from "@/lib/httpClient";
 import { setWorkspaceStorageScope } from "@/lib/workspaceStorage";
 
@@ -161,11 +161,11 @@ describe("durable server job API compatibility", () => {
         const requestedUrls: string[] = [];
         apiClient.defaults.adapter = async (config) => {
             requestedUrls.push(config.url || "");
-            if (config.url?.includes("/activity/history")) {
-                return response(config, [{
+            if (config.url?.includes("/activity/task/hybrid-storyboard-1")) {
+                return response(config, {
                     task_id: "hybrid-storyboard-1",
                     status: "completed",
-                }]);
+                });
             }
             if (config.method === "get" && config.url?.includes("/projects/project-1")) {
                 return response(config, {
@@ -185,7 +185,7 @@ describe("durable server job API compatibility", () => {
             id: "project-1",
             originalText: "hybrid source",
         });
-        expect(requestedUrls.some((url) => url.includes("/activity/history"))).toBe(true);
+        expect(requestedUrls.some((url) => url.includes("/activity/task/hybrid-storyboard-1"))).toBe(true);
         expect(requestedUrls.some((url) => url.includes("/jobs/"))).toBe(false);
     });
 
@@ -194,9 +194,40 @@ describe("durable server job API compatibility", () => {
             task_id: "failed-job",
             status: "failed",
             error: "FFmpeg failed",
+            error_code: "assembly_failed",
+            error_diagnostic: "ffmpeg exited with status 1",
         });
 
-        await expect(waitForDurableJob("failed-job")).rejects.toThrow("FFmpeg failed");
+        const failure = await waitForDurableJob("failed-job").catch((error) => error);
+        expect(failure).toBeInstanceOf(GenerationTaskError);
+        expect(failure).toMatchObject({
+            message: "FFmpeg failed",
+            taskId: "failed-job",
+            status: "failed",
+            code: "assembly_failed",
+            diagnostic: "ffmpeg exited with status 1",
+        });
+    });
+
+    it("loads multiple transient task states with one bounded request", async () => {
+        let request: InternalAxiosRequestConfig | undefined;
+        apiClient.defaults.adapter = async (config) => {
+            request = config;
+            return response(config, {
+                tasks: [
+                    { task_id: "video-1", status: "processing" },
+                    { task_id: "image-1", status: "completed", image_url: "frames/1.webp" },
+                ],
+                missing: [],
+            });
+        };
+
+        const statuses = await api.getTaskStatuses(["video-1", "image-1", "video-1"]);
+
+        expect(request?.url).toContain("/tasks/status");
+        expect(String(request?.params)).toBe("task_id=video-1&task_id=image-1");
+        expect(statuses.get("video-1")?.status).toBe("processing");
+        expect(statuses.get("image-1")?.image_url).toBe("frames/1.webp");
     });
 
     it("stops durable polling when the owning screen aborts its request", async () => {

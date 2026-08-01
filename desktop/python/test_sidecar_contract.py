@@ -5,8 +5,8 @@ import json
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 import sidecar
 
@@ -61,6 +61,71 @@ class RuntimeContractTests(unittest.TestCase):
         verification = source.split("def verify_packaged_bundle()", 1)[1]
         self.assertIn("configure_runtime_environment(config)", verification)
         self.assertIn("configure_core_application(config)", verification)
+        self.assertIn("generate_image_derivatives", verification)
+        self.assertIn("packaged image derivative pipeline is unavailable", verification)
+
+    def test_demucs_worker_collects_runtime_data_without_optional_tooling(self) -> None:
+        repository_root = Path(sidecar.__file__).resolve().parents[2]
+        source = (repository_root / "desktop/scripts/build_sidecar.py").read_text(encoding="utf-8")
+        worker_build = source.split("worker_command = [", 1)[1].split('if os.name == "nt":', 1)[0]
+        self.assertIn('"--collect-data",\n            "demucs"', worker_build)
+        self.assertIn('"numpy.core.multiarray"', worker_build)
+        self.assertNotIn('"--collect-all",\n            "demucs"', worker_build)
+        for optional_module in (
+            "huggingface_hub",
+            "hf_xet",
+            "PIL",
+            "cryptography",
+            "mypy",
+            "pydantic",
+            "redis",
+            "soundfile",
+            "uvloop",
+            "pytest",
+            "_pytest",
+            "pygments",
+            "rich",
+            "torch.utils.tensorboard",
+            "torch._dynamo",
+            "torch._inductor",
+            "torch.onnx",
+            "functorch",
+            "sympy",
+            "mpmath",
+            "networkx",
+            "jinja2",
+        ):
+            self.assertIn(f'"{optional_module}"', worker_build)
+        worker_source = (repository_root / "desktop/python/demucs_worker.py").read_text(
+            encoding="utf-8"
+        )
+        verification = worker_source.split("def verify_bundle()", 1)[1].split("def separate", 1)[0]
+        self.assertIn("import sphn", verification)
+        self.assertIn("import lameenc", verification)
+        self.assertNotIn("import soundfile", verification)
+        self.assertIn("multiprocessing.freeze_support()", worker_source)
+
+        core_build = source.split("\n        command = [", 1)[1].split('if os.name == "nt":', 1)[0]
+        for desktop_optional_module in (
+            "sqlalchemy",
+            "psycopg",
+            "psycopg_binary",
+            "redis",
+            "mypy",
+            "ast_serialize",
+            "pytest",
+            "_pytest",
+            "pygments",
+            "rich",
+            "watchfiles",
+            "numpy",
+        ):
+            self.assertIn(f'"{desktop_optional_module}"', core_build)
+
+        workflow = (repository_root / ".github/workflows/release-desktop.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('desktop/scripts/smoke_demucs_worker.py --worker "$worker"', workflow)
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -147,9 +212,7 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIn((b"range", b"bytes=1024-2047"), forwarded)
         self.assertIn((b"if-none-match", b'"asset-etag"'), forwarded)
         nonce_headers = [
-            value
-            for name, value in forwarded
-            if name.lower() == b"x-enmotion-local-nonce"
+            value for name, value in forwarded if name.lower() == b"x-enmotion-local-nonce"
         ]
         self.assertEqual(
             nonce_headers,

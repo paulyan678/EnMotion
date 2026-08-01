@@ -88,7 +88,6 @@ from ..hybrid.activity import (
     update_asset_activity,
 )
 from ..server import include_server_mode, server_mode_enabled
-from ..web_runtime.background_dispatch import DetachedTaskDispatcher
 from ..web_runtime.asset_library_feed import (
     AssetLibraryFeedResponse,
     AssetLibraryFeedResponseV3,
@@ -102,6 +101,7 @@ from ..web_runtime.asset_library_feed import (
     responsive_asset_library_page,
 )
 from ..web_runtime.asset_library_metrics import ASSET_LIBRARY_FEED_LATENCY
+from ..web_runtime.background_dispatch import DetachedTaskDispatcher
 from ..web_runtime.context import get_tenant
 from ..web_runtime.file_lock import interprocess_lock
 from ..web_runtime.pipeline_registry import (
@@ -5704,6 +5704,30 @@ def generate_single_asset(
             pipeline.rollback_asset_generation_task(task_id)
         abandon_workspace_job_reservations(reservations)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tasks/status")
+def get_task_status_batch(
+    task_id: List[str] = Query(...),
+) -> dict[str, Any]:
+    """Return several transient task states in one lock-free workspace read."""
+
+    normalized_ids = list(dict.fromkeys(value.strip() for value in task_id if value.strip()))
+    if not normalized_ids:
+        raise HTTPException(status_code=422, detail="At least one task id is required")
+    if len(normalized_ids) > 50:
+        raise HTTPException(status_code=422, detail="At most 50 task ids may be requested")
+
+    tasks: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for identifier in normalized_ids:
+        try:
+            tasks.append(get_task_status(identifier))
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            missing.append(identifier)
+    return {"tasks": tasks, "missing": missing}
 
 
 @app.get("/tasks/{task_id}")
