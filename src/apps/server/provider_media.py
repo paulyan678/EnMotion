@@ -20,8 +20,8 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from .config import ServerSettings
-from .quotas import workspace_output_root
 from ..web_runtime.context import get_tenant
+from ..web_runtime.workspace_paths import workspace_output_root
 from ...utils.media_security import image_limit_bytes, resolve_workspace_media_path
 
 

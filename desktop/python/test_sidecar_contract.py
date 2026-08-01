@@ -32,6 +32,17 @@ class RuntimeContractTests(unittest.TestCase):
 
         self.assertEqual(workspace_output_root("workspace-a").name, "output")
 
+    def test_hybrid_provider_media_uses_server_neutral_path_module(self) -> None:
+        repository_root = Path(sidecar.__file__).resolve().parents[2]
+        provider_source = (repository_root / "src/apps/server/provider_media.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "from ..web_runtime.workspace_paths import workspace_output_root",
+            provider_source,
+        )
+        self.assertNotIn("from .quotas import workspace_output_root", provider_source)
+
     def test_starlette_is_not_imported_on_the_frozen_module_critical_path(self) -> None:
         source = Path(sidecar.__file__).read_text(encoding="utf-8")
         self.assertNotIn("from starlette.requests import Request", source.splitlines())
@@ -44,6 +55,12 @@ class RuntimeContractTests(unittest.TestCase):
             source.index("api_module._initialize_workspace_read_models()"),
             source.index("core_app = api_module.app"),
         )
+
+    def test_frozen_bundle_verification_initializes_the_hybrid_core(self) -> None:
+        source = Path(sidecar.__file__).read_text(encoding="utf-8")
+        verification = source.split("def verify_packaged_bundle()", 1)[1]
+        self.assertIn("configure_runtime_environment(config)", verification)
+        self.assertIn("configure_core_application(config)", verification)
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
