@@ -156,6 +156,14 @@ This prevents a second provider call or charge. The desktop preserves every
 successful response locally. The control plane retains no prompt, and retains
 only the encrypted, bounded image response needed for short-lived recovery.
 
+When the gateway has already exhausted its bounded pre-acceptance connection,
+timeout, or rate-limit retries and refunds the reservation, the response and
+any later HTTP 202 replay include
+`X-EnMotion-Provider-Retry-Exhausted: true`. Clients must surface the typed
+failure instead of starting another submission cycle with a new idempotency
+key. Refunded failures without this header remain eligible for the desktop's
+own bounded recovery path.
+
 ## Runtime and updates
 
 `GET /api/v1/runtime-config` is public and returns stable route bases and the

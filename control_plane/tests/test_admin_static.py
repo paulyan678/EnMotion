@@ -106,6 +106,8 @@ def test_provider_configuration_ui_never_requests_existing_secret_values() -> No
     assert 'type="password"' in markup or 'type="password"' in script
     assert "留空表示保留当前密钥" in markup
     assert "/admin/provider-config" in script
+    assert "共享 API 配置已验证并更新" in script
+    assert "TLS 证书无效" in script
     assert "data-provider-remove" in script
     assert "config.models.map" in script
     assert "credential_value" not in markup
@@ -151,7 +153,7 @@ def test_admin_interface_is_simplified_chinese_except_model_names() -> None:
 
     for text in (
         "账号已创建",
-        "共享 API 配置已更新",
+        "共享 API 配置已验证并更新",
         "计费规则已添加",
         "登录会话已撤销",
         "已确认用量扣款",

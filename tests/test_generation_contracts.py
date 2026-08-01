@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from src.apps.comic_gen import api as comic_api
@@ -22,6 +23,33 @@ from src.apps.comic_gen.storyboard import StoryboardGenerator
 from src.apps.playground.models import PlaygroundGeneration, PlaygroundMode
 from src.apps.playground.service import PlaygroundService
 from src.models.newapi import NewAPIImageModel, NewAPIVideoModel
+
+
+def test_batch_task_status_deduplicates_and_reports_missing(monkeypatch):
+    def status(task_id: str):
+        if task_id == "missing":
+            raise HTTPException(status_code=404, detail="Task not found")
+        return {"task_id": task_id, "status": "processing"}
+
+    monkeypatch.setattr(comic_api, "get_task_status", status)
+
+    assert comic_api.get_task_status_batch(["task-1", "task-1", "missing"]) == {
+        "tasks": [{"task_id": "task-1", "status": "processing"}],
+        "missing": ["missing"],
+    }
+
+
+def test_batch_task_status_enforces_a_bounded_request(monkeypatch):
+    monkeypatch.setattr(
+        comic_api,
+        "get_task_status",
+        lambda task_id: {"task_id": task_id, "status": "processing"},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        comic_api.get_task_status_batch([f"task-{index}" for index in range(51)])
+
+    assert exc_info.value.status_code == 422
 
 
 def _frame(frame_id="frame-1"):

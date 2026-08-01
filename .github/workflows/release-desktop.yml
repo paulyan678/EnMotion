@@ -126,8 +126,10 @@ jobs:
           npm run typecheck
           npm run test:all
           npm run check:colors
+          npm run check:assets
           npm run build
           npm run check:export
+          npm run check:bundle
 
       - name: Upload immutable frontend export
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -280,6 +282,7 @@ jobs:
               "$GITHUB_WORKSPACE/$core" \
               --verify-bundle
           )
+          python3 desktop/scripts/smoke_demucs_worker.py --worker "$worker"
           cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml \
             --target "${{ matrix.target }}"
 

@@ -55,6 +55,10 @@ from ..services.ledger import (
     settle_usage,
 )
 from ..services.provider_config import ProviderConfigUnavailable
+from ..services.provider_validation import (
+    ProviderValidationError,
+    validate_provider_configuration,
+)
 
 router = APIRouter(prefix="/admin", tags=["administration"])
 
@@ -83,12 +87,21 @@ def get_provider_config(
 
 
 @router.patch("/provider-config", response_model=ProviderConfigPublic)
-def update_provider_config(
+async def update_provider_config(
     payload: ProviderConfigUpdate,
     principal: AdminPrincipal,
     request: Request,
 ) -> ProviderConfigPublic:
     try:
+        candidate = request.app.state.provider_config.preview_update(
+            base_url=payload.base_url,
+            credential_changes=payload.credentials,
+        )
+        await validate_provider_configuration(
+            client=request.app.state.provider_client,
+            base_url=candidate.base_url,
+            credentials=candidate.credentials,
+        )
         result = request.app.state.provider_config.update(
             base_url=payload.base_url,
             credential_changes=payload.credentials,
@@ -101,7 +114,7 @@ def update_provider_config(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             str(exc),
         ) from exc
-    except (ValueError, RuntimeError) as exc:
+    except (ProviderValidationError, ValueError, RuntimeError) as exc:
         raise HTTPException(
             UNPROCESSABLE_CONTENT,
             str(exc),

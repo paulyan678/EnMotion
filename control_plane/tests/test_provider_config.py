@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
+from app.models import AuditEvent, ProviderConfiguration, ProviderTask
 from sqlalchemy import select
 
-from app.models import AuditEvent, ProviderConfiguration, ProviderTask
 from tests.conftest import login
 
 
@@ -87,6 +87,37 @@ def test_provider_config_is_admin_only_masked_encrypted_and_csrf_protected(app_e
             "changed_fields": ["base_url", "credentials"],
             "changed_models": ["deepseek-v4-flash", "gpt-image-2"],
         }
+
+
+def test_provider_config_preflight_rejects_bad_credentials_without_persisting(
+    app_env,
+    provider_calls,
+):
+    client, app = app_env
+    admin = login(client, "admin", "Admin-password-123")
+
+    rejected = client.patch(
+        "/api/v1/admin/provider-config",
+        headers={"Authorization": f"Bearer {admin['access_token']}"},
+        json={
+            "credentials": {
+                "gpt-image-2": "rejected-provider-secret",
+            },
+        },
+    )
+
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "provider validation failed: credentials rejected"
+    assert "rejected-provider-secret" not in rejected.text
+    assert provider_calls[-1].url.path.endswith("/models")
+    with app.state.db.session() as session:
+        assert session.scalar(select(ProviderConfiguration)) is None
+        assert (
+            session.scalar(
+                select(AuditEvent).where(AuditEvent.action == "admin.provider_config_updated")
+            )
+            is None
+        )
 
 
 def test_rotated_config_is_shared_by_users_and_video_tasks_keep_their_version(

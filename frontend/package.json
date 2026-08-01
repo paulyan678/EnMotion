@@ -17,6 +17,9 @@
     "test:ui": "node ./scripts/run-vitest.mjs --config vitest.ui.config.mts",
     "test:all": "npm run test && npm run test:ui",
     "check:colors": "node ./scripts/check-playground-colors.mjs",
+    "check:assets": "node ./scripts/optimize-style-assets.mjs",
+    "check:bundle": "node ./scripts/check-bundle-budgets.mjs",
+    "optimize:assets": "node ./scripts/optimize-style-assets.mjs --write",
     "perf:asset-library": "node ./scripts/performance/browser-asset-library.mjs"
   },
   "dependencies": {

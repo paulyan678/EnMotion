@@ -185,6 +185,20 @@ const API_DETAIL_TRANSLATIONS = Object.freeze({
   "unsupported provider model": "不支持所选 AI 模型",
   "provider credential is empty or invalid": "API 密钥为空或格式无效",
   "provider configuration did not change": "没有需要保存的 API 配置更改",
+  "provider validation failed: endpoint or TLS unavailable":
+    "无法连接服务商，或服务商的 TLS 证书无效。配置未保存。",
+  "provider validation failed: timed out": "服务商验证超时。配置未保存，请稍后重试。",
+  "provider validation failed: credentials rejected": "服务商拒绝了 API 密钥。配置未保存。",
+  "provider validation failed: service temporarily unavailable":
+    "服务商暂时不可用。配置未保存，请稍后重试。",
+  "provider validation failed: service rejected the request":
+    "服务商拒绝了配置验证请求。配置未保存。",
+  "provider validation failed: models endpoint is incompatible":
+    "服务商的模型列表接口不兼容。配置未保存。",
+  "provider validation failed: configured model unavailable":
+    "API 密钥无法访问已配置的模型。配置未保存。",
+  "provider validation failed: response too large":
+    "服务商返回的模型列表异常过大。配置未保存。",
   "provider base URL must use HTTPS": "服务商基础地址必须使用 HTTPS",
   "provider base URL must include a hostname": "服务商基础地址必须包含主机名",
   "provider base URL must not contain credentials, parameters, a query, or a fragment":
@@ -619,7 +633,7 @@ $("#provider-config-form").addEventListener("submit", async (event) => {
     });
     renderProviderConfig(updated);
     await loadAudit();
-    showNotice("共享 API 配置已更新，新请求将立即使用新配置");
+    showNotice("共享 API 配置已验证并更新，新请求将立即使用新配置");
   } catch (error) { showNotice(error.message, true); }
   finally { endFormSubmit(form); }
 });

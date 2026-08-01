@@ -5,7 +5,8 @@ import { useTranslations } from "next-intl";
 import { useProjectStore, type Project } from "@/store/projectStore";
 import VideoCreator from "./VideoCreator";
 import VideoSidebar from "./VideoSidebar";
-import { api, VideoTask } from "@/lib/api";
+import { VideoTask } from "@/lib/api";
+import { observeProjectTasks } from "@/lib/projectTaskObserver";
 import { resolveModelId } from "@/lib/modelCatalog";
 import StepPageHeader from "@/components/shared/StepPageHeader";
 import ResizableSidePanel from "@/components/layout/ResizableSidePanel";
@@ -57,24 +58,23 @@ export default function VideoGenerator() {
 
     const handleRemixClear = useCallback(() => setRemixData(null), []);
 
-    // Poll for updates
+    // Share one visibility-aware refresh loop with every workflow observing
+    // this project. The coordinator prevents overlapping or duplicate GETs.
     useEffect(() => {
         const hasActiveTasks = tasks.some(t => t.status === "pending" || t.status === "processing");
         if (!hasActiveTasks || !currentProjectId) return;
 
-        const interval = setInterval(async () => {
-            try {
-                const project = await api.getProject(currentProjectId);
+        return observeProjectTasks(currentProjectId, {
+            onProject: (project) => {
                 updateProject(currentProjectId, {
                     video_tasks: project.video_tasks ?? [],
                     frames: project.frames ?? [],
                 });
-            } catch (error) {
+            },
+            onError: (error) => {
                 console.error("Failed to poll project status:", error);
-            }
-        }, 3000);
-
-        return () => clearInterval(interval);
+            },
+        });
     }, [tasks, currentProjectId, updateProject]);
 
     const handleTaskCreated = (updatedProject: Project) => {

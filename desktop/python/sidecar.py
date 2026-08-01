@@ -276,11 +276,11 @@ def desktop_session_response(cookie_value: str) -> Any:
     from fastapi.responses import HTMLResponse
 
     response = HTMLResponse(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-        "<meta http-equiv=\"refresh\" content=\"0;url=/static/index.html\">"
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta http-equiv="refresh" content="0;url=/static/index.html">'
         "<title>EnMotion</title></head><body>"
         "<p>正在打开 EnMotion…</p>"
-        "<p><a href=\"/static/index.html\">继续</a></p>"
+        '<p><a href="/static/index.html">继续</a></p>'
         "</body></html>",
         status_code=200,
     )
@@ -1129,6 +1129,7 @@ def verify_packaged_bundle() -> None:
     import oss2  # noqa: F401
 
     from src.apps.hybrid.session_store import LocalCredentialStore
+    from src.apps.web_runtime.media_derivatives import generate_image_derivatives
     from src.utils.system_check import get_ffmpeg_path
 
     worker = resolve_packaged_demucs_worker()
@@ -1163,6 +1164,20 @@ def verify_packaged_bundle() -> None:
             core_app, _api_module = configure_core_application(config)
             if not getattr(core_app, "routes", None):
                 raise RuntimeError("packaged EnMotion API has no routes")
+
+            from PIL import Image
+
+            source = config.output_dir / "assets" / "bundle-verification.png"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (32, 24), color=(52, 216, 196)).save(source)
+            derivatives = generate_image_derivatives(
+                config.output_dir,
+                "assets/bundle-verification.png",
+            )
+            if derivatives.state != "ready" or not derivatives.variants:
+                raise RuntimeError("packaged image derivative pipeline is unavailable")
+            if not all((config.output_dir / item.url).is_file() for item in derivatives.variants):
+                raise RuntimeError("packaged image derivatives are missing")
 
             credential_store = LocalCredentialStore(
                 root / "session" / "control-plane-refresh-token"

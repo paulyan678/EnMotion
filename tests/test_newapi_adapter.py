@@ -17,9 +17,9 @@ from src.models.newapi import (
     OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE,
     PROVIDER_ACCESS_ERROR_CODE,
     PROVIDER_AUTH_ERROR_CODE,
+    PROVIDER_CONCURRENCY_ERROR_CODE,
     PROVIDER_CONNECTION_ERROR_CODE,
     PROVIDER_CONNECTION_PUBLIC_MESSAGE,
-    PROVIDER_CONCURRENCY_ERROR_CODE,
     PROVIDER_OUTCOME_AMBIGUOUS_ERROR_CODE,
     PROVIDER_PAYLOAD_TOO_LARGE_ERROR_CODE,
     PROVIDER_QUOTA_ERROR_CODE,
@@ -173,12 +173,54 @@ class TestNewAPIChatAdapter:
         monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
         monkeypatch.setattr("src.apps.comic_gen.llm_adapter.time.sleep", lambda _delay: None)
 
-        assert adapter.chat(
-            [{"role": "user", "content": "hello"}],
-            model="deepseek-v4-flash",
-        ) == "recovered"
+        assert (
+            adapter.chat(
+                [{"role": "user", "content": "hello"}],
+                model="deepseek-v4-flash",
+            )
+            == "recovered"
+        )
         assert len(keys) == 2
         assert keys[0] != keys[1]
+
+    def test_managed_chat_does_not_retry_gateway_exhausted_connection_failure(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+
+        class ExhaustedResponse(SimpleNamespace):
+            def __bool__(self):
+                return False
+
+        class ConnectionFailure(RuntimeError):
+            status_code = 502
+            request_id = "gateway-request-exhausted"
+            body = {
+                "code": "provider_connection_failed",
+                "detail": "provider connection failed before acceptance",
+            }
+            response = ExhaustedResponse(headers={"x-enmotion-provider-retry-exhausted": "true"})
+
+        class BrokenCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                raise ConnectionFailure("hidden upstream details")
+
+        adapter = LLMAdapter()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=BrokenCompletions()))
+        monkeypatch.setattr(adapter, "require_configured", lambda _model: None)
+        monkeypatch.setattr(adapter, "_get_client", lambda _model: client)
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            adapter.chat(
+                [{"role": "user", "content": "hello"}],
+                model="deepseek-v4-flash",
+            )
+        assert exc_info.value.error_code == PROVIDER_CONNECTION_ERROR_CODE
+        assert exc_info.value.retry_exhausted is True
+        assert len(calls) == 1
 
     def test_managed_chat_never_retries_an_ambiguous_outcome(self, monkeypatch):
         calls = 0
@@ -382,9 +424,9 @@ class TestNewAPIImageModel:
 
         assert response.status_code == 200
         assert [call[3] for call in calls] == [b"reference-image", b"reference-image"]
-        assert calls[0][2]["headers"]["Idempotency-Key"] == calls[1][2]["headers"][
-            "Idempotency-Key"
-        ]
+        assert (
+            calls[0][2]["headers"]["Idempotency-Key"] == calls[1][2]["headers"]["Idempotency-Key"]
+        )
 
     def test_managed_image_refreshes_expired_session_during_cached_recovery(
         self,
@@ -540,6 +582,33 @@ class TestNewAPIImageModel:
         assert exc_info.value.error_code == PROVIDER_CONNECTION_ERROR_CODE
         assert len(calls) == 4
         assert len({call[2] for call in calls}) == 4
+
+    def test_gateway_exhausted_submission_is_not_retried_by_desktop(
+        self,
+        monkeypatch,
+    ):
+        calls = []
+
+        def fake_request(method, url, **kwargs):
+            calls.append((method, url, kwargs["headers"]["Idempotency-Key"]))
+            return FakeResponse(
+                {"detail": "provider connection failed"},
+                status=502,
+                headers={"X-EnMotion-Provider-Retry-Exhausted": "true"},
+            )
+
+        monkeypatch.setattr("src.apps.hybrid.provider.hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr("src.models.newapi.requests.request", fake_request)
+
+        with pytest.raises(NewAPIProviderError) as exc_info:
+            _request(
+                "POST",
+                "https://control.test/images/generations",
+                phase="image submission",
+            )
+        assert exc_info.value.error_code == PROVIDER_CONNECTION_ERROR_CODE
+        assert exc_info.value.retry_exhausted is True
+        assert len(calls) == 1
 
     def test_gateway_connection_failure_has_an_actionable_public_error(
         self,

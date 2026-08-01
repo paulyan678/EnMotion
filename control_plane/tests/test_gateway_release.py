@@ -252,6 +252,16 @@ def test_exhausted_connect_retries_refund_but_server_error_is_not_replayed(
         json=chat_payload("connect forever"),
     )
     assert unavailable.status_code == 502
+    assert unavailable.headers["x-enmotion-provider-retry-exhausted"] == "true"
+    assert len([call for call in provider_calls if b"connect forever" in call.content]) == 4
+
+    replay = client.post(
+        "/api/v1/gateway/chat/completions",
+        headers={**bearer(token), "Idempotency-Key": "connect-exhausted-001"},
+        json=chat_payload("connect forever"),
+    )
+    assert replay.status_code == 202
+    assert replay.headers["x-enmotion-provider-retry-exhausted"] == "true"
     assert len([call for call in provider_calls if b"connect forever" in call.content]) == 4
 
     ambiguous = client.post(
@@ -459,9 +469,7 @@ def test_video_provider_concurrency_limit_is_refunded_and_exposed_as_retryable(a
     with app.state.db.session() as session:
         owner = session.scalar(select(User).where(User.username == "employee"))
         usage = session.scalar(
-            select(UsageRequest).where(
-                UsageRequest.idempotency_key == "video-concurrency-001"
-            )
+            select(UsageRequest).where(UsageRequest.idempotency_key == "video-concurrency-001")
         )
         assert owner.available_credits == 100
         assert owner.reserved_credits == 0

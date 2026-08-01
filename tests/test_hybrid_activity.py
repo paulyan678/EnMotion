@@ -36,6 +36,8 @@ def test_hybrid_asset_activity_is_durable_and_identifies_the_asset(
     assert queued[0]["status"] == "queued"
     assert queued[0]["source_context"]["asset_id"] == "asset-1"
     assert "_process_id" not in queued[0]
+    assert activity.get_activity("workspace-alice", "task-1") == queued[0]
+    assert activity.get_activity("workspace-alice", "missing-task") is None
 
     activity.update_asset_activity("workspace-alice", "task-1", status="running")
     activity.update_asset_activity(

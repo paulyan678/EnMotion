@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -53,8 +53,11 @@ class LLMAdapter:
 
     def require_configured(self, model: Optional[str] = None) -> str:
         from ...models.newapi import normalize_newapi_base_url
-        from ..hybrid.provider import hybrid_mode_enabled, provider_gateway_base_url
-        from ..hybrid.provider import provider_gateway_token
+        from ..hybrid.provider import (
+            hybrid_mode_enabled,
+            provider_gateway_base_url,
+            provider_gateway_token,
+        )
 
         target_model = model or get_selected_model(CHAT)
         if hybrid_mode_enabled():
@@ -84,9 +87,7 @@ class LLMAdapter:
             try:
                 from openai import OpenAI
             except ImportError as exc:
-                raise RuntimeError(
-                    "The OpenAI-compatible client package is not installed"
-                ) from exc
+                raise RuntimeError("The OpenAI-compatible client package is not installed") from exc
             # The control plane owns the only safe provider-submission retry
             # policy. A provider 5xx has an ambiguous billing outcome and the
             # gateway intentionally answers a same-key replay with 202 instead
@@ -122,7 +123,7 @@ class LLMAdapter:
             try:
                 return self._chat_once(client, target_model, messages, response_format)
             except NewAPIProviderError as exc:
-                retryable = exc.error_code in _MANAGED_SAFE_RETRY_CODES
+                retryable = exc.error_code in _MANAGED_SAFE_RETRY_CODES and not exc.retry_exhausted
                 if not retryable or attempt == attempts - 1:
                     raise
                 # These managed-gateway failures are explicit pre-acceptance
@@ -157,6 +158,7 @@ class LLMAdapter:
                 NewAPIProviderError,
                 _classified_provider_error,
                 _extract_provider_error,
+                _provider_retries_exhausted,
             )
 
             status_code = getattr(exc, "status_code", None)
@@ -171,6 +173,7 @@ class LLMAdapter:
                     phase="chat completion",
                 )
                 if isinstance(classified, NewAPIProviderError):
+                    classified.retry_exhausted = _provider_retries_exhausted(exc)
                     logger.warning(
                         "New API chat request failed with classified code=%s HTTP=%s",
                         classified.error_code,

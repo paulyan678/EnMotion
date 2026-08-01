@@ -57,6 +57,7 @@ OUTPUT_VIDEO_POLICY_PUBLIC_MESSAGE = (
     "请调整提示词，避免受版权保护的角色、品牌或作品风格后重试。"
 )
 PROVIDER_CONNECTION_ERROR_CODE = "provider_connection_failed"
+PROVIDER_RETRY_EXHAUSTED_HEADER = "X-EnMotion-Provider-Retry-Exhausted"
 PROVIDER_CONNECTION_PUBLIC_MESSAGE = (
     "暂时无法连接到 AI 服务商。请稍后重试；如果持续失败，请联系管理员检查服务商线路。"
 )
@@ -127,6 +128,7 @@ class NewAPIProviderError(RuntimeError):
         phase: str = "video generation",
         provider_task_id: str = "",
         diagnostic_override: str = "",
+        retry_exhausted: bool = False,
     ) -> None:
         super().__init__(public_message)
         self.error_code = error_code
@@ -137,6 +139,7 @@ class NewAPIProviderError(RuntimeError):
         self.phase = phase
         self.provider_task_id = redact_newapi_secrets(provider_task_id)[:200]
         self.diagnostic_override = redact_newapi_secrets(diagnostic_override)[:4000]
+        self.retry_exhausted = retry_exhausted
 
     @property
     def diagnostic(self) -> str:
@@ -393,6 +396,19 @@ def _request_id_from_text(value: str) -> str:
     return redact_newapi_secrets(match.group(1))[:200] if match else ""
 
 
+def _provider_retries_exhausted(response_or_error: object) -> bool:
+    """Return whether the managed gateway already exhausted upstream retries."""
+
+    response = getattr(response_or_error, "response", None)
+    if response is None:
+        response = response_or_error
+    headers = getattr(response, "headers", None) or {}
+    value = headers.get(PROVIDER_RETRY_EXHAUSTED_HEADER)
+    if value is None:
+        value = headers.get(PROVIDER_RETRY_EXHAUSTED_HEADER.casefold())
+    return str(value or "").strip().casefold() in {"1", "true", "yes"}
+
+
 def normalize_newapi_base_url(value: Optional[str]) -> str:
     """Return a New API root ending in ``/v1``.
 
@@ -625,8 +641,8 @@ def _request(
             response = requests.request(normalized_method, url, **request_kwargs)
         except requests.RequestException as exc:
             last_exception = exc
-            safe_pre_submission_failure = hybrid_submission and _safe_pre_submission_transport_error(
-                exc
+            safe_pre_submission_failure = (
+                hybrid_submission and _safe_pre_submission_transport_error(exc)
             )
             retryable_transport = safe_method or safe_pre_submission_failure
             ambiguous_image_failure = (
@@ -686,6 +702,7 @@ def _request(
                     if (
                         replay_status == "refunded"
                         and replay_error == "provider_connect_failed"
+                        and not _provider_retries_exhausted(response)
                         and attempt < attempts - 1
                     ):
                         kwargs["headers"]["Idempotency-Key"] = uuid.uuid4().hex
@@ -700,6 +717,7 @@ def _request(
                         phase=phase,
                     )
                     if classified is not None:
+                        classified.retry_exhausted = _provider_retries_exhausted(response)
                         raise classified
             return response
         if hybrid and _managed_session_was_rejected(response) and attempt < attempts - 1:
@@ -708,9 +726,7 @@ def _request(
             close = getattr(response, "close", None)
             if callable(close):
                 close()
-            kwargs["headers"]["Authorization"] = (
-                f"Bearer {refresh_provider_gateway_token()}"
-            )
+            kwargs["headers"]["Authorization"] = f"Bearer {refresh_provider_gateway_token()}"
             _rewind_request_files(kwargs)
             logger.warning(
                 "Managed gateway session expired during a request; refreshed "
@@ -733,7 +749,13 @@ def _request(
                 ),
                 phase=phase,
             )
-            if classified is not None and classified.error_code == PROVIDER_CONNECTION_ERROR_CODE:
+            if classified is not None:
+                classified.retry_exhausted = _provider_retries_exhausted(response)
+            if (
+                classified is not None
+                and classified.error_code == PROVIDER_CONNECTION_ERROR_CODE
+                and not classified.retry_exhausted
+            ):
                 close = getattr(response, "close", None)
                 if callable(close):
                     close()
@@ -767,6 +789,7 @@ def _request(
                 phase=phase,
             )
             if classified is not None:
+                classified.retry_exhausted = _provider_retries_exhausted(response)
                 raise classified
             raise RuntimeError(f"New API request failed: {_response_error(response)}")
         retry_after = response.headers.get("Retry-After")
@@ -1682,8 +1705,7 @@ class NewAPIVideoModel(VideoGenModel):
                         raise classified
                     detail = ": ".join(value for value in (code, message) if value)
                     raise RuntimeError(
-                        "New API video submission failed: "
-                        f"{redact_newapi_secrets(detail)[:500]}"
+                        "New API video submission failed: " f"{redact_newapi_secrets(detail)[:500]}"
                     )
                 raise RuntimeError("New API video response did not contain a task_id")
 

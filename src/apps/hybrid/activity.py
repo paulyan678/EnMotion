@@ -382,3 +382,24 @@ def list_activity(workspace_id: str, *, limit: int = 200) -> list[dict[str, Any]
         for row in rows[: max(1, min(int(limit), 500))]:
             result.append({key: value for key, value in row.items() if not key.startswith("_")})
         return result
+
+
+def get_activity(workspace_id: str, task_id: str) -> dict[str, Any] | None:
+    """Return one workspace activity without transferring the full history.
+
+    ``list_activity`` remains the single place that reconciles records orphaned
+    by a previous desktop process.  The focused lookup deliberately reuses that
+    normalization while giving task observers a bounded response contract.
+    """
+
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id or len(normalized_task_id) > 200:
+        return None
+    return next(
+        (
+            row
+            for row in list_activity(workspace_id, limit=_MAX_ACTIVITY_ROWS)
+            if row.get("task_id") == normalized_task_id
+        ),
+        None,
+    )

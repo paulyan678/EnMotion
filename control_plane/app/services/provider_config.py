@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Mapping
 
@@ -34,6 +34,12 @@ class ProviderConfigSnapshot:
     base_url: str
     credentials: Mapping[str, str]
     updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ProviderConfigCandidate:
+    base_url: str
+    credentials: Mapping[str, str] = field(repr=False)
 
 
 def _b64encode(value: bytes) -> str:
@@ -149,14 +155,34 @@ class ProviderConfigService:
             ],
         }
 
-    def update(
+    def preview_update(
         self,
         *,
         base_url: str | None,
         credential_changes: Mapping[str, str | None],
-        actor_user_id: str,
-        ip_address: str | None,
-    ) -> dict[str, object]:
+    ) -> ProviderConfigCandidate:
+        """Build the exact candidate configuration without persisting it."""
+
+        self._validate_update_input(credential_changes)
+        with self._lock, self._db.session() as session:
+            latest = session.scalar(
+                select(ProviderConfiguration).order_by(ProviderConfiguration.version.desc())
+            )
+            current = self._decrypt(latest) if latest else self._environment_snapshot
+            effective_base_url, credentials, _, _ = self._build_candidate(
+                current=current,
+                base_url=base_url,
+                credential_changes=credential_changes,
+            )
+        return ProviderConfigCandidate(
+            base_url=effective_base_url,
+            credentials=credentials,
+        )
+
+    def _validate_update_input(
+        self,
+        credential_changes: Mapping[str, str | None],
+    ) -> None:
         if self._master_key is None:
             raise ProviderConfigUnavailable(
                 "set ENMOTION_PROVIDER_CONFIG_MASTER_KEY before saving provider credentials"
@@ -170,6 +196,46 @@ class ProviderConfigService:
             ):
                 raise ValueError("provider credential is empty or invalid")
 
+    def _build_candidate(
+        self,
+        *,
+        current: ProviderConfigSnapshot,
+        base_url: str | None,
+        credential_changes: Mapping[str, str | None],
+    ) -> tuple[str, dict[str, str], list[str], list[str]]:
+        effective_base_url = validate_provider_base_url(
+            base_url if base_url is not None else current.base_url,
+            allow_insecure=self._settings.allow_insecure_upstreams,
+        )
+        credentials = dict(current.credentials)
+        changed_models: list[str] = []
+        for model, value in credential_changes.items():
+            previous = credentials.get(model)
+            if value is None:
+                credentials.pop(model, None)
+            else:
+                credentials[model] = value.strip()
+            if credentials.get(model) != previous:
+                changed_models.append(model)
+        changed_fields = []
+        if effective_base_url != current.base_url:
+            changed_fields.append("base_url")
+        if changed_models:
+            changed_fields.append("credentials")
+        if not changed_fields:
+            raise ValueError("provider configuration did not change")
+        return effective_base_url, credentials, changed_fields, changed_models
+
+    def update(
+        self,
+        *,
+        base_url: str | None,
+        credential_changes: Mapping[str, str | None],
+        actor_user_id: str,
+        ip_address: str | None,
+    ) -> dict[str, object]:
+        self._validate_update_input(credential_changes)
+
         with self._lock:
             with self._db.session() as session:
                 begin_immediate(session)
@@ -177,27 +243,13 @@ class ProviderConfigService:
                     select(ProviderConfiguration).order_by(ProviderConfiguration.version.desc())
                 )
                 current = self._decrypt(latest) if latest else self._environment_snapshot
-                effective_base_url = validate_provider_base_url(
-                    base_url if base_url is not None else current.base_url,
-                    allow_insecure=self._settings.allow_insecure_upstreams,
+                effective_base_url, credentials, changed_fields, changed_models = (
+                    self._build_candidate(
+                        current=current,
+                        base_url=base_url,
+                        credential_changes=credential_changes,
+                    )
                 )
-                credentials = dict(current.credentials)
-                changed_models: list[str] = []
-                for model, value in credential_changes.items():
-                    previous = credentials.get(model)
-                    if value is None:
-                        credentials.pop(model, None)
-                    else:
-                        credentials[model] = value.strip()
-                    if credentials.get(model) != previous:
-                        changed_models.append(model)
-                changed_fields = []
-                if effective_base_url != current.base_url:
-                    changed_fields.append("base_url")
-                if changed_models:
-                    changed_fields.append("credentials")
-                if not changed_fields:
-                    raise ValueError("provider configuration did not change")
 
                 version = (latest.version if latest else 0) + 1
                 nonce = os.urandom(12)
