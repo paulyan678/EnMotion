@@ -12,6 +12,7 @@ from src.apps.comic_gen import pipeline as pipeline_module
 from src.apps.comic_gen.llm import FrameRefineError, PolishError, ScriptProcessor
 from src.apps.comic_gen.models import (
     CameraMovementData,
+    Character,
     GenerationStatus,
     GlobalAssetLibrary,
     ImageVariant,
@@ -339,6 +340,122 @@ def test_storyboard_render_rejects_generator_failed_status():
 
     assert frame.status == GenerationStatus.FAILED
     assert save_calls == [True, True]
+
+
+def test_storyboard_render_compiler_freezes_model_prompt_parameters_and_refs(tmp_path):
+    frame = _frame()
+    script = _script(frame)
+    reference = tmp_path / "storyboard" / "reference.png"
+    reference.parent.mkdir(parents=True)
+    reference.write_bytes(b"reference")
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline.output_root = str(tmp_path)
+    pipeline._effective_model_settings = lambda _script: SimpleNamespace(
+        image_model="gpt-image-2",
+        storyboard_aspect_ratio="16:9",
+    )
+
+    compiled = pipeline.compile_storyboard_render_request(
+        script.id,
+        frame.id,
+        {"reference_image_urls": ["storyboard/reference.png"]},
+        "Exact user-authored storyboard prompt",
+        batch_size=3,
+        model_name="gpt-image-2",
+        aspect_ratio="9:16",
+    )
+
+    exact = compiled["provider_requests"][0]
+    assert compiled["mode"] == "i2i"
+    assert compiled["target"]["requested_outputs"] == 3
+    assert exact == {
+        "phase": "storyboard_frame",
+        "model": "gpt-image-2",
+        "prompt": "Exact user-authored storyboard prompt",
+        "parameters": {"n": 1, "quality": "high", "size": "1024x1536"},
+        "input_media": ["storyboard/reference.png"],
+    }
+
+
+def test_exact_storyboard_request_does_not_append_hidden_character_text(monkeypatch, tmp_path):
+    frame = _frame()
+    frame.character_ids = ["character-1"]
+    character = Character(
+        id="character-1",
+        name="Hidden description",
+        description="This must not be appended after review.",
+    )
+    generator = StoryboardGenerator.__new__(StoryboardGenerator)
+    generator.output_root = str(tmp_path)
+    generator.output_dir = str(tmp_path / "storyboard")
+    captured = []
+
+    class CapturingModel:
+        @staticmethod
+        def generate(prompt, output_path, **kwargs):
+            captured.append((prompt, kwargs))
+            with open(output_path, "wb") as handle:
+                handle.write(b"generated")
+
+    class DisabledUploader:
+        is_configured = False
+
+    generator.model = CapturingModel()
+    monkeypatch.setattr("src.utils.oss_utils.OSSImageUploader", DisabledUploader)
+    prompt = "Only this exact reviewed text reaches the provider"
+
+    generator.generate_frame(
+        frame,
+        characters=[character],
+        scene=None,
+        ref_image_paths=[],
+        prompt=prompt,
+        batch_size=1,
+        model_name="gpt-image-2",
+        exact_request=True,
+    )
+
+    assert captured[0][0] == prompt
+    assert captured[0][1]["ref_image_paths"] == []
+
+
+def test_storyboard_render_rejects_a_stale_review_checksum_before_enqueue(monkeypatch, tmp_path):
+    frame = _frame()
+    script = _script(frame)
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline.output_root = str(tmp_path)
+    pipeline._effective_model_settings = lambda _script: SimpleNamespace(
+        image_model="gpt-image-2",
+        storyboard_aspect_ratio="16:9",
+    )
+    monkeypatch.setattr(comic_api, "pipeline", pipeline)
+    monkeypatch.setattr(comic_api, "server_mode_enabled", lambda: False)
+    monkeypatch.setattr(comic_api, "hybrid_mode_enabled", lambda: False)
+    client = TestClient(comic_api.app)
+    payload = {
+        "frame_id": frame.id,
+        "composition_data": {"reference_image_urls": []},
+        "prompt": "Reviewed exact storyboard prompt",
+        "batch_size": 1,
+        "model_name": "gpt-image-2",
+        "aspect_ratio": "16:9",
+    }
+
+    preview = client.post(
+        f"/projects/{script.id}/storyboard/render/preview",
+        json=payload,
+    )
+    rejected = client.post(
+        f"/projects/{script.id}/storyboard/render",
+        json={**payload, "compiled_request_checksum": "0" * 64},
+    )
+
+    assert preview.status_code == 200
+    assert len(preview.json()["checksum"]) == 64
+    assert rejected.status_code == 400
+    assert "changed after provider-request review" in rejected.json()["detail"]
 
 
 def test_storyboard_batch_keeps_successful_variants_when_a_later_call_fails(

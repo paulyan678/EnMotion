@@ -161,6 +161,24 @@ export default function SharedAssetEditor({
             options,
           )
         }
+        onPreviewGeneration={(type, prompt, applyStyle, negativePrompt, batchSize, options) =>
+          controller.previewGeneration(
+            type,
+            prompt,
+            applyStyle,
+            negativePrompt,
+            batchSize,
+            options,
+          )
+        }
+        onPreviewVideo={(prompt, duration, motionType, options) =>
+          controller.previewMotion(
+            prompt,
+            duration,
+            motionType || "full_body",
+            options,
+          )
+        }
         isGeneratingVideo={controller.generatingMotion}
         onSelectVariant={(type, id) => controller.selectVariant(type, id)}
         onDeleteVariant={(type, id) => controller.deleteVariant(type, id)}
@@ -211,6 +229,24 @@ export default function SharedAssetEditor({
       styleNegativePrompt={styleConfig?.negative_prompt || ""}
       onGenerateVideo={(prompt, duration, options) =>
         void controller.generateMotion(prompt, duration, renderedType, options)
+      }
+      onPreviewGeneration={(prompt, applyStyle, negativePrompt, batchSize, options) =>
+        controller.previewGeneration(
+          "all",
+          prompt,
+          applyStyle,
+          negativePrompt,
+          batchSize,
+          options,
+        )
+      }
+      onPreviewVideo={(prompt, duration, options) =>
+        controller.previewMotion(
+          prompt,
+          duration,
+          renderedType,
+          options,
+        )
       }
       onDeleteVideo={(id) =>
         controller.deleteMotionVariant(renderedType, id)

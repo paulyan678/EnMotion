@@ -12,6 +12,24 @@ import { useToastStore } from "@/store/toastStore";
 vi.mock("@/lib/api", () => ({
   API_URL: "http://127.0.0.1:17177",
   playgroundApi: {
+    preview: vi.fn(async (request: any) => ({
+      compiler_version: "1.0",
+      compiled_request_id: "genreq_test",
+      checksum: "a".repeat(64),
+      category: request.mode.includes("v") ? "video" : "image",
+      mode: request.mode,
+      source: "playground",
+      user_prompt: request.prompt,
+      prompt_parts: [],
+      target: { surface: "playground" },
+      provider_requests: [{
+        phase: request.mode.includes("v") ? "video" : "image",
+        model: request.model_id,
+        prompt: request.prompt,
+        parameters: request.parameters || {},
+        input_media: request.input_media || [],
+      }],
+    })),
     generate: vi.fn(),
     getHistory: vi.fn().mockResolvedValue([]),
     getTemplates: vi.fn().mockResolvedValue([]),
@@ -180,8 +198,14 @@ describe("playground responsive layout", () => {
         prompt,
         input_media: inputMedia,
         parameters: effectiveParameters,
+        compiled_request_checksum: "a".repeat(64),
       }));
     });
+    expect(playgroundApi.preview).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "i2v",
+      model_id: modelId,
+      prompt,
+    }));
   });
 
   it("visibly switches T2I reference uploads to I2I before composing the request", async () => {

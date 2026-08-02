@@ -92,8 +92,8 @@ describe("CharacterWorkbench master image", () => {
     expect(onGenerate).toHaveBeenCalledWith(
       "reference_sheet",
       expect.any(String),
-      true,
-      expect.any(String),
+      false,
+      "",
       1,
       {
         aspectRatio: "9:16",
@@ -150,7 +150,7 @@ describe("CharacterWorkbench master image", () => {
     expect(useProjectStore.getState().currentProject).toBeNull();
   });
 
-  it("owns focus and Escape in Home modal mode, renames the character, and clamps visual weight", async () => {
+  it("owns focus and Escape, renames the character, and preserves legacy metadata", async () => {
     const onClose = vi.fn();
     const onSaveMetadata = vi.fn();
 
@@ -174,18 +174,15 @@ describe("CharacterWorkbench master image", () => {
     await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(screen.getByRole("button", { name: "Generate output" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Apply the current art direction")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Apply the current art direction")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed character" } });
-    const visualWeight = screen.getByLabelText("Visual weight");
-    expect(visualWeight).toHaveValue("5");
-    fireEvent.change(visualWeight, { target: { value: "3.4" } });
-    expect(visualWeight).toHaveValue("3");
+    expect(screen.queryByLabelText("Visual weight")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => {
       expect(onSaveMetadata).toHaveBeenCalledWith(
-        expect.objectContaining({ name: "Renamed character", visualWeight: 3 }),
+        expect.objectContaining({ name: "Renamed character", visualWeight: 5 }),
       );
     });
 

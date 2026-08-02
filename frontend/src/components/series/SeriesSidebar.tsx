@@ -7,8 +7,6 @@ import {
   MapPin,
   Package,
   Plus,
-  Settings,
-  MessageSquareCode,
   Download,
   Palette,
   Trash2,
@@ -38,8 +36,6 @@ interface SeriesSidebarProps {
   onAddEpisode: () => void;
   onAddEpisodeKeyDown: (e: React.KeyboardEvent) => void;
   // Actions
-  onOpenModelSettings: () => void;
-  onOpenPromptConfig: () => void;
   onOpenImportAssets: () => void;
   onDeleteSeries: () => void;
   isDeletingSeries: boolean;
@@ -67,8 +63,6 @@ export default function SeriesSidebar({
   onNewEpisodeTitleChange,
   onAddEpisode,
   onAddEpisodeKeyDown,
-  onOpenModelSettings,
-  onOpenPromptConfig,
   onOpenImportAssets,
   onDeleteSeries,
   isDeletingSeries,
@@ -337,20 +331,6 @@ export default function SeriesSidebar({
         >
           <Download size={16} className="group-hover:text-green-400 transition-colors" />
           <span className="text-sm">{t("importAssets")}</span>
-        </button>
-        <button
-          onClick={onOpenPromptConfig}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-secondary hover:text-foreground hover:bg-hover-bg transition-colors group"
-        >
-          <MessageSquareCode size={16} className="group-hover:text-purple-400 transition-colors" />
-          <span className="text-sm">{t("promptConfig")}</span>
-        </button>
-        <button
-          onClick={onOpenModelSettings}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-text-secondary hover:text-foreground hover:bg-hover-bg transition-colors group"
-        >
-          <Settings size={16} className="group-hover:text-foreground transition-colors" />
-          <span className="text-sm">{t("genSettings")}</span>
         </button>
         <button
           onClick={onDeleteSeries}

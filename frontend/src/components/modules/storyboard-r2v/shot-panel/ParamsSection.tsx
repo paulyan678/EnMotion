@@ -28,6 +28,7 @@ interface ParamsSectionProps {
     onChange: (next: ParamsState) => void;
     inFlightCount?: number;
     errorMessage?: string | null;
+    requestReview?: React.ReactNode;
 }
 
 const RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"];
@@ -40,6 +41,7 @@ export default function ParamsSection({
     onChange,
     inFlightCount = 0,
     errorMessage,
+    requestReview,
 }: ParamsSectionProps) {
     const t = useTranslations("storyboardR2V");
     const tm = useTranslations("models");
@@ -131,6 +133,7 @@ export default function ParamsSection({
                         {locale === "zh" ? t("unknownErrorFallback") : errorMessage}
                     </div>
                 ) : null}
+                {requestReview}
             </div>
         </SectionShell>
     );

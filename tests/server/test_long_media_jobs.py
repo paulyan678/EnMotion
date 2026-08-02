@@ -11,6 +11,28 @@ from src.apps.comic_gen import api as comic_api
 from src.apps.server import jobs as jobs_module
 
 
+STORYBOARD_COMPILED_REQUEST = {
+    "compiler_version": "1.0",
+    "compiled_request_id": "genreq_test",
+    "checksum": "c" * 64,
+    "category": "image",
+    "mode": "t2i",
+    "source": "workspace",
+    "user_prompt": "cinematic frame",
+    "prompt_parts": [],
+    "target": {"project_id": "project-1", "frame_id": "frame-1"},
+    "provider_requests": [
+        {
+            "phase": "storyboard_frame",
+            "model": "gpt-image-2",
+            "prompt": "cinematic frame",
+            "parameters": {"size": "1536x1024", "quality": "high", "n": 1},
+            "input_media": [],
+        }
+    ],
+}
+
+
 class _SubmissionPipeline:
     def __init__(self) -> None:
         self.script = SimpleNamespace(
@@ -20,6 +42,9 @@ class _SubmissionPipeline:
 
     def get_script(self, script_id: str):
         return self.script if script_id == self.script.id else None
+
+    def compile_storyboard_render_request(self, *_args, **_kwargs):
+        return STORYBOARD_COMPILED_REQUEST
 
     def __getattr__(self, name: str):
         if name in {
@@ -84,6 +109,7 @@ def test_long_job_submission_always_returns_a_pollable_marker(monkeypatch):
                 "composition_data": {"reference_image_urls": []},
                 "prompt": "cinematic frame",
                 "batch_size": 2,
+                "compiled_request": STORYBOARD_COMPILED_REQUEST,
             },
         ),
         (
@@ -128,6 +154,7 @@ def test_server_routes_submit_long_operations_without_running_them(
     captured: list[tuple[str, dict]] = []
     monkeypatch.setattr(comic_api, "pipeline", _SubmissionPipeline())
     monkeypatch.setattr(comic_api, "server_mode_enabled", lambda: True)
+    monkeypatch.setattr(comic_api, "resolve_model_api_key", lambda *_args: "test-key")
     monkeypatch.setattr(
         comic_api,
         "enqueue_long_workspace_job",

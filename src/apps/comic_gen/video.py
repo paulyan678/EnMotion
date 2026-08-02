@@ -82,6 +82,9 @@ class VideoGenerator:
                 img_url=image_url if not img_path else None,
                 model_id=selected_model,
                 generation_mode="i2v",
+                duration=duration,
+                generate_audio=True,
+                watermark=False,
             )
 
             # Upload to OSS if configured

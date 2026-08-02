@@ -30,8 +30,6 @@ import type {
   EditableAsset,
 } from "@/components/assets/assetEditorTypes";
 
-const SeriesModelSettingsModal = dynamic(() => import("./SeriesModelSettingsModal"), { ssr: false });
-const SeriesPromptConfigModal = dynamic(() => import("./SeriesPromptConfigModal"), { ssr: false });
 const ImportAssetsDialog = dynamic(() => import("./ImportAssetsDialog"), { ssr: false });
 const SeriesArtDirectionPanel = dynamic(() => import("./SeriesArtDirectionPanel"), { ssr: false });
 
@@ -111,8 +109,6 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
   const [showAddEpisode, setShowAddEpisode] = useState(false);
   const [newEpisodeTitle, setNewEpisodeTitle] = useState("");
   const [isCreatingEpisode, setIsCreatingEpisode] = useState(false);
-  const [showModelSettings, setShowModelSettings] = useState(false);
-  const [showPromptConfig, setShowPromptConfig] = useState(false);
   const [showImportAssets, setShowImportAssets] = useState(false);
   const [editorTarget, setEditorTarget] = useState<AssetRef | null>(null);
   const [isDeletingSeries, setIsDeletingSeries] = useState(false);
@@ -364,8 +360,6 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
           onNewEpisodeTitleChange={setNewEpisodeTitle}
           onAddEpisode={handleAddEpisode}
           onAddEpisodeKeyDown={handleAddEpisodeKeyDown}
-          onOpenModelSettings={() => setShowModelSettings(true)}
-          onOpenPromptConfig={() => setShowPromptConfig(true)}
           onOpenImportAssets={() => setShowImportAssets(true)}
           onDeleteSeries={handleDeleteSeries}
           isDeletingSeries={isDeletingSeries}
@@ -418,18 +412,6 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
       </div>
 
       {/* ── Modals ── */}
-      <SeriesModelSettingsModal
-        isOpen={showModelSettings}
-        onClose={() => setShowModelSettings(false)}
-        seriesId={seriesId}
-        onSaved={refreshSeriesData}
-      />
-      <SeriesPromptConfigModal
-        isOpen={showPromptConfig}
-        onClose={() => setShowPromptConfig(false)}
-        seriesId={seriesId}
-        onSaved={refreshSeriesData}
-      />
       <ImportAssetsDialog
         isOpen={showImportAssets}
         onClose={() => setShowImportAssets(false)}

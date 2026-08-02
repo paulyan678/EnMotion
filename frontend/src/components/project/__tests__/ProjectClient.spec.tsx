@@ -132,12 +132,12 @@ describe("ProjectClient asset synchronization", () => {
     expect(getProject).toHaveBeenLastCalledWith(baseProject.id);
   });
 
-  it("keeps project tools while omitting the redundant API-key action", async () => {
+  it("removes duplicate project prompt and model defaults", async () => {
     renderWithIntl(<ProjectClient id={baseProject.id} />, { locale: "en" });
 
     await waitFor(() => expect(getProject).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("button", { name: "API Key & OSS Configuration" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Prompt configuration" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Model settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Prompt configuration" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model settings" })).not.toBeInTheDocument();
   });
 });

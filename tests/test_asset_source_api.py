@@ -646,6 +646,71 @@ def test_desired_state_favorite_mutates_only_the_exact_owner(tmp_path, monkeypat
     assert series_character.starred is True
 
 
+def test_asset_generation_preview_freezes_only_the_selected_reference(
+    tmp_path, monkeypatch
+):
+    pipeline = _pipeline(tmp_path)
+    character = pipeline.create_library_asset(
+        "character",
+        {
+            "name": "Reference hero",
+            "description": "A fictional courier",
+        },
+    )
+    character.full_body_asset = ImageAsset(
+        selected_id="selected-full-body",
+        variants=[
+            ImageVariant(id="historical", url="uploads/historical.png"),
+            ImageVariant(id="selected-full-body", url="uploads/selected.png"),
+        ],
+    )
+    monkeypatch.setattr(comic_api, "pipeline", pipeline)
+    client = TestClient(comic_api.app)
+    path = (
+        f"/asset-sources/global/global/assets/character/{character.id}"
+        "/generate/preview"
+    )
+
+    derived = client.post(
+        path,
+        json={
+            "asset_id": character.id,
+            "asset_type": "character",
+            "generation_type": "headshot",
+            "prompt": "Portrait of the courier under soft studio light",
+            "apply_style": False,
+            "model_name": "gpt-image-2",
+        },
+    )
+    all_phases = client.post(
+        path,
+        json={
+            "asset_id": character.id,
+            "asset_type": "character",
+            "generation_type": "all",
+            "prompt": "Complete courier reference package",
+            "reference_image_url": "uploads/user-reference.png",
+            "apply_style": False,
+            "model_name": "gpt-image-2",
+        },
+    )
+
+    assert derived.status_code == 200
+    assert derived.json()["provider_requests"][0]["input_media"] == [
+        "uploads/selected.png"
+    ]
+    assert "uploads/historical.png" not in str(derived.json())
+    assert all_phases.status_code == 200
+    requests = {
+        item["phase"]: item for item in all_phases.json()["provider_requests"]
+    }
+    assert requests["full_body"]["input_media"] == [
+        "uploads/user-reference.png"
+    ]
+    assert requests["three_view"]["input_media"] == ["phase://full_body"]
+    assert requests["headshot"]["input_media"] == ["phase://full_body"]
+
+
 def test_exact_owner_motion_variant_actions_persist_for_global_character(
     tmp_path, monkeypatch
 ):
@@ -734,18 +799,22 @@ def test_exact_owner_motion_generation_queues_canonical_owner_payload(
     ):
         get_model_spec.return_value.model_id = "video-model"
         request_model_spec.return_value.model_id = "video-model"
-        response = TestClient(comic_api.app).post(
-            f"/asset-sources/global/global/assets/scene/{scene.id}/motion/generate",
-            json={
-                "motion_type": "scene",
-                "prompt": "Slowly orbit the fictional town square",
-                "model": "video-model",
-                "audio_url": "uploads/scene-guide.wav",
-                "duration": 6,
-                "batch_size": 2,
-            },
+        client = TestClient(comic_api.app)
+        path = f"/asset-sources/global/global/assets/scene/{scene.id}/motion"
+        draft = {
+            "motion_type": "scene",
+            "prompt": "Slowly orbit the fictional town square",
+            "model": "video-model",
+            "duration": 6,
+            "batch_size": 2,
+        }
+        preview = client.post(f"{path}/preview", json=draft)
+        response = client.post(
+            f"{path}/generate",
+            json={**draft, "compiled_request_checksum": preview.json()["checksum"]},
         )
 
+    assert preview.status_code == 200
     assert response.status_code == 200
     assert response.json()["task_status"] == "queued"
     assert len(captured) == 1
@@ -756,13 +825,16 @@ def test_exact_owner_motion_generation_queues_canonical_owner_payload(
     assert payload["asset_id"] == scene.id
     assert payload["motion_type"] == "scene"
     assert payload["prompt"] == "Slowly orbit the fictional town square"
-    assert payload["audio_url"] == "uploads/scene-guide.wav"
+    assert payload["audio_url"] is None
     assert payload["duration"] == 6
     assert payload["batch_size"] == 2
+    assert payload["compiled_request"] == preview.json()
+    assert payload["compiled_request"]["target"]["requested_outputs"] == 2
+    assert "batch_size" not in payload["compiled_request"]["provider_requests"][0]["parameters"]
     assert "script_id" not in payload
 
 
-def test_exact_owner_motion_generation_forwards_and_records_audio(
+def test_exact_owner_motion_generation_rejects_unsupported_driving_audio(
     tmp_path,
 ):
     pipeline = _pipeline(tmp_path)
@@ -783,26 +855,19 @@ def test_exact_owner_motion_generation_forwards_and_records_audio(
         patch("src.apps.comic_gen.pipeline.resolve_model_api_key"),
     ):
         get_model_spec.return_value.model_id = "video-model"
-        pipeline.generate_source_asset_motion_ref(
-            "global",
-            "global",
-            "character",
-            character.id,
-            motion_type="full_body",
-            prompt="Match the guide track",
-            duration=5,
-            batch_size=1,
-            model_id="video-model",
-            audio_url="uploads/voice-guide.wav",
-        )
+        with pytest.raises(ValueError, match="driving-audio"):
+            pipeline.generate_source_asset_motion_ref(
+                "global",
+                "global",
+                "character",
+                character.id,
+                motion_type="full_body",
+                prompt="Match the guide track",
+                duration=5,
+                batch_size=1,
+                model_id="video-model",
+                audio_url="uploads/voice-guide.wav",
+            )
 
-    pipeline.video_generator.generate_i2v.assert_called_once_with(
-        image_url="uploads/presenter.png",
-        prompt="Match the guide track",
-        duration=5,
-        audio_url="uploads/voice-guide.wav",
-        model_id="video-model",
-    )
-    generated = character.full_body.video_variants[0]
-    assert generated.url == "videos/presenter.mp4"
-    assert generated.audio_url == "uploads/voice-guide.wav"
+    pipeline.video_generator.generate_i2v.assert_not_called()
+    assert character.full_body.video_variants == []

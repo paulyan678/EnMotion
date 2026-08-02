@@ -12,6 +12,10 @@ from ...utils.newapi_models import (
     get_model_spec,
     validate_model_for_mode,
 )
+from ..generation_contract import (
+    compile_generation_request,
+    provider_request,
+)
 
 
 class PlaygroundMode(str, Enum):
@@ -253,6 +257,10 @@ class PlaygroundGeneration(BaseModel):
         default_factory=dict,
         description="Generation parameters (resolution, duration, aspect_ratio, etc.)",
     )
+    compiled_request: Optional[dict] = Field(
+        None,
+        description="Frozen, inspectable request that was submitted to the provider",
+    )
     batch_size: int = Field(
         1, ge=1, le=4, description="Number of outputs to generate per request (1-4)"
     )
@@ -420,6 +428,13 @@ class GenerateRequest(BaseModel):
     batch_size: Optional[int] = Field(
         1, ge=1, le=4, description="Number of outputs to generate (1-4)"
     )
+    compiled_request_checksum: Optional[str] = Field(
+        None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-fA-F0-9]{64}$",
+        description="Checksum returned by the provider-request preview",
+    )
 
     @model_validator(mode="after")
     def validate_newapi_selection(self):
@@ -439,6 +454,47 @@ class GenerateRequest(BaseModel):
                 self.parameters,
             )
         return self
+
+
+def compile_playground_request(request: GenerateRequest) -> dict:
+    """Compile the exact request used by the Playground adapter."""
+
+    category = (
+        "image"
+        if request.mode in {PlaygroundMode.T2I, PlaygroundMode.I2I}
+        else "video"
+    )
+    parameters = dict(request.parameters or {})
+    input_media = list(request.input_media or [])
+    exact = provider_request(
+        phase="image" if category == "image" else "video",
+        model=request.model_id,
+        prompt=request.prompt,
+        # NewAPI's GPT Image and Seedance contracts do not accept a negative
+        # prompt. Keep the legacy request field readable without claiming it
+        # is part of the provider payload.
+        parameters=parameters,
+        input_media=input_media,
+    )
+    return compile_generation_request(
+        category=category,
+        mode=request.mode.value,
+        source="playground",
+        user_prompt=request.prompt,
+        requests=[exact],
+        target={
+            "surface": "playground",
+            "requested_outputs": request.batch_size or 1,
+        },
+        prompt_parts=[
+            {
+                "kind": "user",
+                "label": "User prompt",
+                "text": request.prompt.strip(),
+                "editable": True,
+            }
+        ],
+    )
 
 
 class SaveToLibraryRequest(BaseModel):

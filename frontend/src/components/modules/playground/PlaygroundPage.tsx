@@ -3,6 +3,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { Sparkles } from 'lucide-react';
+import GenerationRequestReview from '@/components/generation/GenerationRequestReview';
 import ModeSelector from './ModeSelector';
 import ModelSelector from './ModelSelector';
 import MediaInput from './MediaInput';
@@ -39,6 +40,7 @@ function toGeneration(resp: PlaygroundGenerationResponse): PlaygroundGeneration 
     negative_prompt: resp.negative_prompt,
     input_media: resp.input_media,
     parameters: resp.parameters,
+    compiled_request: resp.compiled_request,
     batch_size: resp.batch_size,
     outputs: resp.outputs.map((o) => ({
       id: o.id,
@@ -167,14 +169,14 @@ export default function PlaygroundPage() {
 
   // ─── Generate handler — enqueue a request; the dispatcher runs it ──────────
 
-  const handleGenerate = useCallback(() => {
+  const buildRequest = useCallback(() => {
     const usableInputCount = inputMedia.filter((item) => item.trim().length > 0).length;
     if (
       !prompt.trim()
       || (mode === 'i2i' && usableInputCount < 1)
       || (mode === 'i2v' && usableInputCount !== 1)
     ) {
-      return;
+      return null;
     }
     // Auto-detect i2i: t2i + reference images -> i2i
     const effectiveMode = (mode === 't2i' && inputMedia.length > 0) ? 'i2i' : mode;
@@ -187,18 +189,39 @@ export default function PlaygroundPage() {
       effectiveMode,
       inputMedia,
     );
-    enqueueRequest({
+    return {
       mode: effectiveMode,
-      modelId,
+      model_id: modelId,
       prompt: prompt.trim(),
-      negativePrompt: supportsPlaygroundNegativePrompt(effectiveMode, modelId)
+      negative_prompt: supportsPlaygroundNegativePrompt(effectiveMode, modelId)
         ? negativePrompt || undefined
         : undefined,
-      inputMedia: effectiveInputMedia,
+      input_media: effectiveInputMedia.length > 0 ? effectiveInputMedia : undefined,
       parameters: effectiveParameters,
-      batchSize,
-    });
-  }, [mode, modelId, prompt, negativePrompt, inputMedia, parameters, batchSize, enqueueRequest]);
+      batch_size: batchSize > 1 ? batchSize : undefined,
+    };
+  }, [mode, modelId, prompt, negativePrompt, inputMedia, parameters, batchSize]);
+
+  const handleGenerate = useCallback(async () => {
+    const request = buildRequest();
+    if (!request) return;
+    try {
+      const compiled = await playgroundApi.preview(request);
+      enqueueRequest({
+        mode: request.mode,
+        modelId: request.model_id,
+        prompt: request.prompt,
+        negativePrompt: request.negative_prompt,
+        inputMedia: request.input_media || [],
+        parameters: request.parameters || {},
+        batchSize: request.batch_size || 1,
+        compiledRequestChecksum: compiled.checksum,
+      });
+    } catch (error) {
+      console.error('[Playground] Request compilation failed:', error);
+      toast.error(t('compose.dispatchFailed'));
+    }
+  }, [buildRequest, enqueueRequest, t]);
 
   // ─── Queue dispatcher — POST a queued request, then poll for status ────────
 
@@ -220,6 +243,7 @@ export default function PlaygroundPage() {
         input_media: requestInputMedia.length > 0 ? requestInputMedia : undefined,
         parameters: requestParameters,
         batch_size: req.batchSize > 1 ? req.batchSize : undefined,
+        compiled_request_checksum: req.compiledRequestChecksum,
       });
       const gen = toGeneration(resp);
       startGeneration(gen);
@@ -335,6 +359,17 @@ export default function PlaygroundPage() {
             </section>
 
             {/* Spacer keeps short forms visually balanced without covering controls. */}
+            <GenerationRequestReview
+              fingerprint={JSON.stringify({ mode, modelId, prompt, negativePrompt, inputMedia, parameters, batchSize })}
+              disabled={!canGenerate}
+              loadPreview={async () => {
+                const request = buildRequest();
+                if (!request) throw new Error('Generation inputs are incomplete');
+                return playgroundApi.preview(request);
+              }}
+            />
+
+            {/* Spacer keeps short forms visually balanced without covering controls. */}
             <div className="flex-1" />
           </div>
 
@@ -353,7 +388,7 @@ export default function PlaygroundPage() {
             )}
             <button
               type="button"
-              onClick={handleGenerate}
+              onClick={() => void handleGenerate()}
               disabled={!canGenerate}
               aria-describedby={generateBlockReason ? 'playground-generate-block-reason' : undefined}
               title={generateBlockReason ?? undefined}

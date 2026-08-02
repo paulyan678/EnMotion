@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from src.apps.generation_contract import compile_generation_request, provider_request
 from src.apps.server.context import Actor
 from src.apps.server.database import Database
 from src.apps.server.job_router import download_job_output
@@ -56,6 +57,21 @@ def _actor(user_id: str, workspace_id: str) -> Actor:
 def test_activity_serialization_exposes_safe_details_and_persisted_outputs(database):
     user_id, workspace_id = _identity(database)
     identifier = str(uuid.uuid4())
+    compiled = compile_generation_request(
+        category="image",
+        mode="t2i",
+        user_prompt="A quiet harbor at dawn",
+        source="playground",
+        target={"surface": "playground"},
+        requests=[
+            provider_request(
+                phase="image",
+                model="gpt-image-2",
+                prompt="A quiet harbor at dawn",
+                parameters={"quality": "high", "size": "1536x1024"},
+            )
+        ],
+    )
     with database.session() as session:
         session.add(
             GenerationJob(
@@ -70,6 +86,7 @@ def test_activity_serialization_exposes_safe_details_and_persisted_outputs(datab
                     "model_id": "gpt-image-2",
                     "mode": "t2i",
                     "prompt": "A quiet harbor at dawn",
+                    "compiled_request": compiled,
                     "parameters": {
                         "aspect_ratio": "16:9",
                         "seed": 42,
@@ -110,8 +127,10 @@ def test_activity_serialization_exposes_safe_details_and_persisted_outputs(datab
         activity = job_to_dict(record)
 
     assert activity["model_name"] == "GPT Image 2"
+    assert activity["compiled_request"] == compiled
+    assert activity["user_prompt"] == "A quiet harbor at dawn"
     assert activity["provider_progress"] == 50
-    assert activity["parameters"] == {"mode": "t2i", "aspect_ratio": "16:9", "seed": 42}
+    assert activity["parameters"] == {"quality": "high", "size": "1536x1024"}
     assert activity["source_context"]["playground_generation_id"] == "generation-1"
     assert activity["source_context"]["route"] == "#/playground"
     assert activity["outputs"][0]["media_path"] == "playground/images/result.png"

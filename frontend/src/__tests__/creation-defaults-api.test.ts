@@ -52,8 +52,8 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("creation defaults API", () => {
-  it("sends defaults before standalone creation but leaves Series episodes inheriting", async () => {
+describe("creation request configuration", () => {
+  it("does not copy legacy workspace prompt or model defaults into new projects", async () => {
     const requests: InternalAxiosRequestConfig[] = [];
     apiClient.defaults.adapter = async (config) => {
       requests.push(config);
@@ -73,16 +73,8 @@ describe("creation defaults API", () => {
     );
 
     const standalone = requestBody(requests[0]);
-    expect(standalone.model_settings).toEqual({
-      chat_model: "deepseek-v4-pro",
-      image_model: "gpt-image-2",
-      video_model: "doubao-seedance-2-0-mini-260615",
-      storyboard_aspect_ratio: "9:16",
-    });
-    expect(standalone.prompt_config).toEqual({
-      entity_extraction: "Use the workspace extraction contract",
-      storyboard_polish: "Keep every shot cinematic",
-    });
+    expect(standalone).not.toHaveProperty("model_settings");
+    expect(standalone).not.toHaveProperty("prompt_config");
 
     const episode = requestBody(requests[1]);
     expect(episode.series_id).toBe("series-1");
@@ -90,7 +82,7 @@ describe("creation defaults API", () => {
     expect(episode).not.toHaveProperty("prompt_config");
   });
 
-  it("seeds normal and imported Series with workspace defaults", async () => {
+  it("does not copy legacy workspace prompt or model defaults into new Series", async () => {
     const requests: InternalAxiosRequestConfig[] = [];
     apiClient.defaults.adapter = async (config) => {
       requests.push(config);
@@ -112,15 +104,8 @@ describe("creation defaults API", () => {
 
     for (const config of requests) {
       const body = requestBody(config);
-      expect(body.model_settings).toMatchObject({
-        chat_model: "deepseek-v4-pro",
-        image_model: "gpt-image-2",
-        video_model: "doubao-seedance-2-0-mini-260615",
-      });
-      expect(body.prompt_config).toEqual({
-        entity_extraction: "Use the workspace extraction contract",
-        storyboard_polish: "Keep every shot cinematic",
-      });
+      expect(body).not.toHaveProperty("model_settings");
+      expect(body).not.toHaveProperty("prompt_config");
     }
   });
 });

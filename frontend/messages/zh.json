@@ -2583,5 +2583,29 @@
       "cancel": "取消",
       "emptyPrompt": "（空提示词）"
     }
+  },
+  "generationRequest": {
+    "reviewButton": "查看服务商请求",
+    "reviewed": "当前版本",
+    "description": "这里显示 EnMotion 将提交的准确模型、完整提示词、参考素材与参数。修改任何生成输入后，本次审核会自动失效。",
+    "loading": "正在编译服务商请求…",
+    "previewFailed": "无法编译服务商请求，请检查当前输入后重试。",
+    "retry": "重试",
+    "refresh": "编译当前请求",
+    "compiler": "编译器 v{version}",
+    "copy": "复制请求数据",
+    "copied": "已复制",
+    "requestNumber": "服务商请求 {number}",
+    "exactRequest": "准确服务商请求",
+    "fullPrompt": "发送给服务商的完整提示词",
+    "references": "参考素材",
+    "parameters": "参数",
+    "model": "模型",
+    "aspectRatio": "宽高比",
+    "batchSize": "输出数量",
+    "composeTitle": "审核并生成",
+    "generate": "生成",
+    "submit": "提交生成",
+    "cancel": "取消"
   }
 }

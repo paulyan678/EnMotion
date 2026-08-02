@@ -65,6 +65,7 @@ from ...utils.newapi_models import (
     get_selected_model,
     migrate_legacy_newapi_environment,
     public_model_status,
+    resolve_model_api_key,
 )
 from ...utils.oss_utils import (
     OSSImageUploader,
@@ -81,6 +82,7 @@ from ...utils.uploads import (
     save_upload_file,
 )
 from ..hybrid import hybrid_mode_enabled, include_hybrid_mode, workspace_isolation_enabled
+from ..generation_contract import assert_generation_checksum
 from ..hybrid.activity import (
     record_asset_activity,
     record_storyboard_activity,
@@ -700,9 +702,19 @@ def _process_hybrid_storyboard_activity(
         )
 
 
-def _hybrid_storyboard_input_media(composition_data: Dict[str, Any] | None) -> list[dict[str, Any]]:
+def _hybrid_storyboard_input_media(
+    composition_data: Dict[str, Any] | None,
+    compiled_request: Dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     references: list[str] = []
-    if composition_data:
+    exact_requests = (
+        compiled_request.get("provider_requests")
+        if isinstance(compiled_request, dict)
+        else None
+    )
+    if isinstance(exact_requests, list) and exact_requests:
+        references.extend(exact_requests[0].get("input_media") or [])
+    elif composition_data:
         single = str(composition_data.get("reference_image_url") or "").strip()
         if single:
             references.append(single)
@@ -720,6 +732,7 @@ def _schedule_hybrid_storyboard_render(
     background_tasks: BackgroundTasks,
     script_id: str,
     request: "RenderFrameRequest",
+    compiled_request: Dict[str, Any],
 ) -> Dict[str, str]:
     """Prepare a local storyboard render, publish activity, then return immediately."""
 
@@ -742,6 +755,9 @@ def _schedule_hybrid_storyboard_render(
             request.composition_data,
             request.prompt,
             request.batch_size,
+            request.model_name,
+            request.aspect_ratio,
+            compiled_request,
         )
         series_id = script.series_id
         source_route = _hybrid_asset_source_route(
@@ -766,7 +782,11 @@ def _schedule_hybrid_storyboard_render(
             prompt=request.prompt,
             model_name=plan.model_name,
             batch_size=request.batch_size,
-            input_media=_hybrid_storyboard_input_media(request.composition_data),
+            input_media=_hybrid_storyboard_input_media(
+                request.composition_data,
+                compiled_request,
+            ),
+            compiled_request=compiled_request,
         )
     except Exception:
         with _workspace_pipelines.locked(tenant.workspace_id) as current:
@@ -915,6 +935,7 @@ def _schedule_local_video_generation(
         ratio=task.ratio,
         source_context=context,
         input_media=_hybrid_input_media(source_image),
+        compiled_request=task.compiled_request,
     )
     worker_pipeline = pipeline.current()
     _submit_workspace_media_task(
@@ -1018,6 +1039,7 @@ def _schedule_local_source_motion_generation(
     batch_size: int,
     model_name: str | None,
     series_id: str | None,
+    compiled_request: Dict[str, Any] | None = None,
 ) -> None:
     if not hybrid_mode_enabled():
         _local_media_dispatcher.submit(pipeline.process_source_motion_ref_task, task_id)
@@ -1069,6 +1091,7 @@ def _schedule_local_source_motion_generation(
         generation_mode="i2v",
         source_context=context,
         input_media=_hybrid_input_media(source_image),
+        compiled_request=compiled_request,
     )
     worker_pipeline = pipeline.current()
     _submit_workspace_media_task(
@@ -1095,6 +1118,7 @@ def _schedule_local_asset_generation(
     target_asset: Any,
     request: "GenerateAssetRequest",
     series_id: str | None = None,
+    compiled_request: Dict[str, Any] | None = None,
 ) -> None:
     """Queue desktop work and persist an API Calls entry in hybrid mode."""
 
@@ -1134,6 +1158,7 @@ def _schedule_local_asset_generation(
         model_name=request.model_name or get_selected_model(IMAGE),
         batch_size=request.batch_size,
         aspect_ratio=request.aspect_ratio,
+        compiled_request=compiled_request,
     )
     worker_pipeline = pipeline.current()
     _submit_workspace_media_task(
@@ -1611,6 +1636,12 @@ class GenerateAssetRequest(BaseModel):
     model_name: Optional[str] = Field(default=None, max_length=128)
     aspect_ratio: Optional[str] = Field(default=None, max_length=32)
     template_id: Optional[str] = Field(default=None, max_length=128)
+    compiled_request_checksum: Optional[str] = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-fA-F0-9]{64}$",
+    )
 
     @field_validator("model_name")
     @classmethod
@@ -1628,6 +1659,34 @@ class GenerateAssetRequest(BaseModel):
                 f"Unsupported asset generation type {value!r}; choose one of {sorted(supported)}"
             )
         return value
+
+
+def _compile_owned_asset_request(
+    source_kind: str,
+    source_id: str,
+    asset_type: str,
+    asset_id: str,
+    request: GenerateAssetRequest,
+) -> Dict[str, Any]:
+    compiled = pipeline.compile_asset_generation_request(
+        source_kind,
+        source_id,
+        asset_type,
+        asset_id,
+        generation_type=request.generation_type,
+        prompt=request.prompt,
+        apply_style=request.apply_style,
+        style_preset=request.style_preset,
+        reference_image_url=request.reference_image_url,
+        style_prompt=request.style_prompt,
+        negative_prompt=request.negative_prompt,
+        batch_size=request.batch_size,
+        model_name=request.model_name,
+        aspect_ratio=request.aspect_ratio,
+        activity_source="library",
+    )
+    assert_generation_checksum(compiled, request.compiled_request_checksum)
+    return compiled
 
 
 class ToggleLockRequest(BaseModel):
@@ -2613,6 +2672,12 @@ class GenerateSourceMotionRefRequest(BaseModel):
     audio_url: Optional[str] = Field(default=None, max_length=10_000)
     duration: int = Field(default=5, ge=1, le=15)
     batch_size: int = Field(default=1, ge=1, le=4)
+    compiled_request_checksum: Optional[str] = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-fA-F0-9]{64}$",
+    )
 
     @field_validator("model")
     @classmethod
@@ -3331,6 +3396,35 @@ def patch_source_asset(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post(
+    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/generate/preview"
+)
+def preview_source_asset_generation(
+    source_kind: str,
+    source_id: str,
+    asset_type: str,
+    asset_id: str,
+    request: GenerateAssetRequest,
+):
+    """Compile a provider request without enqueueing work or spending credits."""
+
+    if request.asset_id != asset_id or request.asset_type != asset_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Request asset_id/asset_type must match the route",
+        )
+    try:
+        return _compile_owned_asset_request(
+            source_kind,
+            source_id,
+            asset_type,
+            asset_id,
+            request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/generate")
 def generate_source_asset(
     source_kind: str,
@@ -3355,6 +3449,13 @@ def generate_source_asset(
         target_asset, _, _, _ = pipeline.find_source_asset(
             source_kind, source_id, asset_type, asset_id
         )
+        compiled_request = _compile_owned_asset_request(
+            source_kind,
+            source_id,
+            asset_type,
+            asset_id,
+            request,
+        )
         previous_asset_status = target_asset.status.value
         job_type = {
             "project": "project_asset",
@@ -3376,6 +3477,7 @@ def generate_source_asset(
                         "payload": {
                             owner_key: source_id,
                             **request.model_dump(),
+                            "compiled_request": compiled_request,
                             "activity_source": "library",
                             "previous_asset_status": previous_asset_status,
                         },
@@ -3400,6 +3502,7 @@ def generate_source_asset(
                 request.model_name,
                 request.aspect_ratio,
                 task_id=task_id,
+                compiled_request=compiled_request,
             )
         elif source_kind == "series":
             _, task_id = pipeline.generate_series_asset(
@@ -3417,6 +3520,7 @@ def generate_source_asset(
                 request.model_name,
                 task_id=task_id,
                 aspect_ratio=request.aspect_ratio,
+                compiled_request=compiled_request,
             )
         else:
             _, task_id = pipeline.generate_global_asset(
@@ -3433,6 +3537,7 @@ def generate_source_asset(
                 request.model_name,
                 request.aspect_ratio,
                 task_id=task_id,
+                compiled_request=compiled_request,
             )
 
         if server_mode_enabled():
@@ -3448,6 +3553,7 @@ def generate_source_asset(
                 target_asset=target_asset,
                 request=request,
                 series_id=getattr(project, "series_id", None),
+                compiled_request=compiled_request,
             )
         response = pipeline.source_asset_response_payload(
             source_kind, source_id, asset_type, asset_id
@@ -3586,6 +3692,52 @@ def set_source_asset_favorite(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _compile_owned_motion_request(
+    source_kind: str,
+    source_id: str,
+    asset_type: str,
+    asset_id: str,
+    request: GenerateSourceMotionRefRequest,
+) -> Dict[str, Any]:
+    compiled = pipeline.compile_source_motion_request(
+        source_kind,
+        source_id,
+        asset_type,
+        asset_id,
+        motion_type=request.motion_type,
+        prompt=request.prompt,
+        duration=request.duration,
+        batch_size=request.batch_size,
+        model_id=request.model,
+        audio_url=request.audio_url,
+        activity_source="library",
+    )
+    assert_generation_checksum(compiled, request.compiled_request_checksum)
+    return compiled
+
+
+@app.post(
+    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/motion/preview"
+)
+def preview_source_asset_motion(
+    source_kind: str,
+    source_id: str,
+    asset_type: str,
+    asset_id: str,
+    request: GenerateSourceMotionRefRequest,
+):
+    try:
+        return _compile_owned_motion_request(
+            source_kind,
+            source_id,
+            asset_type,
+            asset_id,
+            request,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/motion/generate")
 def generate_source_asset_motion(
     source_kind: str,
@@ -3600,6 +3752,13 @@ def generate_source_asset_motion(
     reservations = []
     task_id = str(uuid.uuid4())
     try:
+        compiled_request = _compile_owned_motion_request(
+            source_kind,
+            source_id,
+            asset_type,
+            asset_id,
+            request,
+        )
         target_asset, task_id = pipeline.create_source_motion_ref_task(
             source_kind,
             source_id,
@@ -3612,6 +3771,7 @@ def generate_source_asset_motion(
             model_id=request.model,
             audio_url=request.audio_url,
             task_id=task_id,
+            compiled_request=compiled_request,
         )
         if server_mode_enabled():
             reservations = reserve_workspace_jobs(
@@ -3624,6 +3784,7 @@ def generate_source_asset_motion(
                             "asset_type": asset_type,
                             "asset_id": asset_id,
                             **request.model_dump(),
+                            "compiled_request": compiled_request,
                             "activity_source": "library",
                             "source_route": "#/library",
                         },
@@ -3661,6 +3822,7 @@ def generate_source_asset_motion(
                 batch_size=request.batch_size,
                 model_name=selected_model,
                 series_id=series_id,
+                compiled_request=compiled_request,
             )
         response = pipeline.source_asset_response_payload(
             source_kind, source_id, asset_type, asset_id
@@ -5220,6 +5382,12 @@ class CreateVideoTaskRequest(BaseModel):
     # generation_mode (backend dispatcher hint) — used by the candidates
     # panel to group takes per UI tab on refresh.
     workbench_tab: Optional[str] = Field(default=None, max_length=32)  # 't2i_i2v' | 'direct_r2v'
+    compiled_request_checksum: Optional[str] = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-fA-F0-9]{64}$",
+    )
 
     @field_validator("model")
     @classmethod
@@ -5246,8 +5414,8 @@ class CreateVideoTaskRequest(BaseModel):
     @classmethod
     def validate_clip_resolution(cls, value):
         normalized = value.strip().lower()
-        if normalized != "720p":
-            raise ValueError("Image-to-video clip generation supports only 720p")
+        if normalized not in {"720p", "1080p"}:
+            raise ValueError("Video generation supports 720p or 1080p")
         return normalized
 
     @field_validator("ratio")
@@ -5479,6 +5647,59 @@ def delete_video_task(script_id: str, task_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+def _compile_video_request(
+    script_id: str,
+    request: CreateVideoTaskRequest,
+    *,
+    canonical_image_url: Optional[str],
+    canonical_frame_type: Optional[str],
+) -> Dict[str, Any]:
+    compiled = pipeline.compile_video_task_request(
+        script_id,
+        image_url=canonical_image_url,
+        prompt=request.prompt,
+        frame_id=request.frame_id,
+        frame_type=canonical_frame_type,
+        duration=request.duration,
+        seed=request.seed,
+        resolution=request.resolution,
+        generate_audio=request.generate_audio,
+        model=request.model,
+        generation_mode=request.generation_mode,
+        ratio=request.ratio,
+        watermark=request.watermark,
+        batch_size=request.batch_size,
+    )
+    assert_generation_checksum(compiled, request.compiled_request_checksum)
+    return compiled
+
+
+@app.post("/projects/{script_id}/video_tasks/preview")
+def preview_video_task(script_id: str, request: CreateVideoTaskRequest):
+    canonical_image_url = request.image_url
+    canonical_frame_type = request.frame_type.value if request.frame_type else None
+    try:
+        if hasattr(pipeline, "validate_clip_generation_request"):
+            _frame, canonical_image_url, canonical_frame_type = (
+                pipeline.validate_clip_generation_request(
+                    script_id,
+                    request.frame_id,
+                    request.source_image_id,
+                    request.image_url,
+                    canonical_frame_type,
+                    request.generation_mode,
+                )
+            )
+        return _compile_video_request(
+            script_id,
+            request,
+            canonical_image_url=canonical_image_url,
+            canonical_frame_type=canonical_frame_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/projects/{script_id}/video_tasks", response_model=List[VideoTask])
 def create_video_task(
     script_id: str, request: CreateVideoTaskRequest, background_tasks: BackgroundTasks
@@ -5505,6 +5726,12 @@ def create_video_task(
                     request.generation_mode,
                 )
             )
+        compiled_request = _compile_video_request(
+            script_id,
+            request,
+            canonical_image_url=canonical_image_url,
+            canonical_frame_type=canonical_frame_type,
+        )
         if server_mode_enabled():
             reserved_ids = [str(uuid.uuid4()) for _ in range(request.batch_size)]
             reservations = reserve_workspace_jobs(
@@ -5529,6 +5756,7 @@ def create_video_task(
                             "batch_size": request.batch_size,
                             "watermark": request.watermark,
                             "workbench_tab": request.workbench_tab,
+                            "compiled_request": compiled_request,
                         },
                         "job_id": task_id,
                     }
@@ -5555,6 +5783,7 @@ def create_video_task(
                 watermark=request.watermark,
                 workbench_tab=request.workbench_tab,
                 task_id=requested_task_id,
+                compiled_request=compiled_request,
             )
             # Find the created task object
             created_task = next((t for t in script.video_tasks if t.id == task_id), None)
@@ -6487,10 +6716,53 @@ def reorder_frames(script_id: str, request: ReorderFramesRequest):
 
 
 class RenderFrameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     frame_id: str = Field(max_length=128)
     composition_data: Optional[Dict[str, Any]] = Field(default=None, max_length=256)
-    prompt: str = Field(max_length=50_000)
+    prompt: str = Field(min_length=1, max_length=50_000)
     batch_size: int = Field(1, ge=1, le=4)
+    model_name: Optional[str] = Field(default=None, max_length=128)
+    aspect_ratio: Optional[str] = Field(default=None, max_length=32)
+    compiled_request_checksum: Optional[str] = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-fA-F0-9]{64}$",
+    )
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_image_model(cls, value):
+        if value is not None:
+            get_model_spec(value, IMAGE)
+        return value
+
+
+def _compile_storyboard_render_request(
+    script_id: str, request: RenderFrameRequest
+) -> Dict[str, Any]:
+    compiled = pipeline.compile_storyboard_render_request(
+        script_id,
+        request.frame_id,
+        request.composition_data,
+        request.prompt,
+        batch_size=request.batch_size,
+        model_name=request.model_name,
+        aspect_ratio=request.aspect_ratio,
+    )
+    assert_generation_checksum(compiled, request.compiled_request_checksum)
+    return compiled
+
+
+@app.post("/projects/{script_id}/storyboard/render/preview")
+def preview_render_frame(script_id: str, request: RenderFrameRequest):
+    """Compile a storyboard image request without queueing provider work."""
+
+    try:
+        return _compile_storyboard_render_request(script_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/projects/{script_id}/storyboard/render")
@@ -6502,6 +6774,9 @@ def render_frame(
     """Renders a specific frame using composition data (I2I)."""
     try:
         logger.info(f"Rendering frame {request.frame_id}")
+        compiled_request = _compile_storyboard_render_request(script_id, request)
+        exact_request = compiled_request["provider_requests"][0]
+        resolve_model_api_key(str(exact_request["model"]), IMAGE)
         if server_mode_enabled():
             script = require_workspace_script(script_id)
             if not any(frame.id == request.frame_id for frame in script.frames):
@@ -6517,6 +6792,7 @@ def render_frame(
                     "composition_data": request.composition_data,
                     "prompt": request.prompt,
                     "batch_size": request.batch_size,
+                    "compiled_request": compiled_request,
                 },
             )
 
@@ -6525,6 +6801,7 @@ def render_frame(
                 background_tasks,
                 script_id,
                 request,
+                compiled_request,
             )
 
         updated_script = pipeline.generate_storyboard_render(
@@ -6533,12 +6810,15 @@ def render_frame(
             request.composition_data,
             request.prompt,
             request.batch_size,
+            request.model_name,
+            request.aspect_ratio,
+            compiled_request,
         )
         return signed_response(updated_script)
     except HTTPException:
         raise
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, MissingNewAPIKeyError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception(f"Error rendering frame {request.frame_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

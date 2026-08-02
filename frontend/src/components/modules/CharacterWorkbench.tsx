@@ -2,13 +2,11 @@
 
 import {
   ChevronDown,
-  FileAudio,
   Image as ImageIcon,
   Loader2,
   Lock,
   RotateCcw,
   Sparkles,
-  Upload,
   Video,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -16,11 +14,12 @@ import { useState, type ReactNode } from "react";
 
 import AssetEditorShell from "@/components/assets/AssetEditorShell";
 import { VariantSelector } from "@/components/common/VariantSelector";
+import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
 import {
   VideoVariantSelector,
   type SelectableVideoVariant,
 } from "@/components/common/VideoVariantSelector";
-import { api } from "@/lib/api";
+import type { CompiledGenerationRequest } from "@/lib/api";
 import {
   assetUnitAsImageAsset,
   primaryAssetImage,
@@ -34,7 +33,6 @@ import {
 } from "@/lib/modelCatalog";
 import { useModelDisplayName } from "@/lib/useModelDisplayName";
 import { getAssetUrl } from "@/lib/utils";
-import { toast } from "@/store/toastStore";
 
 export type CharacterImageKind =
   | "full_body"
@@ -49,8 +47,12 @@ type EditorMode = "static" | "motion";
 export const FICTIONAL_CHARACTER_PROMPT_NOTICE =
   "This is a fictional character created for animation and does not depict, identify, or imitate any real person.";
 
-const DEFAULT_NEGATIVE_PROMPT =
-  "low quality, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, jpeg artifacts, signature, watermark, blurry";
+function withVisibleStyle(prompt: string, style: string) {
+  const base = prompt.trim();
+  const layer = style.trim().replace(/^,+|,+$/g, "");
+  if (!layer || base.toLowerCase().includes(layer.toLowerCase())) return base;
+  return `${base}, ${layer}`;
+}
 
 export interface CharacterMetadataDraft {
   name: string;
@@ -102,6 +104,24 @@ export interface CharacterWorkbenchProps {
     subType?: string,
     options?: MotionGenerationOptions,
   ) => void;
+  onPreviewGeneration?: (
+    type: string,
+    prompt: string,
+    applyStyle: boolean,
+    negativePrompt: string,
+    batchSize: number,
+    options?: {
+      modelName?: string;
+      aspectRatio?: string;
+      templateId?: string;
+    },
+  ) => Promise<CompiledGenerationRequest>;
+  onPreviewVideo?: (
+    prompt: string,
+    duration: number,
+    subType?: string,
+    options?: MotionGenerationOptions,
+  ) => Promise<CompiledGenerationRequest>;
   onSelectVideoVariant?: (
     subType: "full_body" | "head_shot",
     videoId: string,
@@ -187,8 +207,9 @@ export default function CharacterWorkbench({
   onGenerate,
   generatingTypes = [],
   stylePrompt = "",
-  styleNegativePrompt = "",
   onGenerateVideo,
+  onPreviewGeneration,
+  onPreviewVideo,
   onSelectVideoVariant,
   onDeleteVideo,
   onFavoriteVideoVariant,
@@ -240,18 +261,24 @@ export default function CharacterWorkbench({
   const hasMaster = Boolean(masterImageUrl);
   const hasReference = hasMaster || hasUploadedReference;
 
-  const initialFullBodyPrompt =
+  const initialFullBodyPrompt = withVisibleStyle(
     asset.full_body_prompt
     || asset.reference_sheet?.image_prompt
-    || defaultImagePrompt("full_body", asset, hasReference);
-  const initialThreeViewPrompt =
+    || defaultImagePrompt("full_body", asset, hasReference),
+    stylePrompt,
+  );
+  const initialThreeViewPrompt = withVisibleStyle(
     asset.three_view_prompt
     || asset.three_views?.image_prompt
-    || defaultImagePrompt("three_view", asset, hasReference);
-  const initialHeadshotPrompt =
+    || defaultImagePrompt("three_view", asset, hasReference),
+    stylePrompt,
+  );
+  const initialHeadshotPrompt = withVisibleStyle(
     asset.headshot_prompt
     || asset.head_shot?.image_prompt
-    || defaultImagePrompt("headshot", asset, hasReference);
+    || defaultImagePrompt("headshot", asset, hasReference),
+    stylePrompt,
+  );
   const initialFullBodyMotionPrompt =
     asset.full_body?.video_prompt
     || asset.reference_sheet?.video_prompt
@@ -270,13 +297,13 @@ export default function CharacterWorkbench({
   const [assetType, setAssetType] =
     useState<"character" | "scene" | "prop">("character");
   const [description, setDescription] = useState(asset.description || "");
-  const [persona, setPersona] = useState(asset.persona || "");
-  const [age, setAge] = useState(asset.age || "");
-  const [gender, setGender] = useState(asset.gender || "");
-  const [clothing, setClothing] = useState(asset.clothing || "");
-  const [visualWeight, setVisualWeight] = useState(
-    normalizeVisualWeight(asset.visual_weight ?? 1),
-  );
+  // Legacy structured metadata remains round-tripped for compatibility, but
+  // the normal editing surface keeps generation intent in the full prompt.
+  const persona = asset.persona || "";
+  const age = asset.age || "";
+  const gender = asset.gender || "";
+  const clothing = asset.clothing || "";
+  const visualWeight = normalizeVisualWeight(asset.visual_weight ?? 1);
   const [fullBodyPrompt, setFullBodyPrompt] =
     useState(initialFullBodyPrompt);
   const [threeViewPrompt, setThreeViewPrompt] =
@@ -287,10 +314,8 @@ export default function CharacterWorkbench({
     useState(initialFullBodyMotionPrompt);
   const [headshotMotionPrompt, setHeadshotMotionPrompt] =
     useState(initialHeadshotMotionPrompt);
-  const [negativePrompt, setNegativePrompt] = useState(
-    styleNegativePrompt || DEFAULT_NEGATIVE_PROMPT,
-  );
-  const [applyStyle, setApplyStyle] = useState(true);
+  const negativePrompt = "";
+  const applyStyle = false;
   const [modelName, setModelName] = useState(
     defaultModelName || PROJECT_IMAGE_MODELS[0]?.id || "",
   );
@@ -302,9 +327,6 @@ export default function CharacterWorkbench({
   const [batchSize, setBatchSize] = useState(1);
   const [motionBatchSize, setMotionBatchSize] = useState(1);
   const [duration, setDuration] = useState(5);
-  const [fullBodyAudioUrl, setFullBodyAudioUrl] = useState("");
-  const [headshotAudioUrl, setHeadshotAudioUrl] = useState("");
-  const [uploadingAudio, setUploadingAudio] = useState(false);
 
   const snapshot = JSON.stringify({
     name,
@@ -388,8 +410,6 @@ export default function CharacterWorkbench({
     activeOutput === "headshot"
       ? setHeadshotMotionPrompt
       : setFullBodyMotionPrompt;
-  const activeAudioUrl =
-    activeOutput === "headshot" ? headshotAudioUrl : fullBodyAudioUrl;
   const activeMotionUnit =
     activeOutput === "headshot"
       ? asset.head_shot
@@ -473,35 +493,7 @@ export default function CharacterWorkbench({
     onGenerateVideo(activeMotionPrompt, duration, motionType, {
       model: videoModelName || undefined,
       batchSize: motionBatchSize,
-      audioUrl: activeAudioUrl || undefined,
     });
-  };
-
-  const uploadAudio = async (file?: File) => {
-    if (!file) return;
-    if (!file.type.startsWith("audio/")) {
-      toast.error(tc("invalidAudioFile"));
-      return;
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error(tc("audioTooLarge"));
-      return;
-    }
-    setUploadingAudio(true);
-    try {
-      const result = await api.uploadFile(file);
-      if (activeOutput === "headshot") {
-        setHeadshotAudioUrl(result.url);
-        setHeadshotMotionPrompt(defaultMotionPrompt("headshot", asset, true));
-      } else {
-        setFullBodyAudioUrl(result.url);
-        setFullBodyMotionPrompt(defaultMotionPrompt("full_body", asset, true));
-      }
-    } catch {
-      toast.error(tc("audioUploadFailed"));
-    } finally {
-      setUploadingAudio(false);
-    }
   };
 
   const rail = (
@@ -737,7 +729,7 @@ export default function CharacterWorkbench({
                             ? "headshot"
                             : "full_body",
                           asset,
-                          Boolean(activeAudioUrl),
+                          false,
                         ),
                       )
                     }
@@ -746,29 +738,6 @@ export default function CharacterWorkbench({
                     <RotateCcw size={14} aria-hidden="true" />
                     {tc("resetRecommendedPrompt")}
                   </button>
-                  <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-glass-border px-3 text-xs font-semibold text-text-secondary hover:bg-hover-bg hover:text-foreground focus-within:ring-2 focus-within:ring-focus-ring">
-                    {uploadingAudio ? (
-                      <Loader2 size={14} className="animate-spin" aria-hidden="true" />
-                    ) : activeAudioUrl ? (
-                      <FileAudio size={14} aria-hidden="true" />
-                    ) : (
-                      <Upload size={14} aria-hidden="true" />
-                    )}
-                    {uploadingAudio
-                      ? tc("uploading")
-                      : activeAudioUrl
-                        ? tc("audioUploaded")
-                        : tc("uploadAudioFile")}
-                    <input
-                      type="file"
-                      accept="audio/*"
-                      className="sr-only"
-                      disabled={uploadingAudio}
-                      onChange={(event) =>
-                        void uploadAudio(event.target.files?.[0])
-                      }
-                    />
-                  </label>
                 </div>
 
                 <GenerationSettings
@@ -808,6 +777,28 @@ export default function CharacterWorkbench({
                     />
                   </div>
                 </GenerationSettings>
+
+                {onPreviewVideo ? (
+                  <GenerationRequestReview
+                    fingerprint={JSON.stringify({
+                      activeMotionPrompt,
+                      duration,
+                      motionType,
+                      videoModelName,
+                      motionBatchSize,
+                    })}
+                    disabled={!motionReady || !activeMotionPrompt.trim() || typeChanged}
+                    loadPreview={() => onPreviewVideo(
+                      activeMotionPrompt,
+                      duration,
+                      motionType,
+                      {
+                        model: videoModelName || undefined,
+                        batchSize: motionBatchSize,
+                      },
+                    )}
+                  />
+                ) : null}
 
                 {!motionReady ? (
                   <p className="rounded-lg border border-status-pending-border bg-status-pending-bg p-3 text-xs text-status-pending-fg">
@@ -889,39 +880,33 @@ export default function CharacterWorkbench({
                       },
                     ]}
                   />
-                  <label className="block space-y-1.5">
-                    <span className="text-xs font-semibold text-text-muted">
-                      {t("negativePromptLabel")}
-                    </span>
-                    <textarea
-                      value={negativePrompt}
-                      onChange={(event) =>
-                        setNegativePrompt(event.target.value)
-                      }
-                      className="min-h-24 w-full resize-y rounded-lg border border-glass-border bg-input-bg p-2.5 font-mono text-xs text-foreground outline-none focus:border-primary"
-                    />
-                  </label>
                 </GenerationSettings>
 
-                <label className="flex min-h-12 min-w-0 cursor-pointer items-center justify-between gap-4 rounded-xl border border-glass-border bg-input-bg px-3 text-sm text-text-secondary">
-                  <span className="min-w-0 flex-1 overflow-hidden">
-                    <span className="block font-semibold text-foreground">
-                      {t("applyStyleLabel")}
-                    </span>
-                    {stylePrompt ? (
-                      <span className="mt-0.5 block truncate text-xs text-text-muted">
-                        {stylePrompt}
-                      </span>
-                    ) : null}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={applyStyle}
-                    onChange={(event) => setApplyStyle(event.target.checked)}
-                    className="h-4 w-4 shrink-0 accent-primary"
-                    aria-label={t("applyStyleLabel")}
+                {onPreviewGeneration ? (
+                  <GenerationRequestReview
+                    fingerprint={JSON.stringify({
+                      activeImageKind,
+                      activeImagePrompt,
+                      modelName,
+                      aspectRatio,
+                      batchSize,
+                      promptTemplate,
+                    })}
+                    disabled={mutationDisabled || !activeImagePrompt.trim()}
+                    loadPreview={() => onPreviewGeneration(
+                      activeImageKind,
+                      activeImagePrompt,
+                      false,
+                      "",
+                      batchSize,
+                      {
+                        modelName: modelName || undefined,
+                        aspectRatio,
+                        templateId: promptTemplate === "custom" ? undefined : promptTemplate,
+                      },
+                    )}
                   />
-                </label>
+                ) : null}
 
                 {typeChanged ? (
                   <p className="text-xs text-status-pending-fg">
@@ -978,44 +963,6 @@ export default function CharacterWorkbench({
               value={description}
               onChange={setDescription}
             />
-            <TextAreaField
-              label={t("personaLabel")}
-              value={persona}
-              onChange={setPersona}
-            />
-            <div className="grid grid-cols-2 gap-3">
-              <Field label={t("ageLabel")} value={age} onChange={setAge} />
-              <Field
-                label={t("genderLabel")}
-                value={gender}
-                onChange={setGender}
-              />
-            </div>
-            <Field
-              label={t("clothingLabel")}
-              value={clothing}
-              onChange={setClothing}
-            />
-            <label className="block space-y-2">
-              <span className="flex justify-between text-xs font-semibold text-text-muted">
-                <span>{t("visualWeightLabel")}</span>
-                <span>{visualWeight}</span>
-              </span>
-              <input
-                type="range"
-                min="1"
-                max="5"
-                step="1"
-                value={visualWeight}
-                onChange={(event) =>
-                  setVisualWeight(
-                    normalizeVisualWeight(event.target.value),
-                  )
-                }
-                className="w-full accent-primary"
-                aria-label={t("visualWeightLabel")}
-              />
-            </label>
           </div>
         )}
       </div>

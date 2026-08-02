@@ -63,7 +63,11 @@ class PlaygroundService:
     # ------------------------------------------------------------------
 
     def create_generation(
-        self, request: GenerateRequest, *, generation_id: Optional[str] = None
+        self,
+        request: GenerateRequest,
+        *,
+        generation_id: Optional[str] = None,
+        compiled_request: Optional[dict] = None,
     ) -> PlaygroundGeneration:
         """Create a :class:`PlaygroundGeneration` record with *status=pending*,
         persist it via storage, and return it."""
@@ -78,6 +82,7 @@ class PlaygroundService:
             negative_prompt=request.negative_prompt,
             input_media=request.input_media or [],
             parameters=request.parameters or {},
+            compiled_request=compiled_request,
             batch_size=request.batch_size or 1,
             outputs=[],
             status="pending",

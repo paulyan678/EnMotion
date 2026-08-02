@@ -22,7 +22,7 @@ import {
     selectedClipStartImage,
     type ClipStartImageVariant,
 } from "@/lib/clipStartFrame";
-import { api, type VideoTask } from "@/lib/api";
+import { api, type CreateVideoTaskPayload, type VideoTask } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
 import {
     configuredSecretFields,
@@ -39,6 +39,7 @@ import {
     type VideoParams,
 } from "@/store/projectStore";
 import { toast } from "@/store/toastStore";
+import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
 
 interface VideoCreatorProps {
     onTaskCreated: (project: Project) => void;
@@ -315,6 +316,39 @@ export default function VideoCreator({
         return null;
     })();
 
+    const requestDraft = useMemo<CreateVideoTaskPayload | null>(() => {
+        if (!selectedFrame) return null;
+        const imageInput = generationMode === "i2v" && selectedImage
+            ? {
+                image_url: selectedImage.url,
+                source_image_id: selectedImage.id,
+            }
+            : {};
+        return {
+            ...imageInput,
+            frame_id: selectedFrame.id,
+            frame_type: selectedFrameType,
+            prompt: prompt.trim(),
+            duration: params.duration,
+            seed: params.seed,
+            resolution: params.resolution,
+            generate_audio: params.generateAudio,
+            batch_size: params.batchSize,
+            model: params.model,
+            generation_mode: generationMode,
+            ratio: params.ratio,
+            watermark: params.watermark,
+            workbench_tab: generationMode === "t2v" ? "direct_r2v" : "t2i_i2v",
+        };
+    }, [
+        generationMode,
+        params,
+        prompt,
+        selectedFrame,
+        selectedFrameType,
+        selectedImage,
+    ]);
+
     const generateClip = async () => {
         if (
             !currentProject
@@ -339,27 +373,11 @@ export default function VideoCreator({
             }
 
             if (!await savePrompt(prompt)) return;
-            const imageInput = generationMode === "i2v" && selectedImage
-                ? {
-                    image_url: selectedImage.url,
-                    source_image_id: selectedImage.id,
-                }
-                : {};
+            if (!requestDraft) return;
+            const compiled = await api.previewVideoTask(currentProject.id, requestDraft);
             const created = await api.createVideoTask(currentProject.id, {
-                ...imageInput,
-                frame_id: selectedFrame.id,
-                frame_type: selectedFrameType,
-                prompt: prompt.trim(),
-                duration: params.duration,
-                seed: params.seed,
-                resolution: params.resolution,
-                generate_audio: params.generateAudio,
-                batch_size: params.batchSize,
-                model: params.model,
-                generation_mode: generationMode,
-                ratio: params.ratio,
-                watermark: params.watermark,
-                workbench_tab: generationMode === "t2v" ? "direct_r2v" : "t2i_i2v",
+                ...requestDraft,
+                compiled_request_checksum: compiled.checksum,
             });
             const createdTasks = Array.isArray(created) ? created : [created];
             onTaskCreated({
@@ -650,6 +668,14 @@ export default function VideoCreator({
                                     className="glass-input w-full resize-y"
                                 />
                             </section>
+
+                            {currentProject && requestDraft ? (
+                                <GenerationRequestReview
+                                    fingerprint={JSON.stringify(requestDraft)}
+                                    loadPreview={() => api.previewVideoTask(currentProject.id, requestDraft)}
+                                    disabled={Boolean(disabledReason)}
+                                />
+                            ) : null}
 
                             {inlineError ? (
                                 <div role="alert" className="flex items-start gap-2 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-300">
