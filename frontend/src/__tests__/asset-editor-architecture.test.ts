@@ -53,4 +53,9 @@ describe("canonical Asset Editor architecture", () => {
     const playgroundPicker = source("modules/playground/AssetPickerModal.tsx");
     expect(playgroundPicker).not.toContain("SharedAssetEditor");
   });
+
+  it("keeps owner-scope implementation details out of the editor chrome", () => {
+    expect(source("assets/SharedAssetEditor.tsx")).not.toContain("ownerNotice");
+    expect(source("assets/AssetEditorShell.tsx")).not.toContain("ownerNotice");
+  });
 });

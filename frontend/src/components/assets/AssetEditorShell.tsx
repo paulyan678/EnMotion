@@ -10,7 +10,6 @@ import { useModalFocusTrap } from "@/components/common/useModalFocusTrap";
 interface AssetEditorShellProps {
   title: string;
   typeLabel: string;
-  ownerNotice?: ReactNode;
   isDirty: boolean;
   isSaving: boolean;
   saveDisabled?: boolean;
@@ -31,7 +30,6 @@ interface AssetEditorShellProps {
 export default function AssetEditorShell({
   title,
   typeLabel,
-  ownerNotice,
   isDirty,
   isSaving,
   saveDisabled = false,
@@ -68,7 +66,6 @@ export default function AssetEditorShell({
                 </span>
               </div>
               <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-                {ownerNotice}
                 <span
                   className={`inline-flex items-center gap-1 text-xs ${
                     isDirty ? "text-status-pending-fg" : "text-text-muted"

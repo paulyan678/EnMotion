@@ -156,7 +156,6 @@ export interface CharacterWorkbenchProps {
   isSavingMetadata?: boolean;
   supportsMotion?: boolean;
   motionDisabledReason?: string;
-  ownerNotice?: ReactNode;
   defaultModelName?: string;
   defaultVideoModelName?: string;
   defaultAspectRatio?: string;
@@ -222,7 +221,6 @@ export default function CharacterWorkbench({
   isSavingMetadata = false,
   supportsMotion = true,
   motionDisabledReason,
-  ownerNotice,
   defaultModelName,
   defaultVideoModelName,
   defaultAspectRatio = "9:16",
@@ -973,7 +971,6 @@ export default function CharacterWorkbench({
     <AssetEditorShell
       title={name || asset.name || t("editorTitle")}
       typeLabel={t("characterLabel")}
-      ownerNotice={ownerNotice}
       isDirty={isDirty}
       isSaving={isSavingMetadata}
       saveDisabled={!name.trim()}

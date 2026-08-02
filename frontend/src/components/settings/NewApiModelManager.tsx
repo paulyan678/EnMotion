@@ -55,10 +55,7 @@ export default function NewApiModelManager({
               key={model.id}
               className="grid gap-3 border-b border-glass-border bg-surface px-4 py-4 last:border-b-0 lg:grid-cols-[1.35fr_.55fr_.65fr_1.45fr] lg:items-center"
             >
-              <div>
-                <div className="text-sm font-semibold text-foreground">{tm(`${translationKey}.name`)}</div>
-                <div className="mt-1 text-[0.6875rem] text-text-muted">{tm(`${translationKey}.description`)}</div>
-              </div>
+              <div className="text-sm font-semibold text-foreground">{tm(`${translationKey}.name`)}</div>
               <span className="w-fit rounded-full bg-primary/10 px-2 py-1 text-[0.625rem] font-semibold uppercase text-primary">
                 {t(`capability${model.capability[0].toUpperCase()}${model.capability.slice(1)}`)}
               </span>
@@ -74,13 +71,11 @@ export default function NewApiModelManager({
                   onChange={(value) => onSecretChange(model.secretField, value)}
                   placeholder={isConfigured ? t("enterKeyToReplace") : t("enterApiKey")}
                 />
-                <code className="mt-1 block text-[0.5625rem] text-text-muted">{model.secretField}</code>
               </div>
             </div>
           );
         })}
       </div>
-      <p className="text-[0.6875rem] leading-relaxed text-text-muted">{t("secretStorageHint")}</p>
     </div>
   );
 }

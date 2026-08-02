@@ -7,10 +7,8 @@ const moduleNames = [
   "ArtDirection",
   "Cast",
   "StoryboardR2V",
-  "VideoAssembly",
   "ConsistencyVault",
   "StoryboardComposer",
-  "VideoGenerator",
 ] as const;
 
 const titleKeys = [
@@ -18,10 +16,8 @@ const titleKeys = [
   "styleTitle",
   "castTitle",
   "storyboardTitle",
-  "assemblyTitle",
   "vaultTitle",
   "storyboardComposerTitle",
-  "motionTitle",
 ] as const;
 
 describe("Episode Editor step headers", () => {
@@ -43,6 +39,18 @@ describe("Episode Editor step headers", () => {
       existsSync(resolve(process.cwd(), "src", "components", "shared", "StepHeader.tsx")),
     ).toBe(false);
   });
+
+  it.each(["VideoAssembly", "VideoGenerator"])(
+    "does not reserve vertical space for a redundant title bar in %s",
+    (moduleName) => {
+      const contents = readFileSync(
+        resolve(process.cwd(), "src", "components", "modules", `${moduleName}.tsx`),
+        "utf8",
+      );
+      expect(contents).not.toContain("StepPageHeader");
+      expect(contents).not.toContain('useTranslations("stepHeader")');
+    },
+  );
 
   it.each(["en", "zh"])("keeps only localized functional titles in %s", (locale) => {
     const messages = JSON.parse(

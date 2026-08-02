@@ -1357,40 +1357,53 @@ export default function AssetLibraryPage() {
 
         {/* 右侧 inspector（选中才出现） */}
         {selected && selectedAsset && selectedSource && (
-          <AssetInspector
-            asset={
-              selectedDetail?.key === selectedDetailKey
-                ? selectedDetail.asset
-                : selectedAsset
-            }
-            type={selected.type}
-            sourceName={selectedSource.name}
-            sourceId={selected.sourceId}
-            sourceKind={selectedSource.kind}
-            usageCount={usageCount(selectedAsset)}
-            starred={!!selectedAsset.starred}
-            favoritePending={favoritePendingKeys.has(
-              `${selectedSource.kind}:${selectedSource.rawId}:${SINGULAR[selected.type]}:${selectedAsset.id}`
-            )}
-            onClose={() => {
-              setSelected(null);
-              setSelectedContext(null);
-            }}
-            onToggleStar={() => {
-              void toggleStar(selected.sourceId, selected.assetId, selected.type);
-            }}
-            onEdit={() => setEditorTarget({
-              ownerKind: selectedSource.kind,
-              ownerId: selectedSource.rawId,
-              assetType: SINGULAR[selected.type],
-              assetId: selectedAsset.id,
-            })}
-            onDelete={() => deleteAsset(selected.sourceId, selected.assetId, selected.type)}
-            deleting={
-              deletingKey ===
-              `${selectedSource.kind}:${selectedSource.rawId}:${selected.type}:${selectedAsset.id}`
-            }
-          />
+          <>
+            <button
+              type="button"
+              aria-hidden="true"
+              tabIndex={-1}
+              data-testid="asset-inspector-backdrop"
+              onClick={() => {
+                setSelected(null);
+                setSelectedContext(null);
+              }}
+              className="fixed inset-0 z-40 cursor-default bg-transparent"
+            />
+            <AssetInspector
+              asset={
+                selectedDetail?.key === selectedDetailKey
+                  ? selectedDetail.asset
+                  : selectedAsset
+              }
+              type={selected.type}
+              sourceName={selectedSource.name}
+              sourceId={selected.sourceId}
+              sourceKind={selectedSource.kind}
+              usageCount={usageCount(selectedAsset)}
+              starred={!!selectedAsset.starred}
+              favoritePending={favoritePendingKeys.has(
+                `${selectedSource.kind}:${selectedSource.rawId}:${SINGULAR[selected.type]}:${selectedAsset.id}`
+              )}
+              onClose={() => {
+                setSelected(null);
+                setSelectedContext(null);
+              }}
+              onToggleStar={() => {
+                void toggleStar(selected.sourceId, selected.assetId, selected.type);
+              }}
+              onEdit={() => setEditorTarget({
+                ownerKind: selectedSource.kind,
+                ownerId: selectedSource.rawId,
+                assetType: SINGULAR[selected.type],
+                assetId: selectedAsset.id,
+              })}
+              onDelete={() => deleteAsset(selected.sourceId, selected.assetId, selected.type)}
+              deleting={
+                deletingKey ===
+                `${selectedSource.kind}:${selectedSource.rawId}:${selected.type}:${selectedAsset.id}`
+              }
+            />
+          </>
         )}
       </div>
 

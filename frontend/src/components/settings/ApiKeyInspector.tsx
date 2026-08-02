@@ -73,9 +73,6 @@ export default function ApiKeyInspector() {
                 {t("adminOnly")}
               </span>
             </div>
-            <p className="mt-1 max-w-3xl text-[0.6875rem] leading-relaxed text-text-muted">
-              {t("inspectKeysDesc")}
-            </p>
           </div>
         </div>
 
@@ -161,12 +158,7 @@ export default function ApiKeyInspector() {
                     item.in_use ? "bg-primary/5" : "bg-surface"
                   }`}
                 >
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-foreground">{modelName}</div>
-                    <code className="mt-1 block break-all text-[0.5625rem] text-text-muted">
-                      {item.api_key_field}
-                    </code>
-                  </div>
+                  <div className="min-w-0 text-xs font-semibold text-foreground">{modelName}</div>
                   <div className="flex flex-wrap gap-1.5 md:block">
                     <span className="inline-flex rounded-full bg-hover-bg px-2 py-1 text-[0.625rem] font-semibold text-text-secondary">
                       {capability}

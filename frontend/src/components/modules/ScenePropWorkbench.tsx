@@ -101,7 +101,6 @@ export interface ScenePropWorkbenchProps {
   isSavingMetadata?: boolean;
   supportsMotion?: boolean;
   motionDisabledReason?: string;
-  ownerNotice?: ReactNode;
   defaultModelName?: string;
   defaultVideoModelName?: string;
   defaultAspectRatio?: string;
@@ -130,7 +129,6 @@ export default function ScenePropWorkbench({
   isSavingMetadata = false,
   supportsMotion = true,
   motionDisabledReason,
-  ownerNotice,
   defaultModelName,
   defaultVideoModelName,
   defaultAspectRatio,
@@ -612,7 +610,6 @@ export default function ScenePropWorkbench({
       typeLabel={
         assetType === "scene" ? t("sceneLabel") : t("propLabel")
       }
-      ownerNotice={ownerNotice}
       isDirty={isDirty}
       isSaving={isSavingMetadata}
       saveDisabled={!name.trim()}

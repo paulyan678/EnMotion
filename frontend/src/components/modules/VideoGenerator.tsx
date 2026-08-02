@@ -1,20 +1,17 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { useTranslations } from "next-intl";
 import { useProjectStore, type Project } from "@/store/projectStore";
 import VideoCreator from "./VideoCreator";
 import VideoSidebar from "./VideoSidebar";
 import { VideoTask } from "@/lib/api";
 import { observeProjectTasks } from "@/lib/projectTaskObserver";
 import { resolveModelId } from "@/lib/modelCatalog";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import ResizableSidePanel from "@/components/layout/ResizableSidePanel";
 
 const MOTION_RIGHT_PANEL_STORAGE_KEY = "enmotion:motion:right-panel";
 
 export default function VideoGenerator() {
-    const tStep = useTranslations("stepHeader");
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
     const currentProjectId = currentProject?.id;
@@ -110,9 +107,6 @@ export default function VideoGenerator() {
 
     return (
         <div className="flex flex-col h-full w-full overflow-hidden">
-            <StepPageHeader
-                title={tStep("motionTitle")}
-            />
             <div className="flex min-h-0 flex-1 overflow-hidden">
                 <div className="min-w-0 flex-1">
                     <VideoCreator

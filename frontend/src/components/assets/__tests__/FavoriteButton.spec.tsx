@@ -18,14 +18,19 @@ describe("FavoriteButton", () => {
 
     const addButton = screen.getByRole("button", { name: add });
     expect(addButton).toHaveAttribute("aria-pressed", "false");
-    expect(addButton).toHaveClass("min-h-11", "min-w-11", "bg-black/85");
+    expect(addButton).toHaveClass("min-h-11", "min-w-11");
+    expect(screen.getByTestId("favorite-button-visual")).toHaveClass(
+      "h-8",
+      "w-8",
+      "bg-black/85",
+    );
     fireEvent.click(addButton);
     expect(onChange).toHaveBeenCalledWith(true);
 
     rendered.rerender(<FavoriteButton pressed onChange={onChange} />);
     const removeButton = screen.getByRole("button", { name: remove });
     expect(removeButton).toHaveAttribute("aria-pressed", "true");
-    expect(removeButton).toHaveClass("bg-status-starred-bg");
+    expect(screen.getByTestId("favorite-button-visual")).toHaveClass("bg-status-starred-bg");
   });
 
   it("deduplicates activation while a server write is pending", () => {

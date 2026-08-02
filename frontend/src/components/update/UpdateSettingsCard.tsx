@@ -36,9 +36,6 @@ export default function UpdateSettingsCard() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h3 id="desktop-update-title" className="text-sm font-semibold text-foreground">{t("title")}</h3>
-          <p className="mt-1 text-xs leading-relaxed text-text-muted">
-            {state.currentVersion ? t("currentVersion", { version: state.currentVersion }) : t("desktopOnly")}
-          </p>
           {state.availableVersion && state.status !== "idle" && (
             <p className="mt-1 text-xs font-medium text-primary">{t("availableVersion", { version: state.availableVersion })}</p>
           )}
@@ -67,11 +64,9 @@ export default function UpdateSettingsCard() {
           <div className="h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-label={t("downloadProgress")} aria-valuemin={percent === null ? undefined : 0} aria-valuemax={percent === null ? undefined : 100} aria-valuenow={percent ?? undefined}>
             <div className="h-full rounded-full bg-primary transition-[width] duration-fast" style={{ width: `${percent ?? 35}%` }} />
           </div>
-          <p className="mt-2 text-xs text-text-muted">{t("backgroundHint")}</p>
         </div>
       )}
 
-      {state.status === "ready" && <p className="mt-3 text-xs text-text-muted">{t("restartHint")}</p>}
       {state.releaseNotes && (state.status === "available" || state.status === "ready") && (
         <details className="mt-3 text-xs text-text-secondary">
           <summary className="cursor-pointer font-semibold text-foreground">{t("releaseNotes")}</summary>
