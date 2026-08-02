@@ -426,6 +426,30 @@ DEFAULT_STORYBOARD_EXTRACTION_PROMPT = """# 角色
 """
 
 
+# Generation-time text composer defaults. These are intentionally separated
+# into editable creative instructions and a locked response contract so every
+# provider-bound byte can be reviewed without letting an accidental schema edit
+# make structured extraction unreliable.
+TEXT_OPERATION_DEFAULT_INSTRUCTIONS: Dict[str, str] = {
+    "entity_extraction": """你是一名专业的分镜师与编剧。分析剧本文本，为影视制作提取角色、场景和道具。
+所有名称与描述使用简体中文。角色描述只保留长期稳定的外形、年龄、性别与服装特征；不要把临时动作或表情写入角色设定。场景描述应覆盖光线、氛围和关键空间元素。""",
+    "style_analysis": """你是一名专业的电影美术指导和视觉风格顾问。根据剧本的题材、情绪和氛围，推荐三种彼此明显不同、且适合整部作品的视觉风格。
+正向与负向提示词只描述光影、色调、材质、艺术媒介、氛围和镜头语言，不要写入具体人物、服装、道具或地点。""",
+    "storyboard_extraction": """你是一名电影级分镜师。把剧本文本拆解成连续分镜，每帧只保留一个主要动作，并覆盖剧本中的全部视觉节拍。
+实体名称必须匹配已提取的角色、场景和道具；多人对白必须拆帧；景别、角度、运镜和时长应服务于叙事。""",
+}
+
+TEXT_OPERATION_OUTPUT_CONTRACTS: Dict[str, str] = {
+    "entity_extraction": """只返回合法 JSON 对象，不要添加 Markdown 或解释。根对象必须包含 characters、scenes、props 三个数组。
+characters 每项包含 id、name、description、age、gender、clothing、visual_weight；scenes 每项包含 id、name、description、visual_weight；props 每项包含 id、name、description。name 与 description 必须是非空字符串。""",
+    "style_analysis": """只返回合法 JSON 对象，不要添加 Markdown 或解释。格式必须为 {\"recommendations\": [...]}，且 recommendations 恰好包含三项。
+每项必须包含非空字符串字段 name、description、reason、positive_prompt、negative_prompt。""",
+    "storyboard_extraction": """只返回合法 JSON 对象，不要添加 Markdown 或解释。格式必须为 {\"frames\": [...]}，frames 必须是非空数组。
+每帧包含 scene_ref_name、character_ref_names、prop_ref_names、action_summary、shot_size、camera_angle、camera_movement、dialogue、speaker、duration。
+shot_size 从 大特写、特写、近景、中景、全景、远景、大远景 中选择；camera_angle 从 平视、俯视、仰视、鸟瞰、蚁视、过肩、荷兰角、主观视角 中选择；duration 为 3 到 10 的整数。""",
+}
+
+
 class ScriptProcessor:
     def __init__(self, api_key: str = None):
         self._api_key = api_key
@@ -793,8 +817,8 @@ class ScriptProcessor:
                 raise TypeError("Style response root must be an object")
 
             recommendations = data.get("recommendations")
-            if not isinstance(recommendations, list) or not recommendations:
-                raise ValueError("Style response must contain recommendations")
+            if not isinstance(recommendations, list) or len(recommendations) != 3:
+                raise ValueError("Style response must contain exactly three recommendations")
 
             required_fields = (
                 "name",

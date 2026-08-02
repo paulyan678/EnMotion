@@ -21,17 +21,30 @@ const titleKeys = [
 ] as const;
 
 describe("Episode Editor step headers", () => {
-  it.each(moduleNames)("uses the compact shared header in %s", (moduleName) => {
+  it.each(moduleNames)("removes the redundant visible title bar in %s", (moduleName) => {
     const source = readFileSync(
       resolve(process.cwd(), "src", "components", "modules", `${moduleName}.tsx`),
       "utf8",
     );
 
-    expect(source).toContain("<StepPageHeader");
+    expect(source).toContain('className="sr-only"');
+    expect(source).not.toContain("<StepPageHeader");
     expect(source).not.toContain("<StepHeader");
     expect(source).not.toContain("StepPill");
     expect(source).not.toMatch(/\b(?:stepNumber|englishName|pills)=/);
     expect(source).not.toContain('subtitle={tStep(');
+  });
+
+  it.each([
+    ["ScriptProcessor", "data-scroll-away-actions"],
+    ["StoryboardComposer", "<ScrollFlowActions"],
+    ["StoryboardR2V", "<ScrollFlowActions"],
+  ])("keeps %s actions inside scroll-away content", (moduleName, marker) => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src", "components", "modules", `${moduleName}.tsx`),
+      "utf8",
+    );
+    expect(source).toContain(marker);
   });
 
   it("removes the obsolete decorative header implementation", () => {

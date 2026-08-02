@@ -13,7 +13,6 @@ import { subscribeToAssetLibraryChanges } from "@/lib/assetLibrarySync";
 import ResizableSidePanel, {
     EPISODE_EDITOR_PANEL_STORAGE_KEYS,
 } from "@/components/layout/ResizableSidePanel";
-import { useAuth } from "@/components/auth/AuthProvider";
 import { api } from "@/lib/api";
 import ContentMetadataDialog, {
     type ContentMetadataValue,
@@ -60,7 +59,6 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
     const t = useTranslations("project");
     const tp = useTranslations("pipeline");
     const tm = useTranslations("contentMetadata");
-    const { serverMode } = useAuth();
     const { registerNavigation } = useTopBarNavigation();
 
     const selectProject = useProjectStore((state) => state.selectProject);
@@ -222,13 +220,13 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
     ), [currentProject, currentProjectTitle, tm]);
 
     useEffect(() => {
-        if (!serverMode || !currentProjectId) return;
+        if (!currentProjectId) return;
         return registerNavigation({
             segments,
             currentContent: navigationTitle,
             description: currentProject?.description || undefined,
         });
-    }, [currentProject?.description, currentProjectId, navigationTitle, registerNavigation, segments, serverMode]);
+    }, [currentProject?.description, currentProjectId, navigationTitle, registerNavigation, segments]);
 
     const handleSaveMetadata = async (value: ContentMetadataValue) => {
         if (!currentProject) return;
@@ -264,8 +262,7 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                 <CreativeCanvas />
             </div>
 
-            {/* Left Sidebar — desktop keeps its breadcrumb fallback; server mode
-                renders the path in the persistent account bar above the editor. */}
+            {/* Navigation lives in the collapsible workspace bar above the editor. */}
             <ResizableSidePanel
                 side="left"
                 storageKey={EPISODE_EDITOR_PANEL_STORAGE_KEYS.left}
@@ -279,17 +276,6 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                     activeStep={activeStep}
                     onStepChange={setActiveStep}
                     steps={steps}
-                    breadcrumbSegments={serverMode ? undefined : segments}
-                    headerActions={!serverMode ? (
-                        <button
-                            type="button"
-                            onClick={() => setEditingMetadata(true)}
-                            className="flex min-h-9 items-center gap-2 rounded-lg px-2.5 text-xs text-text-secondary transition-colors hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                        >
-                            <Pencil size={13} aria-hidden="true" />
-                            {tm("editAction")}
-                        </button>
-                    ) : undefined}
                     topSlot={
                         currentProject?.series_id ? (
                             <EpisodeMiniList

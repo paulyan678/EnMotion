@@ -1,18 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useLocale, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
 import { Wand2, Loader2, User, MapPin, Box, ChevronRight, ChevronLeft, Save, Sparkles, Plus, Trash2, X, ScrollText } from "lucide-react";
 import { api, crudApi } from "@/lib/api";
 import { useProjectStore } from "@/store/projectStore";
 import { toast } from "@/store/toastStore";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import PreviousEpisodeSummary from "@/components/modules/PreviousEpisodeSummary";
 import { notifyAssetLibraryChanged } from "@/lib/assetLibrarySync";
 import ResizableSidePanel, {
     EPISODE_EDITOR_PANEL_STORAGE_KEYS,
 } from "@/components/layout/ResizableSidePanel";
+import TextGenerationRequestDialog from "@/components/generation/TextGenerationRequestDialog";
 
 interface ScriptNode {
     type: "character" | "scene" | "prop";
@@ -35,13 +35,11 @@ interface ScriptDraft {
 export default function ScriptProcessor() {
     const ts = useTranslations("script");
     const tc = useTranslations("common");
-    const locale = useLocale();
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
     const scriptDrafts = useProjectStore((state) => state.scriptDrafts);
     const markScriptDraft = useProjectStore((state) => state.markScriptDraft);
     const confirmScriptDraft = useProjectStore((state) => state.confirmScriptDraft);
-    const analyzeProject = useProjectStore((state) => state.analyzeProject);
     const isAnalyzing = useProjectStore((state) => state.isAnalyzing);
 
     // Initialize from project data. Fallback to snake_case original_text
@@ -67,6 +65,8 @@ export default function ScriptProcessor() {
     const saveLoop = useRef<Promise<void> | null>(null);
     const observedDirtyTextByProject = useRef(new Map<string, string>());
     const [isSavingScript, setIsSavingScript] = useState(false);
+    const [scriptScrolled, setScriptScrolled] = useState(false);
+    const [textComposerOpen, setTextComposerOpen] = useState(false);
     const [nodes, setNodes] = useState<ScriptNode[]>([]);
 
     // UI State
@@ -224,7 +224,7 @@ export default function ScriptProcessor() {
         setNodes(newNodes);
     }, [currentProject?.id, currentProject?.characters, currentProject?.scenes, currentProject?.props]);
 
-    const handleAnalyze = async () => {
+    const handleAnalyze = () => {
         if (!script.trim()) {
             toast.warning(ts("scriptEmpty"), {
                 projectId: currentProject?.id,
@@ -233,45 +233,29 @@ export default function ScriptProcessor() {
             return;
         }
         if (!currentProject?.id) return;
-        const projectId = currentProject.id;
-        const projectTitle = currentProject.title;
-        useProjectStore.setState({ isAnalyzing: true });
-        const toastId = toast.progress(ts("analyzingScript"), {
-            projectId,
-            projectTitle,
-            body: ts("analyzingScriptBody"),
+        setTextComposerOpen(true);
+    };
+
+    const handleExtractionCompleted = (preview: {
+        characters: unknown[];
+        scenes: unknown[];
+        props: unknown[];
+        preview_revision?: string;
+    }) => {
+        useProjectStore.setState({
+            pendingExtraction: preview,
+            pendingExtractionScript: script,
+            isAnalyzing: false,
         });
-        try {
-            const preview = await api.extractPreview(projectId, script);
-            toast.update(toastId, {
-                kind: "success",
-                title: ts("analysisDone"),
-                body: ts("analysisDoneBody", {
-                    c: preview.characters.length,
-                    s: preview.scenes.length,
-                    p: preview.props.length,
-                }),
-                autoCloseMs: 5000,
-            });
-            useProjectStore.setState({
-                pendingExtraction: preview,
-                pendingExtractionScript: script,
-                isAnalyzing: false,
-            });
-        } catch (error: any) {
-            useProjectStore.setState({ isAnalyzing: false });
-            console.error("Failed to analyze script:", error);
-            const errorMessage = error?.response?.data?.detail || error?.message || "未知错误";
-            toast.update(toastId, {
-                kind: "error",
-                title: ts("analysisFailedShort"),
-                body: locale === "zh" ? ts("analysisFailed") : String(errorMessage).slice(0, 240),
-                action: {
-                    label: ts("retry"),
-                    onClick: () => { handleAnalyze(); },
-                },
-            });
-        }
+        toast.success(ts("analysisDone"), {
+            projectId: currentProject?.id,
+            projectTitle: currentProject?.title,
+            body: ts("analysisDoneBody", {
+                c: preview.characters.length,
+                s: preview.scenes.length,
+                p: preview.props.length,
+            }),
+        });
     };
 
     const handleDeleteNode = async (node: ScriptNode, e: React.MouseEvent) => {
@@ -346,9 +330,18 @@ export default function ScriptProcessor() {
         <div className="relative flex h-full w-full overflow-hidden">
             {/* Left: main script editor */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                <StepPageHeader
-                    title={tStep("scriptTitle")}
-                    trailing={(
+                <h1 className="sr-only">{tStep("scriptTitle")}</h1>
+                <div
+                    data-scroll-away-actions="true"
+                    aria-hidden={scriptScrolled}
+                    inert={scriptScrolled ? true : undefined}
+                    className={`shrink-0 overflow-hidden px-6 transition-[max-height,opacity,transform,padding] duration-200 ease-out ${
+                        scriptScrolled
+                            ? "max-h-0 -translate-y-2 py-0 opacity-0 pointer-events-none"
+                            : "max-h-20 translate-y-0 pb-2 pt-4 opacity-100"
+                    }`}
+                >
+                    <div className="flex justify-end">
                         <button
                             type="button"
                             onClick={handleAnalyze}
@@ -358,8 +351,8 @@ export default function ScriptProcessor() {
                             {isAnalyzing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                             <span>{isAnalyzing ? ts("analyzingScript") : ts("extractEntities")}</span>
                         </button>
-                    )}
-                />
+                    </div>
+                </div>
                 <div className="flex-1 relative p-6 bg-surface overflow-hidden">
                     <textarea
                         value={script}
@@ -404,6 +397,9 @@ export default function ScriptProcessor() {
                                 void queueScriptSave(activeDraft.current);
                             }
                         }}
+                        onScroll={(event) => {
+                            setScriptScrolled(event.currentTarget.scrollTop > 4);
+                        }}
                         aria-busy={isSavingScript}
                         placeholder={ts("scriptPlaceholder")}
                         className="w-full h-full bg-transparent text-text-secondary font-mono text-base leading-relaxed resize-none focus:outline-none"
@@ -426,6 +422,17 @@ export default function ScriptProcessor() {
             >
                 <PreviousEpisodeSummary scriptId={currentProject?.id ?? null} />
             </ResizableSidePanel>
+
+            {currentProject ? (
+                <TextGenerationRequestDialog
+                    open={textComposerOpen}
+                    scriptId={currentProject.id}
+                    operation="entity_extraction"
+                    initialSourceText={script}
+                    onClose={() => setTextComposerOpen(false)}
+                    onCompleted={handleExtractionCompleted}
+                />
+            ) : null}
 
         </div>
     );

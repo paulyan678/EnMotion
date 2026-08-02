@@ -21,6 +21,7 @@
 # analyze_script_for_styles. All others are `def` for a reason.
 # ─────────────────────────────────────────────────────────────────────────────
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -604,6 +605,47 @@ class _HybridTextActivity:
         except Exception:
             logger.exception("Unable to finish managed text activity")
         return False
+
+
+_TEXT_EXECUTION_CACHE_TTL_SECONDS = 600
+_text_execution_cache: dict[str, tuple[float, Any]] = {}
+_text_execution_locks: dict[str, threading.Lock] = {}
+_text_execution_guard = threading.Lock()
+
+
+def _text_execution_key(script_id: str, compiled_request_id: str) -> str:
+    tenant = get_tenant(required=False)
+    workspace_id = tenant.workspace_id if tenant is not None else "local"
+    return f"{workspace_id}:{script_id}:{compiled_request_id}"
+
+
+def _text_execution_lock(key: str) -> threading.Lock:
+    with _text_execution_guard:
+        return _text_execution_locks.setdefault(key, threading.Lock())
+
+
+def _cached_text_execution(key: str) -> Any | None:
+    with _text_execution_guard:
+        cached = _text_execution_cache.get(key)
+        if cached is None:
+            return None
+        created_at, value = cached
+        if time.time() - created_at > _TEXT_EXECUTION_CACHE_TTL_SECONDS:
+            _text_execution_cache.pop(key, None)
+            _text_execution_locks.pop(key, None)
+            return None
+        return copy.deepcopy(value)
+
+
+def _store_text_execution(key: str, value: Any) -> None:
+    cache_value = value
+    if isinstance(value, JSONResponse):
+        try:
+            cache_value = json.loads(value.body.decode("utf-8"))
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+            cache_value = value
+    with _text_execution_guard:
+        _text_execution_cache[key] = (time.time(), copy.deepcopy(cache_value))
 
 
 def _project_text_activity_metadata(
@@ -2112,6 +2154,29 @@ class UpdateScriptTextRequest(BaseModel):
     text: str = Field(max_length=2_000_000)
 
 
+TEXT_GENERATION_OPERATIONS = {
+    "entity_extraction",
+    "style_analysis",
+    "storyboard_extraction",
+}
+
+
+class TextGenerationRequest(BaseModel):
+    operation: str = Field(max_length=64)
+    model: str = Field(min_length=1, max_length=160)
+    instructions: str = Field(min_length=1, max_length=200_000)
+    source_text: str = Field(min_length=1, max_length=2_000_000)
+    compiled_request_checksum: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("operation")
+    @classmethod
+    def validate_operation(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in TEXT_GENERATION_OPERATIONS:
+            raise ValueError("Unsupported text generation operation")
+        return normalized
+
+
 class UpdateProjectMetadataRequest(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=20_000)
@@ -2148,6 +2213,166 @@ def update_script_text(script_id: str, request: UpdateScriptTextRequest):
     script.updated_at = time.time()
     pipeline._save_data()
     return signed_response(script)
+
+
+@app.get("/projects/{script_id}/text-generation/config")
+def text_generation_config(script_id: str, operation: str = Query(..., max_length=64)):
+    """Return the visible, per-run defaults for a structured text action."""
+
+    try:
+        return pipeline.text_generation_config(script_id, operation.strip().lower())
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Script not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/projects/{script_id}/text-generation/preview")
+def preview_text_generation(script_id: str, request: TextGenerationRequest):
+    """Compile the exact provider messages without making a billable call."""
+
+    try:
+        return pipeline.compile_text_generation_request(
+            script_id,
+            request.operation,
+            instructions=request.instructions,
+            source_text=request.source_text,
+            model=request.model,
+        )
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Script not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@app.post("/projects/{script_id}/text-generation/execute")
+def execute_text_generation(script_id: str, request: TextGenerationRequest):
+    """Execute exactly the text request reviewed by the generation composer."""
+
+    try:
+        if not request.compiled_request_checksum:
+            raise HTTPException(
+                status_code=409,
+                detail="Review the provider request before running it.",
+            )
+        # A completed mutation changes the project fingerprint, so a
+        # response-loss retry must be checked before recompiling current state.
+        cache_key = _text_execution_key(script_id, request.compiled_request_checksum)
+        cached = _cached_text_execution(cache_key)
+        if cached is not None:
+            return cached
+
+        compiled = pipeline.compile_text_generation_request(
+            script_id,
+            request.operation,
+            instructions=request.instructions,
+            source_text=request.source_text,
+            model=request.model,
+        )
+        try:
+            assert_generation_checksum(compiled, request.compiled_request_checksum)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        execution_lock = _text_execution_lock(cache_key)
+        with execution_lock:
+            cached = _cached_text_execution(cache_key)
+            if cached is not None:
+                return cached
+
+            script, source_route, source_context = _project_text_activity_metadata(script_id)
+            if script is None:
+                raise HTTPException(status_code=404, detail="Script not found")
+            detail = {
+                "entity_extraction": "提取角色、场景与道具",
+                "style_analysis": "分析视觉风格",
+                "storyboard_extraction": "生成分镜结构",
+            }[request.operation]
+            activity_prompt = "\n\n---\n\n".join(
+                str(item.get("prompt") or "")
+                for item in compiled["provider_requests"]
+            )
+            system_template = pipeline.text_generation_system_template(
+                request.operation,
+                request.instructions,
+            )
+            selected_model = str(compiled["provider_requests"][0]["model"])
+
+            with _HybridTextActivity(
+                detail=detail,
+                prompt=activity_prompt,
+                model_name=selected_model,
+                source_route=source_route,
+                source_context=source_context,
+                parameters={
+                    "operation": request.operation,
+                    "compiled_request_id": compiled["compiled_request_id"],
+                },
+            ):
+                if request.operation == "entity_extraction":
+                    extraction_template = (
+                        f"{system_template}\n\n# 剧本内容\n{{text}}"
+                    )
+                    extracted, revision = pipeline.extract_preview(
+                        script_id,
+                        request.source_text,
+                        instructions=extraction_template,
+                        model=selected_model,
+                    )
+                    result: Any = {
+                        "characters": [item.model_dump() for item in extracted.characters],
+                        "scenes": [item.model_dump() for item in extracted.scenes],
+                        "props": [item.model_dump() for item in extracted.props],
+                        "preview_revision": revision,
+                        "compiled_request": compiled,
+                    }
+                elif request.operation == "style_analysis":
+                    recommendations = pipeline.script_processor.analyze_script_for_styles(
+                        request.source_text,
+                        system_template,
+                        selected_model,
+                    )
+                    result = {
+                        "recommendations": recommendations,
+                        "compiled_request": compiled,
+                    }
+                else:
+                    storyboard_template = (
+                        f"{system_template}\n\n# 已提取实体\n{{entities_str}}"
+                        f"\n\n# 剧本内容\n{{text}}"
+                    )
+                    updated = pipeline.analyze_text_to_frames(
+                        script_id,
+                        request.source_text,
+                        instructions=storyboard_template,
+                        model=selected_model,
+                    )
+                    result = signed_response(updated)
+
+            _store_text_execution(cache_key, result)
+            return result
+    except HTTPException:
+        raise
+    except AssemblyMutationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except StyleAnalysisError as exc:
+        status_code = {
+            "missing_config": 503,
+            "provider_timeout": 504,
+            "provider_error": 502,
+            "malformed_response": 502,
+        }.get(exc.reason, 502)
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": "style_analysis_failed",
+                "reason": exc.reason,
+                "message": exc.message,
+            },
+        ) from None
+    except (ValueError, MissingNewAPIKeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Structured text generation failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.put("/projects/{script_id}/reparse")

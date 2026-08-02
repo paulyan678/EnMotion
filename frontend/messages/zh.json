@@ -422,6 +422,8 @@
     "offlineBannerText": "网络已断开 — 重新连接后可继续操作",
     "collapseLeftPanel": "收起左侧面板",
     "restoreLeftPanel": "展开左侧面板",
+    "collapseTopNavigation": "收起工作区导航",
+    "restoreTopNavigation": "展开工作区导航",
     "resizeLeftPanel": "调整左侧面板宽度",
     "collapseRightPanel": "收起右侧面板",
     "restoreRightPanel": "展开右侧面板",
@@ -2641,6 +2643,9 @@
     "modeText": "文本生成",
     "modeImage": "图像生成",
     "modeVideo": "视频生成",
+    "modeEntityExtraction": "实体提取",
+    "modeStyleAnalysis": "剧本风格分析",
+    "modeStoryboardExtraction": "分镜生成",
     "modeGeneration": "内容生成",
     "parameterDuration": "时长",
     "parameterResolution": "分辨率",
@@ -2661,6 +2666,21 @@
     "composeTitle": "审核并生成",
     "generate": "生成",
     "submit": "提交生成",
-    "cancel": "取消"
+    "cancel": "取消",
+    "textComposerDescription": "选择兼容模型，并审核发送给服务商的全部内容。本次修改仅用于当前任务。",
+    "textRunSettings": "请求设置",
+    "textInstructions": "任务指令",
+    "textOutputContract": "必须遵守的输出契约",
+    "textSourceContent": "源内容",
+    "locked": "已锁定",
+    "textRun": "发送请求",
+    "textRunning": "请求处理中…",
+    "textConfigFailed": "无法加载请求配置。",
+    "textExecutionFailed": "请求失败，请检查发送内容和模型后重试。",
+    "textOperations": {
+      "entity_extraction": "提取实体",
+      "style_analysis": "分析剧本",
+      "storyboard_extraction": "生成分镜"
+    }
   }
 }

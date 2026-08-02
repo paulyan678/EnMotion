@@ -43,11 +43,12 @@ function EditorWithNavigation() {
 describe("AuthenticatedViewport", () => {
   beforeEach(() => {
     authState.serverMode = true;
+    authState.status = "authenticated";
     window.location.hash = "#/series/series-1/episode/episode-1";
     vi.clearAllMocks();
   });
 
-  it("keeps the editor path and account controls together in the persistent top bar", async () => {
+  it("keeps editor navigation without account controls and lets it collapse upward", async () => {
     renderWithIntl(
       <AuthenticatedViewport>
         <EditorWithNavigation />
@@ -67,10 +68,15 @@ describe("AuthenticatedViewport", () => {
       "lg:block",
     );
     expect(within(topBar).getByRole("button", { name: "面板设置" })).toBeInTheDocument();
-    expect(within(topBar).getByText("admin")).toBeInTheDocument();
+    expect(within(topBar).queryByText("admin")).not.toBeInTheDocument();
 
     fireEvent.click(within(topBar).getByText("穿越成后宫小厨娘"));
     expect(window.location.hash).toBe("#/series/series-1");
+
+    fireEvent.click(within(topBar).getByRole("button", { name: "收起工作区导航" }));
+    expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "展开工作区导航" }));
+    expect(await screen.findByRole("banner")).toBeInTheDocument();
   });
 
   it("leaves desktop mode unchanged when no account bar exists", () => {
@@ -84,5 +90,21 @@ describe("AuthenticatedViewport", () => {
 
     expect(screen.getByText("桌面内容")).toBeInTheDocument();
     expect(screen.queryByRole("banner")).not.toBeInTheDocument();
+  });
+
+  it("provides the same collapsible editor navigation in desktop mode", async () => {
+    authState.serverMode = false;
+    authState.status = "disabled";
+
+    renderWithIntl(
+      <AuthenticatedViewport>
+        <EditorWithNavigation />
+      </AuthenticatedViewport>,
+    );
+
+    const topBar = await screen.findByRole("banner");
+    expect(within(topBar).getByText("穿越成后宫小厨娘")).toBeInTheDocument();
+    fireEvent.click(within(topBar).getByRole("button", { name: "收起工作区导航" }));
+    expect(screen.getByRole("button", { name: "展开工作区导航" })).toBeInTheDocument();
   });
 });

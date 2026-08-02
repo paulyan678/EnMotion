@@ -3,6 +3,7 @@
 import { Activity, LayoutGrid, Layers, Wand2, Settings } from "lucide-react";
 import { useTranslations } from "next-intl";
 import clsx from "clsx";
+import AccountNavigationControls from "@/components/auth/AccountNavigationControls";
 
 export type GlobalTab = "workspace" | "library" | "playground" | "apiCalls" | "settings";
 
@@ -93,6 +94,8 @@ export default function GlobalSidebar({ activeTab, onTabChange }: GlobalSidebarP
           />
         ))}
       </nav>
+
+      <AccountNavigationControls />
 
       {/* Settings pinned bottom */}
       <div className="p-2.5 border-t border-glass-border">

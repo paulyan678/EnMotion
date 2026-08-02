@@ -1,15 +1,17 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import type { RefObject } from "react";
 import { useTranslations } from "next-intl";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Palette, Wand2, Plus, Check, ChevronRight, Lock, RotateCcw, ArrowUp, AlertTriangle, X, Image as ImageIcon, Pencil } from "lucide-react";
-import { useProjectStore, type StyleConfig, type StylePreset, type StylePresetCategory } from "@/store/projectStore";
+import { useProjectStore, type ArtDirection as ArtDirectionState, type StyleConfig, type StylePreset, type StylePresetCategory } from "@/store/projectStore";
 import { api } from "@/lib/api";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 import { getBundledAssetUrl } from "@/lib/bundledAssetUrl";
 import { toast } from "@/store/toastStore";
+import ModalPortal from "@/components/common/ModalPortal";
+import TextGenerationRequestDialog from "@/components/generation/TextGenerationRequestDialog";
 
 export default function ArtDirection() {
     const ta = useTranslations("artDirection");
@@ -17,8 +19,6 @@ export default function ArtDirection() {
     const {
         currentProject,
         updateProject,
-        isAnalyzingArtStyle,
-        analyzeArtStyle
     } = useProjectStore();
 
     const [selectedStyle, setSelectedStyle] = useState<StyleConfig | null>(null);
@@ -48,6 +48,7 @@ export default function ArtDirection() {
     const [editingPositive, setEditingPositive] = useState("");
     const [editingNegative, setEditingNegative] = useState("");
     const [isSaving, setIsSaving] = useState(false);
+    const [textComposerOpen, setTextComposerOpen] = useState(false);
 
     const filteredPresets = useMemo(() => {
         if (activeCategory === "all") return presets;
@@ -174,20 +175,20 @@ export default function ArtDirection() {
         return () => { cancelled = true; };
     }, []);
 
-    const handleAnalyze = async () => {
+    const handleAnalyze = () => {
         if (!currentProject) return;
-        try {
-            await analyzeArtStyle(
-                currentProject.id,
-                currentProject.originalText || currentProject.title
-            );
-        } catch (error) {
-            console.error("Failed to analyze script:", error);
-            toast.error(ta("analysisFailed"), {
-                projectId: currentProject?.id,
-                projectTitle: currentProject?.title,
-            });
-        }
+        setTextComposerOpen(true);
+    };
+
+    const handleStyleAnalysisCompleted = (result: { recommendations?: StyleConfig[] }) => {
+        if (!currentProject) return;
+        const recommendations = result.recommendations ?? [];
+        const nextArtDirection = {
+            ...(currentProject.art_direction ?? {}),
+            ai_recommendations: recommendations,
+        } as ArtDirectionState;
+        setAiRecommendations(recommendations);
+        updateProject(currentProject.id, { art_direction: nextArtDirection });
     };
 
     const toStyleConfig = (style: StyleConfig | StylePreset): StyleConfig => {
@@ -381,9 +382,7 @@ export default function ArtDirection() {
 
     return (
         <div className="flex flex-col h-full w-full overflow-hidden">
-            <StepPageHeader
-                title={tStep("styleTitle")}
-            />
+            <h1 className="sr-only">{tStep("styleTitle")}</h1>
 
             {/* Scrollable content — full width */}
             <div className="flex-1 min-h-0 overflow-y-auto p-8 space-y-8 bg-surface">
@@ -477,12 +476,10 @@ export default function ArtDirection() {
                         </h3>
                         <WorkflowActionButton
                             variant="secondary"
-                            loading={isAnalyzingArtStyle}
                             leftIcon={<Wand2 />}
                             onClick={handleAnalyze}
-                            disabled={isAnalyzingArtStyle}
                         >
-                            {isAnalyzingArtStyle ? ta("analyzing") : ta("analyzeScript")}
+                            {ta("analyzeScript")}
                         </WorkflowActionButton>
                     </div>
                     <div className="grid grid-cols-3 gap-3">
@@ -602,58 +599,74 @@ export default function ArtDirection() {
             </div>
 
             {/* AI Recommendation Detail Modal */}
-            <AnimatePresence>
-                {aiModalStyle && (
-                    <AIRecommendationModal
-                        style={aiModalStyle}
-                        isSelected={selectedStyle?.id === aiModalStyle.id}
-                        editing={aiModalEditing}
-                        positivePrompt={aiModalPositive}
-                        negativePrompt={aiModalNegative}
-                        onPositiveChange={setAiModalPositive}
-                        onNegativeChange={setAiModalNegative}
-                        onStartEditing={() => setAiModalEditing(true)}
-                        onApply={handleAiModalApply}
-                        onClose={closeAiModal}
-                    />
-                )}
-            </AnimatePresence>
+            {aiModalStyle && (
+                <ModalPortal isOpen onClose={closeAiModal}>
+                    {(dialogRef) => (
+                        <AnimatePresence>
+                            <AIRecommendationModal
+                                dialogRef={dialogRef}
+                                style={aiModalStyle}
+                                isSelected={selectedStyle?.id === aiModalStyle.id}
+                                editing={aiModalEditing}
+                                positivePrompt={aiModalPositive}
+                                negativePrompt={aiModalNegative}
+                                onPositiveChange={setAiModalPositive}
+                                onNegativeChange={setAiModalNegative}
+                                onStartEditing={() => setAiModalEditing(true)}
+                                onApply={handleAiModalApply}
+                                onClose={closeAiModal}
+                            />
+                        </AnimatePresence>
+                    )}
+                </ModalPortal>
+            )}
 
             {/* Preset Detail Modal */}
-            <AnimatePresence>
-                {modalPreset && (
-                    <PresetDetailModal
-                        preset={modalPreset}
-                        isSelected={selectedStyle?.id === modalPreset.id}
-                        editing={modalEditing}
-                        positivePrompt={modalPositive}
-                        negativePrompt={modalNegative}
-                        onPositiveChange={setModalPositive}
-                        onNegativeChange={setModalNegative}
-                        onStartEditing={() => setModalEditing(true)}
-                        onApply={handleModalApplyStyle}
-                        onClose={closePresetModal}
-                        sameCategoryPresets={presets.filter(p => p.category === modalPreset.category && p.id !== modalPreset.id)}
-                        onSwitchPreset={(p) => {
-                            setModalPreset(p);
-                            setModalEditing(false);
-                            setModalPositive(p.positive_prompt);
-                            setModalNegative(p.negative_prompt);
-                        }}
-                    />
-                )}
-            </AnimatePresence>
+            {modalPreset && (
+                <ModalPortal isOpen onClose={closePresetModal}>
+                    {(dialogRef) => (
+                        <AnimatePresence>
+                            <PresetDetailModal
+                                dialogRef={dialogRef}
+                                preset={modalPreset}
+                                isSelected={selectedStyle?.id === modalPreset.id}
+                                editing={modalEditing}
+                                positivePrompt={modalPositive}
+                                negativePrompt={modalNegative}
+                                onPositiveChange={setModalPositive}
+                                onNegativeChange={setModalNegative}
+                                onStartEditing={() => setModalEditing(true)}
+                                onApply={handleModalApplyStyle}
+                                onClose={closePresetModal}
+                                sameCategoryPresets={presets.filter(p => p.category === modalPreset.category && p.id !== modalPreset.id)}
+                                onSwitchPreset={(p) => {
+                                    setModalPreset(p);
+                                    setModalEditing(false);
+                                    setModalPositive(p.positive_prompt);
+                                    setModalNegative(p.negative_prompt);
+                                }}
+                            />
+                        </AnimatePresence>
+                    )}
+                </ModalPortal>
+            )}
 
             {/* Override confirmation dialog */}
             {pendingOverrideStyle && (
-                <div
-                    className="fixed inset-0 z-[110] bg-overlay backdrop-blur-sm grid place-items-center p-4"
-                    onClick={cancelOverrideConfirm}
-                >
+                <ModalPortal isOpen onClose={cancelOverrideConfirm}>
+                    {(dialogRef) => (
                     <div
-                        className="w-full max-w-md rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.7)]"
-                        onClick={(e) => e.stopPropagation()}
+                        className="fixed inset-0 z-[220] bg-overlay backdrop-blur-sm grid place-items-center p-4"
+                        onClick={cancelOverrideConfirm}
                     >
+                        <div
+                            ref={dialogRef}
+                            role="dialog"
+                            aria-modal="true"
+                            tabIndex={-1}
+                            className="w-full max-w-md rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.7)] outline-none"
+                            onClick={(e) => e.stopPropagation()}
+                        >
                         <header className="flex items-center justify-between gap-3 px-5 py-3 border-b border-glass-border">
                             <div className="flex items-center gap-2">
                                 <AlertTriangle size={15} className="text-amber-300" />
@@ -689,9 +702,22 @@ export default function ArtDirection() {
                                 {ta("overrideConfirmBtn")}
                             </WorkflowActionButton>
                         </footer>
+                        </div>
                     </div>
-                </div>
+                    )}
+                </ModalPortal>
             )}
+
+            {currentProject ? (
+                <TextGenerationRequestDialog
+                    open={textComposerOpen}
+                    scriptId={currentProject.id}
+                    operation="style_analysis"
+                    initialSourceText={currentProject.originalText || currentProject.title}
+                    onClose={() => setTextComposerOpen(false)}
+                    onCompleted={handleStyleAnalysisCompleted}
+                />
+            ) : null}
         </div>
     );
 }
@@ -749,7 +775,8 @@ function AIRecommendationCard({ style, isSelected, onClick }: {
     );
 }
 
-function AIRecommendationModal({ style, isSelected, editing, positivePrompt, negativePrompt, onPositiveChange, onNegativeChange, onStartEditing, onApply, onClose }: {
+function AIRecommendationModal({ dialogRef, style, isSelected, editing, positivePrompt, negativePrompt, onPositiveChange, onNegativeChange, onStartEditing, onApply, onClose }: {
+    dialogRef: RefObject<HTMLDivElement | null>;
     style: StyleConfig;
     isSelected: boolean;
     editing: boolean;
@@ -779,15 +806,19 @@ function AIRecommendationModal({ style, isSelected, editing, positivePrompt, neg
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="fixed inset-0 z-[100] bg-overlay backdrop-blur-sm grid place-items-center p-6"
+            className="fixed inset-0 z-[220] bg-overlay backdrop-blur-sm grid place-items-center p-6"
             onClick={onClose}
         >
             <motion.div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
+                tabIndex={-1}
                 initial={{ opacity: 0, scale: 0.96, y: 8 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1100px] min-w-0 flex-col overflow-hidden rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.7)] sm:w-[70vw]"
+                className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1100px] min-w-0 flex-col overflow-hidden rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.7)] outline-none sm:w-[70vw]"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
@@ -987,7 +1018,8 @@ function StylePresetCardV2({ style, isSelected, onClick }: {
     );
 }
 
-function PresetDetailModal({ preset, isSelected, editing, positivePrompt, negativePrompt, onPositiveChange, onNegativeChange, onStartEditing, onApply, onClose, sameCategoryPresets, onSwitchPreset }: {
+function PresetDetailModal({ dialogRef, preset, isSelected, editing, positivePrompt, negativePrompt, onPositiveChange, onNegativeChange, onStartEditing, onApply, onClose, sameCategoryPresets, onSwitchPreset }: {
+    dialogRef: RefObject<HTMLDivElement | null>;
     preset: StylePreset;
     isSelected: boolean;
     editing: boolean;
@@ -1012,15 +1044,19 @@ function PresetDetailModal({ preset, isSelected, editing, positivePrompt, negati
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="fixed inset-0 z-[100] bg-overlay backdrop-blur-sm grid place-items-center p-6"
+            className="fixed inset-0 z-[220] bg-overlay backdrop-blur-sm grid place-items-center p-6"
             onClick={onClose}
         >
             <motion.div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
+                tabIndex={-1}
                 initial={{ opacity: 0, scale: 0.96, y: 8 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.96, y: 8 }}
                 transition={{ duration: 0.2 }}
-                className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1100px] min-w-0 flex-col overflow-hidden rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.7)] sm:w-[70vw]"
+                className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1100px] min-w-0 flex-col overflow-hidden rounded-2xl border border-glass-border bg-elevated shadow-[0_24px_64px_-12px_rgba(0,0,0,0.7)] outline-none sm:w-[70vw]"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}

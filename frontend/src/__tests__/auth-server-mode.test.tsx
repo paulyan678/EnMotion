@@ -39,8 +39,13 @@ vi.mock("@/components/layout/EnMotionBranding", () => ({
   default: () => <div>EnMotion</div>,
 }));
 
+vi.mock("@/components/auth/AccountControl", () => ({
+  default: () => null,
+}));
+
 import AuthGate from "@/components/auth/AuthGate";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import AccountNavigationControls from "@/components/auth/AccountNavigationControls";
 import { AUTH_REQUIRED_EVENT, getCsrfToken, setCsrfToken } from "@/lib/httpClient";
 import {
   getWorkspaceStorageScope,
@@ -91,7 +96,10 @@ function App() {
   return (
     <AuthProvider>
       <AuthGate>
-        <div>Private workspace content</div>
+        <div>
+          <AccountNavigationControls />
+          <div>Private workspace content</div>
+        </div>
       </AuthGate>
     </AuthProvider>
   );

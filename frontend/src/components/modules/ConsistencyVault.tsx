@@ -8,8 +8,8 @@ import { useProjectStore } from "@/store/projectStore";
 import { api, crudApi } from "@/lib/api";
 import { primaryAssetDisplayUrl } from "@/lib/assetImage";
 import UploadAssetModal from "../modals/UploadAssetModal";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
+import ScrollFlowActions from "@/components/shared/ScrollFlowActions";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import {
     notifyAssetLibraryChanged,
@@ -202,49 +202,51 @@ export default function ConsistencyVault() {
 
     return (
         <div className="flex flex-col h-full text-foreground">
-            <StepPageHeader
-                title={tStep("vaultTitle")}
-            />
-            {/* Tab bar + sync action */}
-            <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-glass-border bg-surface">
-                <div className="flex gap-2">
-                    <TabButton
-                        active={activeTab === "character"}
-                        onClick={() => setActiveTab("character")}
-                        icon={<User size={14} />}
-                        label={tv("characters")}
-                        count={currentProject?.characters?.length || 0}
-                    />
-                    <TabButton
-                        active={activeTab === "scene"}
-                        onClick={() => setActiveTab("scene")}
-                        icon={<MapPin size={14} />}
-                        label={tv("scenes")}
-                        count={currentProject?.scenes?.length || 0}
-                    />
-                    <TabButton
-                        active={activeTab === "prop"}
-                        onClick={() => setActiveTab("prop")}
-                        icon={<Box size={14} />}
-                        label={tv("props")}
-                        count={currentProject?.props?.length || 0}
-                    />
-                </div>
-
-                <WorkflowActionButton
-                    variant="secondary"
-                    size="sm"
-                    leftIcon={<RefreshCw />}
-                    onClick={handleSyncDescriptions}
-                    title={tv("syncDescHint")}
+            <h1 className="sr-only">{tStep("vaultTitle")}</h1>
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+                {/* Filters intentionally share the asset list's scroll owner. */}
+                <ScrollFlowActions
+                    align="between"
+                    label={tStep("vaultTitle")}
+                    className="gap-3 border-b border-glass-border px-6 py-4"
                 >
-                    {tv("syncDesc")}
-                </WorkflowActionButton>
-            </div>
+                    <div className="flex flex-wrap gap-2">
+                        <TabButton
+                            active={activeTab === "character"}
+                            onClick={() => setActiveTab("character")}
+                            icon={<User size={14} />}
+                            label={tv("characters")}
+                            count={currentProject?.characters?.length || 0}
+                        />
+                        <TabButton
+                            active={activeTab === "scene"}
+                            onClick={() => setActiveTab("scene")}
+                            icon={<MapPin size={14} />}
+                            label={tv("scenes")}
+                            count={currentProject?.scenes?.length || 0}
+                        />
+                        <TabButton
+                            active={activeTab === "prop"}
+                            onClick={() => setActiveTab("prop")}
+                            icon={<Box size={14} />}
+                            label={tv("props")}
+                            count={currentProject?.props?.length || 0}
+                        />
+                    </div>
 
-            {/* Content Grid */}
-            <div className="flex-1 overflow-y-auto p-6">
-                {!currentProject ? (
+                    <WorkflowActionButton
+                        variant="secondary"
+                        size="sm"
+                        leftIcon={<RefreshCw />}
+                        onClick={handleSyncDescriptions}
+                        title={tv("syncDescHint")}
+                    >
+                        {tv("syncDesc")}
+                    </WorkflowActionButton>
+                </ScrollFlowActions>
+
+                <div className="p-6">
+                    {!currentProject ? (
                     <div className="flex items-center justify-center h-full text-text-muted">
                         {tv("loadingProject")}
                     </div>
@@ -290,7 +292,8 @@ export default function ConsistencyVault() {
                             </div>
                         </motion.div>
                     </div>
-                )}
+                    )}
+                </div>
             </div>
 
             {selectedAssetRef ? (

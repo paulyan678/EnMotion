@@ -49,7 +49,6 @@ describe("GenerationRequestReview", () => {
       <GenerationRequestReview fingerprint="second" loadPreview={loadSecond} />,
     );
     expect(screen.queryByDisplayValue("First exact prompt")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Refresh content to send" }));
     await waitFor(() => expect(screen.getByDisplayValue("Second exact prompt")).toBeInTheDocument());
     expect(loadSecond).toHaveBeenCalledTimes(1);
   });

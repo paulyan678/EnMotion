@@ -8,15 +8,17 @@
  *     jump back to the Script step).
  *   · Confirm path replaces existing shots wholesale (clear-and-regenerate
  *     semantics, mirrors how a fresh 提取实体 → 生成分镜 onboarding feels).
- *   · Long-running call surfaces as a project-aware toast (not blocking
- *     overlay) so users can switch projects and learn when the other one
- *     finishes via the global ToastContainer.
+ *   · Passing pre-flight opens the shared reviewed-request composer; the
+ *     parent only applies the already-returned project and makes no hidden
+ *     provider call afterward.
  */
 import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wand2, X, AlertTriangle, ArrowRight, Film, Sparkles } from "lucide-react";
+import { Wand2, X, ArrowRight, Sparkles } from "lucide-react";
 import { useTranslations } from "next-intl";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
+import TextGenerationRequestDialog from "@/components/generation/TextGenerationRequestDialog";
+import type { Project } from "@/store/projectStore";
 
 interface StoryboardGenerateDialogProps {
     isOpen: boolean;
@@ -27,13 +29,13 @@ interface StoryboardGenerateDialogProps {
         title?: string;
         originalText?: string;
         original_text?: string;
-        characters?: any[];
-        frames?: any[];
+        characters?: unknown[];
+        frames?: unknown[];
     } | null;
     existingShotCount: number;
-    /** Called when the user confirms. Dialog closes immediately; parent
-     *  runs the API call in the background with toast feedback. */
-    onConfirm: () => void;
+    /** Receives the reviewed request result; no hidden provider call is made
+     *  by the parent after the composer closes. */
+    onConfirm: (updatedProject: Project) => void | Promise<void>;
     /** Jump to the Script step (used by the empty-text quick fix link). */
     onJumpToScript?: () => void;
 }
@@ -48,7 +50,7 @@ export default function StoryboardGenerateDialog({
 }: StoryboardGenerateDialogProps) {
     const t = useTranslations("storyboardGen");
 
-    const text = (project as any)?.original_text ?? project?.originalText ?? "";
+    const text = project?.original_text ?? project?.originalText ?? "";
     const charsCount = project?.characters?.length ?? 0;
     const checks = useMemo(() => {
         return [
@@ -69,11 +71,21 @@ export default function StoryboardGenerateDialog({
 
     const allPass = checks.every((c) => c.pass);
 
-    const handleConfirm = () => {
-        if (!allPass) return;
-        onClose();
-        onConfirm();
-    };
+    if (isOpen && allPass && project) {
+        return (
+            <TextGenerationRequestDialog<Project>
+                open
+                scriptId={project.id}
+                operation="storyboard_extraction"
+                initialSourceText={text}
+                warning={existingShotCount > 0
+                    ? t("willReplaceWarning", { count: existingShotCount })
+                    : undefined}
+                onClose={onClose}
+                onCompleted={onConfirm}
+            />
+        );
+    }
 
     return (
         <AnimatePresence>
@@ -158,23 +170,6 @@ export default function StoryboardGenerateDialog({
                                 )}
                             </section>
 
-                            {/* Destructive warning when shots already exist */}
-                            {allPass && existingShotCount > 0 && (
-                                <div className="flex items-start gap-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2">
-                                    <AlertTriangle size={13} className="text-accent mt-0.5 shrink-0" />
-                                    <p className="text-[0.75rem] text-accent">
-                                        {t("willReplaceWarning", { count: existingShotCount })}
-                                    </p>
-                                </div>
-                            )}
-
-                            {/* Healthy CTA hint */}
-                            {allPass && existingShotCount === 0 && (
-                                <p className="text-[0.75rem] text-text-muted flex items-center gap-1.5">
-                                    <Film size={12} />
-                                    {t("freshHint")}
-                                </p>
-                            )}
                         </div>
 
                         {/* Footer */}
@@ -189,13 +184,10 @@ export default function StoryboardGenerateDialog({
                             <WorkflowActionButton
                                 variant="primary"
                                 size="sm"
-                                disabled={!allPass}
+                                disabled
                                 leftIcon={<Wand2 />}
-                                onClick={handleConfirm}
                             >
-                                {existingShotCount > 0
-                                    ? t("replaceAndGenerate")
-                                    : t("generate")}
+                                {t("generate")}
                             </WorkflowActionButton>
                         </footer>
                     </motion.div>
