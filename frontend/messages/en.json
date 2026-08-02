@@ -2583,5 +2583,29 @@
       "cancel": "Cancel",
       "emptyPrompt": "(empty prompt)"
     }
+  },
+  "generationRequest": {
+    "reviewButton": "Review provider request",
+    "reviewed": "Current",
+    "description": "This is the exact model, prompt, media, and parameter snapshot EnMotion will submit. Changing any generation input invalidates this review.",
+    "loading": "Compiling provider request…",
+    "previewFailed": "The provider request could not be compiled. Check the current inputs and try again.",
+    "retry": "Try again",
+    "refresh": "Compile current request",
+    "compiler": "Compiler v{version}",
+    "copy": "Copy JSON",
+    "copied": "Copied",
+    "requestNumber": "Provider request {number}",
+    "exactRequest": "Exact provider request",
+    "fullPrompt": "Full prompt sent to provider",
+    "references": "Reference media",
+    "parameters": "Parameters",
+    "model": "Model",
+    "aspectRatio": "Aspect ratio",
+    "batchSize": "Outputs",
+    "composeTitle": "Review and generate",
+    "generate": "Generate",
+    "submit": "Submit generation",
+    "cancel": "Cancel"
   }
 }

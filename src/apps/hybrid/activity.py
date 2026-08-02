@@ -104,6 +104,7 @@ def record_asset_activity(
     aspect_ratio: str | None,
     source_context_overrides: dict[str, Any] | None = None,
     input_media: list[dict[str, Any]] | None = None,
+    compiled_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Insert a queued activity before the background task starts."""
 
@@ -153,6 +154,7 @@ def record_asset_activity(
         "parameters": parameters,
         "source_context": source_context,
         "input_media": [dict(item) for item in (input_media or [])[:20]],
+        "compiled_request": dict(compiled_request) if compiled_request else None,
         "outputs": [],
         "attempts": 1,
         "created_at": timestamp,
@@ -183,6 +185,7 @@ def record_storyboard_activity(
     model_name: str | None,
     batch_size: int,
     input_media: list[dict[str, Any]] | None = None,
+    compiled_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Insert a queued storyboard-image lifecycle for a hybrid desktop."""
 
@@ -210,6 +213,7 @@ def record_storyboard_activity(
         aspect_ratio=None,
         source_context_overrides=context,
         input_media=input_media,
+        compiled_request=compiled_request,
     )
 
 
@@ -230,6 +234,7 @@ def record_video_activity(
     ratio: str | None = None,
     source_context: dict[str, Any] | None = None,
     input_media: list[dict[str, Any]] | None = None,
+    compiled_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Insert a queued desktop video lifecycle for the API Calls dashboard."""
 
@@ -275,6 +280,7 @@ def record_video_activity(
         "parameters": parameters,
         "source_context": context,
         "input_media": [dict(item) for item in (input_media or [])[:20]],
+        "compiled_request": dict(compiled_request) if compiled_request else None,
         "outputs": [],
         "attempts": 1,
         "created_at": timestamp,

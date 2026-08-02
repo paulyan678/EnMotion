@@ -77,6 +77,24 @@ beforeEach(() => {
   window.__ENMOTION_RUNTIME_CONFIG__ = undefined;
   useProjectStore.setState({ projects: [], currentProject: null });
   useToastStore.getState().clear();
+  vi.spyOn(api, "previewVideoTask").mockImplementation(async (_projectId, request) => ({
+    compiler_version: "1.0",
+    compiled_request_id: "genreq_video_creator",
+    checksum: "b".repeat(64),
+    category: "video",
+    mode: request.generation_mode || "i2v",
+    source: "workspace",
+    user_prompt: request.prompt,
+    prompt_parts: [{ kind: "user", label: "Prompt", text: request.prompt, editable: true }],
+    target: { surface: "motion", frame_id: request.frame_id },
+    provider_requests: [{
+      phase: "video",
+      model: request.model || DEFAULT_I2V_MODEL_ID,
+      prompt: request.prompt,
+      parameters: {},
+      input_media: request.image_url ? [request.image_url] : [],
+    }],
+  }));
 });
 
 afterEach(() => {
@@ -289,8 +307,13 @@ describe("shot-specific Motion Creator", () => {
         seed: 42,
         generate_audio: true,
         batch_size: 1,
+        compiled_request_checksum: "b".repeat(64),
       }),
     ));
+    expect(api.previewVideoTask).toHaveBeenCalledWith(
+      "motion-project",
+      expect.objectContaining({ frame_id: "frame-7", prompt: "Move through shot 7" }),
+    );
     expect(await screen.findByText("Submitted")).toBeInTheDocument();
     expect(useProjectStore.getState().currentProject?.video_tasks).toEqual([createdTask]);
   });

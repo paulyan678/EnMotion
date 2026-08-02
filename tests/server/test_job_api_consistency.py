@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from src.apps.comic_gen import api as comic_api
 from src.apps.comic_gen.models import Script, VideoTask
+from src.apps.generation_contract import compile_generation_request, provider_request
 
 
 class _FakeVideoPipeline:
@@ -21,6 +22,27 @@ class _FakeVideoPipeline:
         )
         self.rolled_back: list[str] = []
         self.failed: list[tuple[str, str, str | None, str | None]] = []
+
+    def compile_video_task_request(self, script_id, **kwargs):
+        prompt = kwargs.get("prompt") or "Animate"
+        model = kwargs.get("model") or "doubao-seedance-2-0-fast-260128"
+        image_url = kwargs.get("image_url")
+        return compile_generation_request(
+            category="video",
+            mode=kwargs.get("generation_mode") or "i2v",
+            user_prompt=prompt,
+            source="workspace",
+            target={"script_id": script_id},
+            requests=[
+                provider_request(
+                    phase="storyboard_video",
+                    model=model,
+                    prompt=prompt,
+                    parameters={"duration": kwargs.get("duration", 5)},
+                    input_media=[image_url] if image_url else [],
+                )
+            ],
+        )
 
     def create_video_task(self, *, task_id, **_kwargs):
         task = VideoTask(

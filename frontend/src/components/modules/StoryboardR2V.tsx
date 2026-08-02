@@ -5,14 +5,27 @@ import { motion } from "framer-motion";
 import { Plus, Loader2, Sparkles, PanelBottomOpen, PanelBottomClose } from "lucide-react";
 import StepPageHeader from "@/components/shared/StepPageHeader";
 import { useLocale, useTranslations } from "next-intl";
-import { useProjectStore } from "@/store/projectStore";
-import { api, crudApi, type VideoTask, type RefineSSEEvent } from "@/lib/api";
+import {
+    useProjectStore,
+    type Project,
+} from "@/store/projectStore";
+import {
+    api,
+    crudApi,
+    type CreateVideoTaskPayload,
+    type VideoTask,
+    type RefineSSEEvent,
+} from "@/lib/api";
 import { observeProjectTasks } from "@/lib/projectTaskObserver";
 import { extractErrorDetail, getAssetUrl } from "@/lib/utils";
 import { debugLog } from "@/lib/debugLog";
 import { readWorkspaceItem, removeWorkspaceItem, writeWorkspaceItem } from "@/lib/workspaceStorage";
 import type { BatchSummary } from "./storyboard-r2v/shot-panel/CandidatesSection";
 import { VIDEO_I2V_MODELS, DEFAULT_I2V_MODEL_ID } from "@/lib/modelCatalog";
+import {
+    DEFAULT_MODEL_SETTINGS,
+    PROJECT_IMAGE_MODELS,
+} from "@/lib/modelCatalog";
 import ShotCard, { type ShotNode } from "./storyboard-r2v/ShotCard";
 import { buildAssembledPrompt } from "./storyboard-r2v/buildAssembledPrompt";
 import StoryboardGenerateDialog from "./storyboard-r2v/StoryboardGenerateDialog";
@@ -40,6 +53,8 @@ import { reconcileT2IWorkbenchAfterDelete } from "./storyboard-r2v/t2iDeleteReco
 import { useModelDisplayName } from "@/lib/useModelDisplayName";
 import { clipFrameType, clipImageId } from "@/lib/clipStartFrame";
 import type { AssetRef } from "@/components/assets/assetEditorTypes";
+import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
+import { primaryAssetImageUrl } from "@/lib/assetImage";
 
 export function resolveStoryboardVideoModel(
     projectModel?: string | null,
@@ -51,6 +66,63 @@ export function resolveStoryboardVideoModel(
         : DEFAULT_I2V_MODEL_ID;
 }
 
+function storyboardVideoPayload(
+    project: { frames?: Array<{ id?: string }> },
+    shot: ShotNode,
+    imageUrl: string,
+    params: ParamsState,
+): CreateVideoTaskPayload {
+    const persistedFrame = project.frames?.find((frame) => frame.id === shot.id) ?? shot;
+    return {
+        image_url: imageUrl,
+        prompt: buildAssembledPrompt(shot),
+        frame_id: shot.id,
+        source_image_id: clipImageId(imageUrl),
+        frame_type: clipFrameType(persistedFrame as any),
+        duration: params.duration,
+        seed: params.seed,
+        resolution: params.resolution ?? "720p",
+        generate_audio: params.generateAudio ?? true,
+        batch_size: 1,
+        model: params.model,
+        generation_mode: "i2v",
+        ratio: params.ratio ?? "16:9",
+        watermark: params.watermark ?? false,
+        workbench_tab: "t2i_i2v",
+    };
+}
+
+function cleanStoryboardImagePrompt(prompt: string): string {
+    return prompt.replace(/\[character\d+:[^\]]+\]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function storyboardImageComposition(
+    project: Project,
+    shotId: string,
+): Record<string, unknown> {
+    const frame = project.frames?.find((item) => item.id === shotId);
+    const references: string[] = [];
+    const add = (value?: string | null) => {
+        if (value && !references.includes(value)) references.push(value);
+    };
+    const scene = project.scenes?.find((item) => item.id === frame?.scene_id);
+    add(scene ? primaryAssetImageUrl(scene, "scene") : null);
+    for (const characterId of frame?.character_ids ?? []) {
+        const character = project.characters?.find((item) => item.id === characterId);
+        add(character ? primaryAssetImageUrl(character, "character") : null);
+    }
+    for (const propId of frame?.prop_ids ?? []) {
+        const prop = project.props?.find((item) => item.id === propId);
+        add(prop ? primaryAssetImageUrl(prop, "prop") : null);
+    }
+    return {
+        character_ids: frame?.character_ids ?? [],
+        prop_ids: frame?.prop_ids ?? [],
+        scene_id: frame?.scene_id ?? "",
+        reference_image_urls: references,
+    };
+}
+
 export default function StoryboardR2V() {
     const currentProject = useProjectStore((state) => state.currentProject);
     const updateProject = useProjectStore((state) => state.updateProject);
@@ -59,6 +131,7 @@ export default function StoryboardR2V() {
     const removeRenderingFrame = useProjectStore((state) => state.removeRenderingFrame);
     const t = useTranslations("storyboardR2V");
     const tStep = useTranslations("stepHeader");
+    const tg = useTranslations("generationRequest");
     const modelDisplayName = useModelDisplayName();
     const locale = useLocale();
 
@@ -118,6 +191,15 @@ export default function StoryboardR2V() {
     const effectiveProjectVideoModel = currentProject?.model_settings?.video_model
         || currentProject?.model_settings?.i2v_model
         || null;
+    const [storyboardImageModel, setStoryboardImageModel] = useState(() => {
+        const requested = currentProject?.model_settings?.image_model;
+        return PROJECT_IMAGE_MODELS.some((model) => model.id === requested)
+            ? requested!
+            : DEFAULT_MODEL_SETTINGS.image_model;
+    });
+    const [storyboardImageAspect, setStoryboardImageAspect] = useState(
+        currentProject?.model_settings?.storyboard_aspect_ratio || "16:9",
+    );
 
     // Backend project payloads contain the live project -> Series -> global
     // resolution. Refreshes or project switches must replace any device-local
@@ -950,11 +1032,6 @@ export default function StoryboardR2V() {
         return { min: dc.value, max: dc.value, step: 1 };
     }, [videoConfig.model]);
 
-    // Strip tags from prompt for clean text
-    const cleanPrompt = (prompt: string): string => {
-        return prompt.replace(/\[character\d+:[^\]]+\]/g, "").replace(/\s+/g, " ").trim();
-    };
-
     // Generate T2I image for a shot (t2i_i2v mode stage 1)
     const generateT2I = useCallback(async (index: number) => {
         const shot = shots[index];
@@ -969,13 +1046,28 @@ export default function StoryboardR2V() {
         ));
 
         try {
+            const compositionData = storyboardImageComposition(currentProject, shot.id);
+            const fullPrompt = cleanStoryboardImagePrompt(shot.prompt);
+            const compiled = await api.previewStoryboardFrame(projectId, {
+                frame_id: shot.id,
+                composition_data: compositionData,
+                prompt: fullPrompt,
+                batch_size: 1,
+                model_name: storyboardImageModel,
+                aspect_ratio: storyboardImageAspect,
+            });
             const result = await api.renderFrame(
                 projectId,
                 shot.id,
-                {},  // compositionData (empty for now)
-                cleanPrompt(shot.prompt),
+                compositionData,
+                fullPrompt,
                 1,   // batchSize
-                { signal: controller.signal },
+                {
+                    signal: controller.signal,
+                    modelName: storyboardImageModel,
+                    aspectRatio: storyboardImageAspect,
+                    compiledRequestChecksum: compiled.checksum,
+                },
             );
             if (controller.signal.aborted) return;
 
@@ -1020,7 +1112,13 @@ export default function StoryboardR2V() {
                 t2iRenderControllersRef.current.delete(shot.id);
             }
         }
-    }, [shots, currentProject, updateProject]);
+    }, [
+        shots,
+        currentProject,
+        storyboardImageAspect,
+        storyboardImageModel,
+        updateProject,
+    ]);
 
     // Generate one I2V task for a shot using the selected New API model.
     const generateVideo = useCallback(async (index: number) => {
@@ -1047,22 +1145,19 @@ export default function StoryboardR2V() {
         ));
 
         try {
-            const persistedFrame = currentProject.frames?.find((frame: any) => frame.id === shot.id) ?? shot;
-            const response = await api.createVideoTask(currentProject.id, {
-                image_url: imageUrl,
-                prompt: buildAssembledPrompt(shot),
-                frame_id: shot.id,
-                source_image_id: clipImageId(imageUrl),
-                frame_type: clipFrameType(persistedFrame),
-                duration: videoConfig.duration,
-                resolution: videoConfig.resolution,
-                generate_audio: videoConfig.generateAudio,
-                batch_size: 1,
+            const payload = storyboardVideoPayload(currentProject, shot, imageUrl, {
                 model: videoConfig.model,
-                generation_mode: "i2v",
+                duration: shot.duration ?? videoConfig.duration,
+                count: 1,
+                resolution: videoConfig.resolution,
+                generateAudio: videoConfig.generateAudio,
                 ratio: videoConfig.ratio,
                 watermark: videoConfig.watermark,
-                workbench_tab: "t2i_i2v",
+            });
+            const compiled = await api.previewVideoTask(currentProject.id, payload);
+            const response = await api.createVideoTask(currentProject.id, {
+                ...payload,
+                compiled_request_checksum: compiled.checksum,
             });
             const task = Array.isArray(response) ? response[0] : response;
             if (task?.id) {
@@ -1123,24 +1218,21 @@ export default function StoryboardR2V() {
 
         const effectiveCount = Math.max(1, Math.min(6, count || 1));
         try {
+            const payload = storyboardVideoPayload(currentProject, shot, imageUrl, {
+                model: modelId,
+                duration: params?.duration ?? shot.duration ?? videoConfig.duration,
+                count: 1,
+                seed: params?.seed,
+                resolution: params?.resolution ?? videoConfig.resolution,
+                generateAudio: params?.generateAudio ?? videoConfig.generateAudio,
+                ratio: params?.ratio ?? videoConfig.ratio,
+                watermark: params?.watermark ?? videoConfig.watermark,
+            });
+            const compiled = await api.previewVideoTask(currentProject.id, payload);
             const createOne = async (): Promise<string | null> => {
-                const persistedFrame = currentProject.frames?.find((frame: any) => frame.id === shot.id) ?? shot;
                 const response = await api.createVideoTask(currentProject.id, {
-                    image_url: imageUrl,
-                    prompt: buildAssembledPrompt(shot),
-                    frame_id: shot.id,
-                    source_image_id: clipImageId(imageUrl),
-                    frame_type: clipFrameType(persistedFrame),
-                    duration: params?.duration ?? videoConfig.duration,
-                    seed: params?.seed,
-                    resolution: params?.resolution ?? videoConfig.resolution,
-                    generate_audio: params?.generateAudio ?? videoConfig.generateAudio,
-                    batch_size: 1,
-                    model: modelId,
-                    generation_mode: "i2v",
-                    ratio: params?.ratio ?? videoConfig.ratio,
-                    watermark: params?.watermark ?? videoConfig.watermark,
-                    workbench_tab: "t2i_i2v",
+                    ...payload,
+                    compiled_request_checksum: compiled.checksum,
                 });
                 const task = Array.isArray(response) ? response[0] : response;
                 return task?.id ?? null;
@@ -2003,6 +2095,58 @@ export default function StoryboardR2V() {
                                         }}
                                         resolveUrl={resolveAssetUrl}
                                     />
+                                    <div className="grid gap-3 border-t border-glass-border px-4 py-4 sm:grid-cols-2">
+                                        <label className="space-y-1.5 text-xs text-text-secondary">
+                                            <span>{tg("model")}</span>
+                                            <select
+                                                aria-label={tg("model")}
+                                                value={storyboardImageModel}
+                                                onChange={(event) => setStoryboardImageModel(event.target.value)}
+                                                className="glass-input w-full"
+                                            >
+                                                {PROJECT_IMAGE_MODELS.map((model) => (
+                                                    <option key={model.id} value={model.id}>{model.name}</option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                        <label className="space-y-1.5 text-xs text-text-secondary">
+                                            <span>{tg("aspectRatio")}</span>
+                                            <select
+                                                aria-label={tg("aspectRatio")}
+                                                value={storyboardImageAspect}
+                                                onChange={(event) => setStoryboardImageAspect(event.target.value)}
+                                                className="glass-input w-full"
+                                            >
+                                                {["16:9", "9:16", "1:1", "4:3", "3:4"].map((ratio) => (
+                                                    <option key={ratio} value={ratio}>{ratio}</option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                        {currentProject?.frames?.some((frame) => frame.id === shot.id) ? (
+                                            <div className="sm:col-span-2">
+                                                <GenerationRequestReview
+                                                    fingerprint={JSON.stringify({
+                                                        prompt: cleanStoryboardImagePrompt(shot.prompt),
+                                                        composition: storyboardImageComposition(currentProject, shot.id),
+                                                        model: storyboardImageModel,
+                                                        aspectRatio: storyboardImageAspect,
+                                                    })}
+                                                    loadPreview={() => api.previewStoryboardFrame(
+                                                        currentProject.id,
+                                                        {
+                                                            frame_id: shot.id,
+                                                            composition_data: storyboardImageComposition(currentProject, shot.id),
+                                                            prompt: cleanStoryboardImagePrompt(shot.prompt),
+                                                            batch_size: 1,
+                                                            model_name: storyboardImageModel,
+                                                            aspect_ratio: storyboardImageAspect,
+                                                        },
+                                                    )}
+                                                    disabled={!shot.prompt.trim()}
+                                                />
+                                            </div>
+                                        ) : null}
+                                    </div>
                                 </div>
                             ) : null}
                             {/* Step 2 · video generation params. */}
@@ -2015,6 +2159,24 @@ export default function StoryboardR2V() {
                                     onChange={(next) => handleShotParamsChange(shot, next)}
                                     inFlightCount={shotInFlight}
                                     errorMessage={shotErrors[shot.id] ?? null}
+                                    requestReview={currentProject && (getActiveT2IImageUrl(shot) || shot.imageUrl) ? (
+                                        <GenerationRequestReview
+                                            fingerprint={JSON.stringify({
+                                                prompt: buildAssembledPrompt(shot),
+                                                imageUrl: getActiveT2IImageUrl(shot) || shot.imageUrl,
+                                                params: paramsState,
+                                            })}
+                                            loadPreview={() => api.previewVideoTask(
+                                                currentProject.id,
+                                                storyboardVideoPayload(
+                                                    currentProject,
+                                                    shot,
+                                                    getActiveT2IImageUrl(shot) || shot.imageUrl || "",
+                                                    paramsState,
+                                                ),
+                                            )}
+                                        />
+                                    ) : undefined}
                                 />
                             </div>
                             <div className="border-t border-glass-border">

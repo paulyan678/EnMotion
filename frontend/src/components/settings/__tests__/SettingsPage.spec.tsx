@@ -60,7 +60,7 @@ describe("SettingsPage categories", () => {
     }));
   });
 
-  it("renders only the four supported categories and keeps each panel usable", async () => {
+  it("keeps generation defaults out of Settings and retains provider administration", async () => {
     renderWithIntl(<SettingsPage />);
 
     await waitFor(() => expect(apiMocks.getEnvConfig).toHaveBeenCalledTimes(1));
@@ -68,16 +68,13 @@ describe("SettingsPage categories", () => {
     const title = screen.getByRole("heading", { name: "设置" });
     expect(title.previousElementSibling).toBeNull();
     expect(screen.queryByText("通用与主题")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
     expect(screen.queryByRole("tab", { name: "存储" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "关于" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "主题与动效" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "模型" }));
-    expect(screen.getByRole("heading", { name: "模型与画幅选择" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "默认提示词" }));
-    expect(screen.getByRole("heading", { name: "系统提示词配置" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "默认提示词" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "接口密钥" }));
     expect(screen.getByRole("heading", { name: "模型接口管理" })).toBeInTheDocument();
@@ -112,7 +109,7 @@ describe("SettingsPage categories", () => {
     authMocks.value = { serverMode: true, user: { role: "user" } };
     renderWithIntl(<SettingsPage />);
 
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    expect(screen.getAllByRole("tab")).toHaveLength(1);
     expect(screen.queryByRole("tab", { name: "接口密钥" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "查看已保存的密钥" })).not.toBeInTheDocument();
     expect(apiMocks.getEnvConfig).not.toHaveBeenCalled();

@@ -7,8 +7,16 @@ import { renderWithIntl } from "@/test/renderWithIntl";
 import { useProjectStore, type Project } from "@/store/projectStore";
 
 vi.mock("@/components/common/VariantSelector", () => ({
-  VariantSelector: ({ currentImageUrl }: { currentImageUrl?: string }) => (
-    <div data-testid="variant-selector" data-current-image-url={currentImageUrl} />
+  VariantSelector: ({
+    currentImageUrl,
+    onGenerate,
+  }: {
+    currentImageUrl?: string;
+    onGenerate?: (batchSize: number) => void;
+  }) => (
+    <div data-testid="variant-selector" data-current-image-url={currentImageUrl}>
+      <button type="button" onClick={() => onGenerate?.(3)}>×3</button>
+    </div>
   ),
 }));
 
@@ -121,5 +129,77 @@ describe("StoryboardFrameEditor frame type", () => {
     expect(screen.getByRole("combobox", { name: "Frame type" })).toHaveValue("follow");
     expect(screen.getByRole("option", { name: "Static" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Tracking" })).toBeInTheDocument();
+  });
+
+  it("previews and submits the exact edited prompt and selected model", async () => {
+    const frame = {
+      id: "frame-generation",
+      scene_id: "scene-1",
+      action_description: "The camera follows the actor.",
+      image_prompt: "Original prompt",
+    };
+    const initialProject = projectWithFrame(frame);
+    const updatedProject = projectWithFrame(frame);
+    useProjectStore.setState({ currentProject: initialProject });
+    const preview = vi.spyOn(api, "previewStoryboardFrame").mockResolvedValue({
+      compiler_version: "1",
+      compiled_request_id: "compiled-storyboard-request",
+      checksum: "compiled-storyboard-checksum",
+      category: "image",
+      mode: "storyboard_frame",
+      source: "workspace",
+      user_prompt: "Edited provider prompt",
+      prompt_parts: [{ kind: "user", label: "Prompt", text: "Edited provider prompt" }],
+      target: { project_id: "project-frame-editor", frame_id: "frame-generation" },
+      provider_requests: [{
+        phase: "storyboard_frame",
+        model: "gpt-image-2",
+        prompt: "Edited provider prompt",
+        parameters: { aspect_ratio: "3:4", batch_size: 3 },
+        input_media: [],
+      }],
+    });
+    const renderFrame = vi.spyOn(api, "renderFrame").mockResolvedValue(updatedProject);
+
+    renderWithIntl(
+      <StoryboardFrameEditor frame={frame} onClose={vi.fn()} />,
+      { locale: "en" },
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Enter prompt description..."), {
+      target: { value: "Edited provider prompt" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Aspect ratio" }), {
+      target: { value: "3:4" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "×3" }));
+
+    await waitFor(() => {
+      expect(preview).toHaveBeenCalledWith("project-frame-editor", {
+        frame_id: "frame-generation",
+        composition_data: {
+          character_ids: [],
+          prop_ids: [],
+          scene_id: "scene-1",
+          reference_image_urls: [],
+        },
+        prompt: "Edited provider prompt",
+        batch_size: 3,
+        model_name: "gpt-image-2",
+        aspect_ratio: "3:4",
+      });
+    });
+    expect(renderFrame).toHaveBeenCalledWith(
+      "project-frame-editor",
+      "frame-generation",
+      expect.any(Object),
+      "Edited provider prompt",
+      3,
+      expect.objectContaining({
+        modelName: "gpt-image-2",
+        aspectRatio: "3:4",
+        compiledRequestChecksum: "compiled-storyboard-checksum",
+      }),
+    );
   });
 });

@@ -336,21 +336,29 @@ export function useAssetEditorController({
       body: t("generatingVariantsBody", { name: asset?.name ?? "", count: batchSize }),
     });
     try {
+      const draft = {
+        generation_type: generationType,
+        prompt,
+        apply_style: applyStyle,
+        negative_prompt: negativePrompt,
+        batch_size: batchSize,
+        model_name: options.modelName,
+        aspect_ratio: options.aspectRatio,
+        template_id: options.templateId,
+      };
+      const compiled = await api.previewOwnedAssetGeneration(
+        assetRef.ownerKind,
+        assetRef.ownerId,
+        assetRef.assetType,
+        assetRef.assetId,
+        draft,
+      );
       const response = await api.generateOwnedAsset(
         assetRef.ownerKind,
         assetRef.ownerId,
         assetRef.assetType,
         assetRef.assetId,
-        {
-          generation_type: generationType,
-          prompt,
-          apply_style: applyStyle,
-          negative_prompt: negativePrompt,
-          batch_size: batchSize,
-          model_name: options.modelName,
-          aspect_ratio: options.aspectRatio,
-          template_id: options.templateId,
-        },
+        { ...draft, compiled_request_checksum: compiled.checksum },
       );
       await waitForGeneration(response, controller.signal);
       if (controller.signal.aborted) return;
@@ -383,6 +391,30 @@ export function useAssetEditorController({
     }
   }, [applyServerAsset, asset?.name, assetRef, generatingTypes, reload, t, waitForGeneration]);
 
+  const previewGeneration = useCallback((
+    generationType: string,
+    prompt: string,
+    applyStyle: boolean,
+    negativePrompt: string,
+    batchSize: number,
+    options: AssetGenerationOptions = {},
+  ) => api.previewOwnedAssetGeneration(
+    assetRef.ownerKind,
+    assetRef.ownerId,
+    assetRef.assetType,
+    assetRef.assetId,
+    {
+      generation_type: generationType,
+      prompt,
+      apply_style: applyStyle,
+      negative_prompt: negativePrompt,
+      batch_size: batchSize,
+      model_name: options.modelName,
+      aspect_ratio: options.aspectRatio,
+      template_id: options.templateId,
+    },
+  ), [assetRef]);
+
   const generateMotion = useCallback(async (
     prompt: string,
     duration: number,
@@ -401,19 +433,27 @@ export function useAssetEditorController({
     setGeneratingMotion(true);
     const toastId = toast.progress(t("generatingMotion"), { body: asset?.name });
     try {
+      const draft = {
+        motion_type: motionType,
+        prompt,
+        duration,
+        batch_size: options.batchSize ?? 1,
+        model: options.model,
+        audio_url: options.audioUrl,
+      };
+      const compiled = await api.previewOwnedAssetMotion(
+        assetRef.ownerKind,
+        assetRef.ownerId,
+        assetRef.assetType,
+        assetRef.assetId,
+        draft,
+      );
       const response = await api.generateOwnedAssetMotion(
         assetRef.ownerKind,
         assetRef.ownerId,
         assetRef.assetType,
         assetRef.assetId,
-        {
-          motion_type: motionType,
-          prompt,
-          duration,
-          batch_size: options.batchSize ?? 1,
-          model: options.model,
-          audio_url: options.audioUrl,
-        },
+        { ...draft, compiled_request_checksum: compiled.checksum },
       );
       await waitForGeneration(response, controller.signal);
       if (controller.signal.aborted) return;
@@ -444,6 +484,30 @@ export function useAssetEditorController({
       setGeneratingMotion(false);
     }
   }, [applyServerAsset, asset?.name, assetRef, generatingMotion, reload, t, waitForGeneration]);
+
+  const previewMotion = useCallback((
+    prompt: string,
+    duration: number,
+    motionType: string,
+    options: {
+      model?: string;
+      batchSize?: number;
+      audioUrl?: string;
+    } = {},
+  ) => api.previewOwnedAssetMotion(
+    assetRef.ownerKind,
+    assetRef.ownerId,
+    assetRef.assetType,
+    assetRef.assetId,
+    {
+      motion_type: motionType,
+      prompt,
+      duration,
+      batch_size: options.batchSize ?? 1,
+      model: options.model,
+      audio_url: options.audioUrl,
+    },
+  ), [assetRef]);
 
   const saveCharacter = useCallback(async (draft: CharacterMetadataDraft): Promise<boolean> => {
     if (saving) return false;
@@ -535,7 +599,9 @@ export function useAssetEditorController({
     generatingMotion,
     reload: load,
     generate,
+    previewGeneration,
     generateMotion,
+    previewMotion,
     saveCharacter,
     saveSceneProp,
     selectVariant: (type: CharacterImageKind | string, id: string) => mutateVariant("select", type, id),

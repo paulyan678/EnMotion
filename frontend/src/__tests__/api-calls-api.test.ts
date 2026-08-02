@@ -145,6 +145,24 @@ describe("central API activity client", () => {
         error: "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。",
         error_code: "output_video_policy",
         error_diagnostic: "阶段：处理视频任务",
+        compiled_request: {
+          compiler_version: "1.0",
+          compiled_request_id: "genreq-playground-1",
+          checksum: "a".repeat(64),
+          category: "video",
+          mode: "t2v",
+          source: "playground",
+          user_prompt: "A storm over the harbor",
+          prompt_parts: [],
+          target: { surface: "playground" },
+          provider_requests: [{
+            phase: "video",
+            model: "doubao-seedance-2-0-fast-260128",
+            prompt: "A storm over the harbor",
+            parameters: { resolution: "720p", duration: 5 },
+            input_media: [],
+          }],
+        },
         created_at: "2026-07-29T02:00:00Z",
         updated_at: "2026-07-29T02:02:00Z",
       }]);
@@ -160,6 +178,10 @@ describe("central API activity client", () => {
       error: "视频服务商拒绝了生成结果，因为输出可能触发内容或版权政策。",
       error_code: "output_video_policy",
       error_diagnostic: "阶段：处理视频任务",
+      compiled_request: expect.objectContaining({
+        compiled_request_id: "genreq-playground-1",
+        checksum: "a".repeat(64),
+      }),
       source_context: {
         playground_generation_id: "generation-1",
       },

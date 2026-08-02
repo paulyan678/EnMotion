@@ -26,6 +26,11 @@ from ...utils.newapi_models import (
 )
 from ...utils.oss_utils import authoritative_media_reference, is_object_key
 from ...utils.system_check import get_ffmpeg_install_instructions, get_ffmpeg_path
+from ..generation_contract import (
+    compile_generation_request,
+    first_provider_request,
+    provider_request,
+)
 from .assets import AssetGenerator
 from .export import ExportManager
 from .llm import ScriptProcessor
@@ -65,6 +70,72 @@ FICTIONAL_CHARACTER_PROMPT_NOTICE = (
     "This is a fictional character created for animation and does not depict, "
     "identify, or imitate any real person."
 )
+
+def _join_prompt_layer(base: str, layer: str) -> str:
+    """Append a visible prompt layer once, preserving user-authored text."""
+
+    normalized_base = (base or "").strip()
+    normalized_layer = (layer or "").strip().strip(",")
+    if not normalized_layer or normalized_layer.casefold() in normalized_base.casefold():
+        return normalized_base
+    if not normalized_base:
+        return normalized_layer
+    return f"{normalized_base}, {normalized_layer}"
+
+
+def _asset_default_prompt(asset: Any, asset_type: str, phase: str) -> str:
+    name = str(getattr(asset, "name", "") or asset_type.title()).strip()
+    description = str(getattr(asset, "description", "") or "").strip()
+    if asset_type == "character":
+        if phase == "reference_sheet":
+            return (
+                f"Character reference sheet for {name}. {description}. Multiple views: "
+                "front, side, back. Clean background, studio lighting."
+            )
+        if phase == "three_view":
+            return (
+                f"{FICTIONAL_CHARACTER_PROMPT_NOTICE} Character Reference Sheet for {name}. "
+                f"{description}. Three-view character design: Front view, Side view, and Back "
+                "view. STRICTLY MAINTAIN the SAME character appearance, face, hairstyle, and "
+                "clothing as the reference image. Full body, standing pose, neutral expression. "
+                "Consistent clothing and details across all views. Simple white background, "
+                "clean lines, studio lighting, high quality."
+            )
+        if phase == "headshot":
+            return (
+                f"{FICTIONAL_CHARACTER_PROMPT_NOTICE} Close-up portrait of the SAME character "
+                f"{name}. {description}. STRICTLY MAINTAIN the SAME face, hairstyle, skin tone, "
+                "and facial features as the reference image. Zoom in on face and shoulders, "
+                "detailed facial features, neutral expression, looking at viewer, high quality, "
+                "masterpiece."
+            )
+        return (
+            f"{FICTIONAL_CHARACTER_PROMPT_NOTICE} Full body character design of {name}, concept "
+            f"art. {description}. Standing pose, neutral expression, no emotion, looking at "
+            "viewer. Clean white background, isolated, no other objects, no scenery, simple "
+            "background, high quality, masterpiece."
+        )
+    if asset_type == "scene":
+        return f"Scene Concept Art: {name}. {description}. High quality, detailed."
+    return (
+        f"Prop Design: {name}. {description}. Isolated on white background, high quality, "
+        "detailed."
+    )
+
+
+def _uploaded_variant_url(container: Any) -> Optional[str]:
+    """Return the first explicit upload from either image-container schema."""
+
+    variants = getattr(container, "variants", None) or getattr(
+        container, "image_variants", None
+    )
+    for variant in variants or ():
+        value = getattr(variant, "url", None)
+        if getattr(variant, "is_uploaded_source", False) and isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+    return None
 
 _FRAME_TYPE_GUIDANCE = {
     "static": "Keep the camera locked and static throughout the clip.",
@@ -204,6 +275,7 @@ class StoryboardRenderPlan:
     batch_size: int
     size: str
     model_name: str
+    compiled_request: Dict[str, Any]
     existing_variant_ids: frozenset[str]
     prepared_at: float
 
@@ -1870,6 +1942,214 @@ class ComicGenPipeline:
         self._save_data()
         return script
 
+    def compile_asset_generation_request(
+        self,
+        source_kind: str,
+        source_id: str,
+        asset_type: str,
+        asset_id: str,
+        *,
+        generation_type: str = "all",
+        prompt: Optional[str] = None,
+        apply_style: bool = True,
+        style_preset: Optional[str] = None,
+        reference_image_url: Optional[str] = None,
+        style_prompt: Optional[str] = None,
+        negative_prompt: Optional[str] = None,
+        batch_size: int = 1,
+        model_name: Optional[str] = None,
+        aspect_ratio: Optional[str] = None,
+        activity_source: str = "library",
+    ) -> Dict[str, Any]:
+        """Compile every provider call for one canonical asset generation.
+
+        The returned snapshot is suitable for review, durable queue storage,
+        retries, and direct execution.  Provider workers must consume these
+        prompts instead of adding invisible text after enqueue.
+        """
+
+        target, _, _, _ = self.find_source_asset(
+            source_kind, source_id, asset_type, asset_id
+        )
+        settings = self._source_owner_model_settings(source_kind, source_id)
+        selected_model = get_model_spec(
+            model_name or settings.image_model,
+            IMAGE,
+        ).model_id
+
+        default_aspect = {
+            "character": settings.character_aspect_ratio,
+            "scene": settings.scene_aspect_ratio,
+            "prop": settings.prop_aspect_ratio,
+        }[asset_type]
+        effective_aspect = aspect_ratio or default_aspect
+        from .assets import ASPECT_RATIO_TO_SIZE
+
+        default_size = {
+            "character": "1024x1536",
+            "scene": "1536x1024",
+            "prop": "1024x1024",
+        }[asset_type]
+        effective_size = ASPECT_RATIO_TO_SIZE.get(effective_aspect, default_size)
+
+        art_direction = None
+        owner_style_preset = ""
+        if source_kind == "project":
+            owner = self.scripts.get(source_id)
+            if owner is None:
+                raise ValueError("Script not found")
+            art_direction = owner.art_direction
+            owner_style_preset = owner.style_preset or ""
+            if not art_direction and owner.series_id:
+                series = self.series_store.get(owner.series_id)
+                art_direction = series.art_direction if series else None
+        elif source_kind == "series":
+            owner = self.series_store.get(source_id)
+            if owner is None:
+                raise ValueError("Series not found")
+            art_direction = owner.art_direction
+        if isinstance(art_direction, dict):
+            art_direction = ArtDirection(**art_direction)
+
+        style_layer = ""
+        if apply_style:
+            if art_direction and art_direction.style_config:
+                style_layer = str(
+                    art_direction.style_config.get("positive_prompt", "") or ""
+                ).strip()
+            elif style_prompt:
+                style_layer = style_prompt.strip()
+            elif style_preset:
+                style_layer = f"{style_preset.strip()} style"
+            elif owner_style_preset:
+                style_layer = f"{owner_style_preset.strip()} style"
+
+        if asset_type == "character":
+            phases = (
+                ["full_body", "three_view", "headshot"]
+                if generation_type == "all"
+                else [generation_type]
+            )
+        else:
+            phases = [asset_type]
+
+        explicit_reference = (
+            reference_image_url.strip()
+            if isinstance(reference_image_url, str) and reference_image_url.strip()
+            else None
+        )
+        full_body_reference: Optional[str] = None
+        derived_reference: Optional[str] = None
+        if asset_type == "character":
+            full_body_reference = explicit_reference
+            if not full_body_reference and getattr(target, "base_character_id", None):
+                if source_kind == "project":
+                    owner = self.scripts[source_id]
+                elif source_kind == "series":
+                    owner = self.series_store[source_id]
+                else:
+                    owner = self.library_store
+                base_character = next(
+                    (
+                        item
+                        for item in owner.characters
+                        if item.id == target.base_character_id
+                    ),
+                    None,
+                )
+                if base_character is not None:
+                    full_body_reference = self._motion_reference_source_image_url(
+                        base_character, "full_body"
+                    )
+            if not full_body_reference:
+                full_body_reference = _uploaded_variant_url(target.three_view_asset)
+            if not full_body_reference:
+                full_body_reference = _uploaded_variant_url(target.headshot_asset)
+
+            derived_reference = (
+                self._selected_variant_url(target.full_body_asset)
+                or getattr(target, "full_body_image_url", None)
+            )
+            if not derived_reference and generation_type == "three_view":
+                derived_reference = (
+                    _uploaded_variant_url(target.headshot_asset)
+                    or _uploaded_variant_url(target.three_view_asset)
+                )
+            elif not derived_reference and generation_type == "headshot":
+                derived_reference = (
+                    _uploaded_variant_url(target.three_view_asset)
+                    or _uploaded_variant_url(target.headshot_asset)
+                )
+
+        exact_requests: List[Dict[str, Any]] = []
+        for phase in phases:
+            base_prompt = (
+                prompt.strip()
+                if isinstance(prompt, str) and prompt.strip()
+                else _asset_default_prompt(target, asset_type, phase)
+            )
+            exact_prompt = _join_prompt_layer(base_prompt, style_layer)
+            phase_references: List[str] = []
+            if phase == "full_body" and full_body_reference:
+                phase_references = [full_body_reference]
+            elif phase in {"three_view", "headshot"}:
+                if generation_type == "all":
+                    phase_references = ["phase://full_body"]
+                elif derived_reference:
+                    phase_references = [derived_reference]
+            exact_requests.append(
+                provider_request(
+                    phase=phase,
+                    model=selected_model,
+                    prompt=exact_prompt,
+                    parameters={
+                        "size": "1024x1024" if phase == "reference_sheet" else effective_size,
+                        "quality": "high",
+                        "n": 1,
+                    },
+                    input_media=phase_references,
+                )
+            )
+
+        user_text = prompt.strip() if isinstance(prompt, str) and prompt.strip() else ""
+        prompt_parts: List[Dict[str, Any]] = [
+            {
+                "kind": "user" if user_text else "asset_default",
+                "label": "User prompt" if user_text else "Asset prompt",
+                "text": user_text or exact_requests[0]["prompt"],
+                "editable": True,
+            }
+        ]
+        if style_layer:
+            prompt_parts.append(
+                {
+                    "kind": "art_direction",
+                    "label": "Art direction",
+                    "text": style_layer,
+                    "editable": True,
+                }
+            )
+        return compile_generation_request(
+            category="image",
+            mode=(
+                "i2i"
+                if any(item["input_media"] for item in exact_requests)
+                else "t2i"
+            ),
+            source=activity_source,
+            user_prompt=user_text or exact_requests[0]["prompt"],
+            requests=exact_requests,
+            target={
+                "source_kind": source_kind,
+                "source_id": source_id,
+                "asset_type": asset_type,
+                "asset_id": asset_id,
+                "generation_type": generation_type,
+                "requested_outputs": batch_size,
+            },
+            prompt_parts=prompt_parts,
+        )
+
     def generate_asset(
         self,
         script_id: str,
@@ -1885,6 +2165,7 @@ class ComicGenPipeline:
         batch_size: int = 1,
         model_name: str = None,
         aspect_ratio: str = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Script:
         """Step 2: Generate a specific asset (character/scene/prop).
         If style_preset is None, uses the project's global style."""
@@ -1895,7 +2176,7 @@ class ComicGenPipeline:
         # Get effective model names from project settings if not overridden
         effective_settings = self._effective_model_settings(script)
         t2i_model = model_name or effective_settings.t2i_model
-        i2i_model = effective_settings.i2i_model
+        i2i_model = model_name or effective_settings.i2i_model
         get_model_spec(t2i_model, IMAGE)
         get_model_spec(i2i_model, IMAGE)
         resolve_model_api_key(t2i_model, IMAGE)
@@ -1991,6 +2272,7 @@ class ComicGenPipeline:
                     model_name=t2i_model,
                     i2i_model_name=i2i_model,
                     size=effective_size,
+                    compiled_request=compiled_request,
                 )
             elif asset_type == "scene":
                 self.asset_generator.generate_scene(
@@ -2001,6 +2283,7 @@ class ComicGenPipeline:
                     model_name=t2i_model,
                     size=effective_size,
                     prompt=prompt,
+                    compiled_request=compiled_request,
                 )
             elif asset_type == "prop":
                 self.asset_generator.generate_prop(
@@ -2011,6 +2294,7 @@ class ComicGenPipeline:
                     model_name=t2i_model,
                     size=effective_size,
                     prompt=prompt,
+                    compiled_request=compiled_request,
                 )
 
             self._synchronize_generated_primary_image(
@@ -2043,6 +2327,7 @@ class ComicGenPipeline:
         model_name: str = None,
         aspect_ratio: str = None,
         task_id: str = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Script, str]:
         """Creates an async asset generation task and returns (script, task_id) immediately."""
         script = self.scripts.get(script_id)
@@ -2111,6 +2396,7 @@ class ComicGenPipeline:
                 "batch_size": batch_size,
                 "model_name": selected_model,
                 "aspect_ratio": aspect_ratio,
+                "compiled_request": compiled_request,
             },
         }
 
@@ -2295,6 +2581,7 @@ class ComicGenPipeline:
                     params["batch_size"],
                     params["model_name"],
                     params.get("aspect_ratio"),
+                    params.get("compiled_request"),
                 )
             task["status"] = "completed"
             task["progress"] = 100
@@ -2337,6 +2624,7 @@ class ComicGenPipeline:
                 batch_size=batch_size,
                 model_name=t2i_model,
                 size=effective_size,
+                compiled_request=params.get("compiled_request"),
             )
         elif asset_type == "scene":
             target = next((s for s in series.scenes if s.id == asset_id), None)
@@ -2350,6 +2638,7 @@ class ComicGenPipeline:
                 model_name=t2i_model,
                 size=effective_size,
                 prompt=prompt,
+                compiled_request=params.get("compiled_request"),
             )
         elif asset_type == "prop":
             target = next((p for p in series.props if p.id == asset_id), None)
@@ -2363,6 +2652,7 @@ class ComicGenPipeline:
                 model_name=t2i_model,
                 size=effective_size,
                 prompt=prompt,
+                compiled_request=params.get("compiled_request"),
             )
         else:
             raise ValueError(f"Unknown asset type: {asset_type}")
@@ -2395,6 +2685,7 @@ class ComicGenPipeline:
                     model_name=model_name,
                     i2i_model_name=model_name,
                     size=params["effective_size"],
+                    compiled_request=params.get("compiled_request"),
                 )
             elif asset_type == "scene":
                 self.asset_generator.generate_scene(
@@ -2405,6 +2696,7 @@ class ComicGenPipeline:
                     model_name=model_name,
                     size=params["effective_size"],
                     prompt=prompt,
+                    compiled_request=params.get("compiled_request"),
                 )
             elif asset_type == "prop":
                 self.asset_generator.generate_prop(
@@ -2415,6 +2707,7 @@ class ComicGenPipeline:
                     model_name=model_name,
                     size=params["effective_size"],
                     prompt=prompt,
+                    compiled_request=params.get("compiled_request"),
                 )
             else:
                 raise ValueError(f"Unknown asset type: {asset_type}")
@@ -2561,6 +2854,7 @@ class ComicGenPipeline:
         model_id: Optional[str] = None,
         audio_url: Optional[str] = None,
         task_id: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, str]:
         """Create a desktop-compatible transient exact-owner motion task."""
 
@@ -2594,6 +2888,7 @@ class ComicGenPipeline:
                 "batch_size": batch_size,
                 "model": selected_model,
                 "audio_url": audio_url,
+                "compiled_request": compiled_request,
             },
         }
         return asset, task_id
@@ -2617,6 +2912,7 @@ class ComicGenPipeline:
                 batch_size=params["batch_size"],
                 model_id=params["model"],
                 audio_url=params.get("audio_url"),
+                compiled_request=params.get("compiled_request"),
             )
             task["status"] = "completed"
             task["progress"] = 100
@@ -4749,6 +5045,100 @@ class ComicGenPipeline:
             return self._effective_series_model_settings(self.series_store[source_id])
         return self._global_model_settings()
 
+    def compile_source_motion_request(
+        self,
+        source_kind: str,
+        source_id: str,
+        asset_type: str,
+        asset_id: str,
+        *,
+        motion_type: Optional[str] = None,
+        prompt: Optional[str] = None,
+        duration: int = 5,
+        batch_size: int = 1,
+        model_id: Optional[str] = None,
+        audio_url: Optional[str] = None,
+        activity_source: str = "library",
+    ) -> Dict[str, Any]:
+        """Compile the exact I2V request for one canonical asset."""
+
+        target_asset, _, _, _ = self.find_source_asset(
+            source_kind, source_id, asset_type, asset_id
+        )
+        canonical_motion_type = self._canonical_motion_type(asset_type, motion_type)
+        if audio_url:
+            raise ValueError("New API Seedance does not support driving-audio input")
+        source_image_url = self._motion_reference_source_image_url(
+            target_asset, canonical_motion_type
+        )
+        if not source_image_url:
+            raise ValueError(
+                f"No source image available for {canonical_motion_type}. "
+                "Please generate or select a static image first."
+            )
+        settings = self._source_owner_model_settings(source_kind, source_id)
+        selected_model = get_model_spec(model_id or settings.video_model, VIDEO).model_id
+        user_text = prompt.strip() if isinstance(prompt, str) and prompt.strip() else ""
+        if user_text:
+            exact_prompt = user_text
+        elif asset_type == "character":
+            label = canonical_motion_type.replace("_", " ").title()
+            exact_prompt = (
+                f"{label} character reference video. {FICTIONAL_CHARACTER_PROMPT_NOTICE} "
+                f"{target_asset.description}. Looking around, breathing, slight movement, "
+                "subtle gestures. Stable camera, high quality, 4k."
+            )
+        elif asset_type == "scene":
+            exact_prompt = (
+                f"Cinematic scene video reference of {target_asset.name}. "
+                f"{target_asset.description}. Ambient motion, natural lighting changes, "
+                "slow camera movement, high quality, 4k."
+            )
+        else:
+            exact_prompt = (
+                f"Cinematic prop video reference of {target_asset.name}. "
+                f"{target_asset.description}. Detailed textures, subtle rotation and movement, "
+                "high quality, 4k."
+            )
+        exact = provider_request(
+            phase="motion_reference",
+            model=selected_model,
+            prompt=exact_prompt,
+            parameters={
+                "duration": duration,
+                "generate_audio": True,
+                "watermark": False,
+            },
+            input_media=[source_image_url],
+        )
+        if audio_url:
+            # Seedance does not accept driving audio. Keeping this out of the
+            # provider request prevents the preview from claiming otherwise.
+            raise ValueError("Seedance motion generation does not support driving audio")
+        return compile_generation_request(
+            category="video",
+            mode="i2v",
+            source=activity_source,
+            user_prompt=user_text or exact_prompt,
+            requests=[exact],
+            target={
+                "source_kind": source_kind,
+                "source_id": source_id,
+                "asset_type": asset_type,
+                "asset_id": asset_id,
+                "motion_type": canonical_motion_type,
+                "requested_outputs": batch_size,
+            },
+            prompt_parts=[
+                {
+                    "kind": "user" if user_text else "asset_default",
+                    "label": "User prompt" if user_text else "Asset motion prompt",
+                    "text": exact_prompt,
+                    "editable": True,
+                }
+            ],
+        )
+
     def generate_source_asset_motion_ref(
         self,
         source_kind: str,
@@ -4762,6 +5152,7 @@ class ComicGenPipeline:
         batch_size: int = 1,
         model_id: Optional[str] = None,
         audio_url: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Generate motion media against one exact canonical owner.
 
@@ -4776,6 +5167,8 @@ class ComicGenPipeline:
             source_kind, source_id, asset_type, asset_id
         )
         canonical_motion_type = self._canonical_motion_type(asset_type, motion_type)
+        if audio_url:
+            raise ValueError("New API Seedance does not support driving-audio input")
         source_image_url = self._motion_reference_source_image_url(
             target_asset, canonical_motion_type
         )
@@ -4788,6 +5181,18 @@ class ComicGenPipeline:
         settings = self._source_owner_model_settings(source_kind, source_id)
         selected_model = get_model_spec(model_id or settings.video_model, VIDEO).model_id
         resolve_model_api_key(selected_model, VIDEO)
+
+        if compiled_request:
+            exact = compiled_request.get("provider_requests")
+            exact = exact[0] if isinstance(exact, list) and exact else None
+            if not isinstance(exact, dict):
+                raise ValueError("Compiled motion request is missing its provider request")
+            prompt = str(exact.get("prompt") or "").strip()
+            selected_model = get_model_spec(str(exact.get("model") or ""), VIDEO).model_id
+            exact_parameters = exact.get("parameters")
+            if isinstance(exact_parameters, dict):
+                duration = int(exact_parameters.get("duration", duration))
+                batch_size = int(exact_parameters.get("batch_size", batch_size))
 
         if not prompt:
             if asset_type == "character":
@@ -4820,7 +5225,7 @@ class ComicGenPipeline:
                     image_url=source_image_url,
                     prompt=prompt,
                     duration=duration,
-                    audio_url=audio_url,
+                    audio_url=None,
                     model_id=selected_model,
                 )
                 if not result or not result.get("video_url"):
@@ -5037,6 +5442,89 @@ class ComicGenPipeline:
             )
         return None
 
+    def compile_storyboard_render_request(
+        self,
+        script_id: str,
+        frame_id: str,
+        composition_data: Optional[Dict[str, Any]],
+        prompt: str,
+        *,
+        batch_size: int = 1,
+        model_name: Optional[str] = None,
+        aspect_ratio: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Freeze the exact image request used to render one storyboard frame."""
+
+        script = self.scripts.get(script_id)
+        if script is None:
+            raise ValueError("Script not found")
+        if not any(frame.id == frame_id for frame in script.frames):
+            raise ValueError(f"Frame {frame_id} not found")
+        clean_prompt = (prompt or "").strip()
+        if not clean_prompt:
+            raise ValueError("Storyboard image prompt cannot be empty")
+
+        settings = self._effective_model_settings(script)
+        selected_model = get_model_spec(
+            model_name or settings.image_model,
+            IMAGE,
+        ).model_id
+        selected_aspect = aspect_ratio or settings.storyboard_aspect_ratio
+        from .assets import ASPECT_RATIO_TO_SIZE
+
+        if selected_aspect not in ASPECT_RATIO_TO_SIZE:
+            raise ValueError("Storyboard aspect ratio must be 9:16, 3:4, 1:1, 4:3, or 16:9")
+        size = ASPECT_RATIO_TO_SIZE[selected_aspect]
+
+        references: List[str] = []
+        if composition_data:
+            candidates = [composition_data.get("reference_image_url")]
+            candidates.extend(composition_data.get("reference_image_urls") or [])
+            for value in candidates:
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                normalized = value.strip()
+                if normalized in references:
+                    continue
+                if not (
+                    is_object_key(normalized)
+                    or normalized.startswith(("http://", "https://"))
+                ):
+                    local_path = _safe_resolve_path(self.output_root, normalized)
+                    if not os.path.exists(local_path):
+                        raise ValueError(f"Storyboard reference image not found: {normalized}")
+                references.append(normalized)
+
+        exact = provider_request(
+            phase="storyboard_frame",
+            model=selected_model,
+            prompt=clean_prompt,
+            parameters={"size": size, "quality": "high", "n": 1},
+            input_media=references,
+        )
+        return compile_generation_request(
+            category="image",
+            mode="i2i" if exact["input_media"] else "t2i",
+            source="workspace",
+            user_prompt=clean_prompt,
+            requests=[exact],
+            target={
+                "project_id": script_id,
+                "frame_id": frame_id,
+                "surface": "storyboard",
+                "aspect_ratio": selected_aspect,
+                "requested_outputs": batch_size,
+            },
+            prompt_parts=[
+                {
+                    "kind": "user",
+                    "label": "Full storyboard prompt",
+                    "text": clean_prompt,
+                    "editable": True,
+                }
+            ],
+        )
+
     def prepare_storyboard_render(
         self,
         script_id: str,
@@ -5044,6 +5532,9 @@ class ComicGenPipeline:
         composition_data: Optional[Dict[str, Any]],
         prompt: str,
         batch_size: int = 1,
+        model_name: Optional[str] = None,
+        aspect_ratio: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> StoryboardRenderPlan:
         """Persist a render marker and return provider inputs detached from state."""
         script = self.scripts.get(script_id)
@@ -5054,43 +5545,34 @@ class ComicGenPipeline:
         if not frame:
             raise ValueError(f"Frame {frame_id} not found")
 
-        ref_image_url = None
-        ref_image_urls = []
-        if composition_data:
-            ref_image_url = composition_data.get("reference_image_url")
-            ref_image_urls = composition_data.get("reference_image_urls", [])
-
+        compiled_request = compiled_request or self.compile_storyboard_render_request(
+            script_id,
+            frame_id,
+            composition_data,
+            prompt,
+            batch_size=batch_size,
+            model_name=model_name,
+            aspect_ratio=aspect_ratio,
+        )
+        exact_request = first_provider_request(compiled_request)
+        prompt = str(exact_request["prompt"])
         ref_image_paths: List[str] = []
-        for url in ref_image_urls:
-            if not url:
-                continue
+        for url in exact_request.get("input_media") or []:
             if is_object_key(url) or url.startswith("http"):
                 ref_image_paths.append(url)
             else:
                 potential_path = _safe_resolve_path(self.output_root, url)
-                if os.path.exists(potential_path):
-                    ref_image_paths.append(potential_path)
-
-        if ref_image_url and ref_image_url not in ref_image_urls:
-            if is_object_key(ref_image_url) or ref_image_url.startswith("http"):
-                if ref_image_url not in ref_image_paths:
-                    ref_image_paths.append(ref_image_url)
-            else:
-                potential_path = _safe_resolve_path(self.output_root, ref_image_url)
-                if os.path.exists(potential_path) and potential_path not in ref_image_paths:
-                    ref_image_paths.append(potential_path)
+                if not os.path.exists(potential_path):
+                    raise ValueError(f"Storyboard reference image not found: {url}")
+                ref_image_paths.append(potential_path)
 
         resolved = self.resolve_episode_assets(script)
         scene = next((item for item in resolved["scenes"] if item.id == frame.scene_id), None)
 
-        from .assets import ASPECT_RATIO_TO_SIZE
-
-        effective_settings = self._effective_model_settings(script)
-        effective_size = ASPECT_RATIO_TO_SIZE.get(
-            effective_settings.storyboard_aspect_ratio,
-            "1536x1024",
+        effective_size = str(
+            exact_request.get("parameters", {}).get("size") or "1536x1024"
         )
-        model_name = effective_settings.i2i_model
+        selected_model = str(exact_request["model"])
         rendered_asset = frame.rendered_image_asset
         existing_ids = frozenset(
             variant.id for variant in (rendered_asset.variants if rendered_asset else [])
@@ -5107,7 +5589,7 @@ class ComicGenPipeline:
         logger.info(
             "Rendering frame %s using model %s with %s reference images",
             frame_id,
-            model_name,
+            selected_model,
             len(ref_image_paths),
         )
         return StoryboardRenderPlan(
@@ -5120,7 +5602,8 @@ class ComicGenPipeline:
             prompt=prompt,
             batch_size=batch_size,
             size=effective_size,
-            model_name=model_name,
+            model_name=selected_model,
+            compiled_request=compiled_request,
             existing_variant_ids=existing_ids,
             prepared_at=prepared_at,
         )
@@ -5137,6 +5620,7 @@ class ComicGenPipeline:
             batch_size=plan.batch_size,
             size=plan.size,
             model_name=plan.model_name,
+            exact_request=True,
         )
 
     @staticmethod
@@ -5240,10 +5724,20 @@ class ComicGenPipeline:
         composition_data: Optional[Dict[str, Any]],
         prompt: str,
         batch_size: int = 1,
+        model_name: Optional[str] = None,
+        aspect_ratio: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Script:
         """Step 3b: Render a frame through a detached, merge-safe plan."""
         plan = self.prepare_storyboard_render(
-            script_id, frame_id, composition_data, prompt, batch_size
+            script_id,
+            frame_id,
+            composition_data,
+            prompt,
+            batch_size,
+            model_name,
+            aspect_ratio,
+            compiled_request,
         )
         try:
             generated_frame = self.execute_storyboard_render_plan(plan)
@@ -5266,6 +5760,103 @@ class ComicGenPipeline:
         self._save_data()
         return script
 
+    def compile_video_task_request(
+        self,
+        script_id: str,
+        *,
+        image_url: Optional[str],
+        prompt: str,
+        frame_id: Optional[str] = None,
+        frame_type: Optional[str] = None,
+        duration: int = 5,
+        seed: Optional[int] = None,
+        resolution: str = "720p",
+        generate_audio: bool = False,
+        model: Optional[str] = None,
+        generation_mode: str = "i2v",
+        ratio: Optional[str] = None,
+        watermark: Optional[bool] = None,
+        batch_size: int = 1,
+    ) -> Dict[str, Any]:
+        """Compile dialogue/camera guidance before a clip is enqueued."""
+
+        script = self.get_script(script_id)
+        if script is None:
+            raise ValueError("Script not found")
+        selected_model = get_model_spec(
+            model or self._effective_model_settings(script).video_model,
+            VIDEO,
+        ).model_id
+        exact_prompt = (prompt or "").strip()
+        if not exact_prompt:
+            raise ValueError("Clip generation requires a motion prompt")
+        prompt_parts: List[Dict[str, Any]] = [
+            {
+                "kind": "user",
+                "label": "User prompt",
+                "text": exact_prompt,
+                "editable": True,
+            }
+        ]
+        if frame_id:
+            frame = next((item for item in script.frames if item.id == frame_id), None)
+            if frame is not None:
+                from .prompt_assembly import enrich_prompt_with_dialogue
+
+                enriched = enrich_prompt_with_dialogue(exact_prompt, frame)
+                if enriched != exact_prompt:
+                    dialogue_layer = enriched[len(exact_prompt) :].strip()
+                    if dialogue_layer:
+                        prompt_parts.append(
+                            {
+                                "kind": "storyboard_dialogue",
+                                "label": "Dialogue direction",
+                                "text": dialogue_layer,
+                                "editable": True,
+                            }
+                        )
+                    exact_prompt = enriched
+        if frame_type:
+            camera_prompt = _motion_prompt_with_frame_type(exact_prompt, frame_type)
+            camera_layer = camera_prompt[len(exact_prompt) :].strip()
+            if camera_layer:
+                prompt_parts.append(
+                    {
+                        "kind": "camera_direction",
+                        "label": "Camera direction",
+                        "text": camera_layer,
+                        "editable": True,
+                    }
+                )
+            exact_prompt = camera_prompt
+        exact = provider_request(
+            phase="storyboard_video",
+            model=selected_model,
+            prompt=exact_prompt,
+            parameters={
+                "duration": duration,
+                "resolution": resolution,
+                "aspect_ratio": ratio or "16:9",
+                "seed": seed,
+                "generate_audio": generate_audio,
+                "watermark": bool(watermark) if watermark is not None else False,
+            },
+            input_media=[image_url] if image_url else [],
+        )
+        return compile_generation_request(
+            category="video",
+            mode=generation_mode,
+            source="workspace",
+            user_prompt=prompt,
+            requests=[exact],
+            target={
+                "script_id": script_id,
+                "frame_id": frame_id,
+                "requested_outputs": batch_size,
+            },
+            prompt_parts=prompt_parts,
+        )
+
     def create_video_task(
         self,
         script_id: str,
@@ -5285,6 +5876,7 @@ class ComicGenPipeline:
         watermark: Optional[bool] = None,
         workbench_tab: Optional[str] = None,
         task_id: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Script, str]:
         """Creates a new video generation task."""
         script = self.get_script(script_id)
@@ -5308,6 +5900,8 @@ class ComicGenPipeline:
             raise ValueError("Seedance video resolution must be 720p or 1080p")
         if generation_mode == "i2v" and resolution != "720p":
             raise ValueError("Image-to-video clip generation supports only 720p")
+        if resolution == "1080p" and model != "doubao-seedance-2-0-260128":
+            raise ValueError("Only Seedance 2.0 text-to-video supports 1080p")
         ratio = (ratio or "16:9").strip()
         if ratio not in {"16:9", "9:16", "1:1"}:
             raise ValueError("Seedance video aspect ratio must be 16:9, 9:16, or 1:1")
@@ -5325,9 +5919,24 @@ class ComicGenPipeline:
         # this snapshot after the user selects a safer replacement image.
         snapshot_url = self._snapshot_video_input(image_url, task_id)
 
-        # Enrich prompt with dialogue cue when a frame has dialogue text.
-        # This gives the video model explicit mouth-movement instructions.
-        if frame_id and prompt:
+        # Legacy callers without a compiled snapshot still receive dialogue
+        # enrichment. New callers execute the exact reviewed provider prompt.
+        if compiled_request:
+            exact_requests = compiled_request.get("provider_requests")
+            exact = exact_requests[0] if isinstance(exact_requests, list) and exact_requests else None
+            if not isinstance(exact, dict):
+                raise ValueError("Compiled video request is missing its provider request")
+            prompt = str(exact.get("prompt") or "").strip()
+            model = get_model_spec(str(exact.get("model") or ""), VIDEO).model_id
+            exact_parameters = exact.get("parameters")
+            if isinstance(exact_parameters, dict):
+                duration = int(exact_parameters.get("duration", duration))
+                resolution = str(exact_parameters.get("resolution", resolution))
+                ratio = str(exact_parameters.get("aspect_ratio", ratio or "16:9"))
+                seed = exact_parameters.get("seed", seed)
+                generate_audio = bool(exact_parameters.get("generate_audio", generate_audio))
+                watermark = bool(exact_parameters.get("watermark", watermark or False))
+        elif frame_id and prompt:
             frame = next((f for f in script.frames if f.id == frame_id), None)
             if frame:
                 from .prompt_assembly import enrich_prompt_with_dialogue
@@ -5343,6 +5952,7 @@ class ComicGenPipeline:
             frame_type=_normalize_frame_type(frame_type) if frame_type else None,
             image_url=snapshot_url,
             prompt=prompt,
+            compiled_request=compiled_request,
             status="pending",
             duration=duration,
             seed=seed,
@@ -6985,8 +7595,25 @@ class ComicGenPipeline:
                 task.provider_request_id = preq_id
                 self._save_data()
 
+            exact_requests = (
+                task.compiled_request.get("provider_requests")
+                if isinstance(task.compiled_request, dict)
+                else None
+            )
+            exact_request = (
+                exact_requests[0]
+                if isinstance(exact_requests, list)
+                and exact_requests
+                and isinstance(exact_requests[0], dict)
+                else None
+            )
+            provider_prompt = (
+                str(exact_request.get("prompt") or "")
+                if exact_request
+                else _motion_prompt_with_frame_type(task.prompt, task.frame_type)
+            )
             video_path, _ = self._newapi_video_model.generate(
-                prompt=_motion_prompt_with_frame_type(task.prompt, task.frame_type),
+                prompt=provider_prompt,
                 output_path=output_path,
                 img_url=img_url or None,
                 img_path=img_path,
@@ -9310,6 +9937,7 @@ class ComicGenPipeline:
         model_name: str = None,
         task_id: Optional[str] = None,
         aspect_ratio: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """Generate a Series asset. Creates an async task like project asset generation.
         Returns (series, task_id)."""
@@ -9389,6 +10017,7 @@ class ComicGenPipeline:
                 "batch_size": batch_size,
                 "t2i_model": t2i_model,
                 "effective_size": effective_size,
+                "compiled_request": compiled_request,
             },
         }
         return series, task_id
@@ -9408,6 +10037,7 @@ class ComicGenPipeline:
         model_name: Optional[str] = None,
         aspect_ratio: Optional[str] = None,
         task_id: Optional[str] = None,
+        compiled_request: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, str]:
         """Reserve an async generation task owned directly by the global pool."""
 
@@ -9470,6 +10100,7 @@ class ComicGenPipeline:
                 "t2i_model": selected_model,
                 "effective_size": effective_size,
                 "aspect_ratio": aspect_ratio,
+                "compiled_request": compiled_request,
             },
         }
         return target, identifier

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { Palette, Layout, Film, BookOpen, Users, Video, Settings, MessageSquareCode, Clapperboard } from "lucide-react";
+import { Palette, Layout, Film, BookOpen, Users, Video, Clapperboard } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import PipelineSidebar from "@/components/layout/PipelineSidebar";
@@ -27,8 +27,6 @@ const ConsistencyVault = dynamic(() => import("@/components/modules/ConsistencyV
 const ArtDirection = dynamic(() => import("@/components/modules/ArtDirection"), { ssr: false });
 const StoryboardComposer = dynamic(() => import("@/components/modules/StoryboardComposer"), { ssr: false });
 const StoryboardR2V = dynamic(() => import("@/components/modules/StoryboardR2V"), { ssr: false });
-const ModelSettingsModal = dynamic(() => import("@/components/common/ModelSettingsModal"), { ssr: false });
-const PromptConfigModal = dynamic(() => import("@/components/project/PromptConfigModal"), { ssr: false });
 const EntityConfirmModal = dynamic(() => import("@/components/modules/EntityConfirmModal"), { ssr: false });
 
 // Audio mixing and export are handled by the Assembly step.
@@ -53,8 +51,6 @@ const UNIFIED_STEPS = [
 
 export default function ProjectClient({ id, breadcrumbSegments }: { id: string; breadcrumbSegments?: BreadcrumbSegment[] }) {
     const [activeStep, setActiveStep] = useState("script");
-    const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
-    const [promptConfigOpen, setPromptConfigOpen] = useState(false);
     const t = useTranslations("project");
     const tp = useTranslations("pipeline");
     const { serverMode } = useAuth();
@@ -200,31 +196,10 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
     );
     const currentProjectId = currentProject?.id;
 
-    const settingsActions = useMemo(() => (
-        <>
-            <button
-                onClick={() => setPromptConfigOpen(true)}
-                aria-label={t("promptConfigurationTitle")}
-                className="p-2 hover:bg-hover-bg rounded-lg transition-colors group"
-                title={t("promptConfigurationTitle")}
-            >
-                <MessageSquareCode size={16} className="text-text-secondary group-hover:text-purple-400 transition-colors" />
-            </button>
-            <button
-                onClick={() => setModelSettingsOpen(true)}
-                aria-label={t("modelSettingsTitle")}
-                className="p-2 hover:bg-hover-bg rounded-lg transition-colors group"
-                title={t("modelSettingsTitle")}
-            >
-                <Settings size={16} className="text-text-secondary group-hover:text-foreground transition-colors" />
-            </button>
-        </>
-    ), [t]);
-
     useEffect(() => {
         if (!serverMode || !currentProjectId) return;
-        return registerNavigation({ segments, actions: settingsActions });
-    }, [currentProjectId, registerNavigation, segments, serverMode, settingsActions]);
+        return registerNavigation({ segments });
+    }, [currentProjectId, registerNavigation, segments, serverMode]);
 
     if (!currentProject) {
         return (
@@ -265,7 +240,6 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                     onStepChange={setActiveStep}
                     steps={steps}
                     breadcrumbSegments={serverMode ? undefined : segments}
-                    headerActions={serverMode ? undefined : settingsActions}
                     topSlot={
                         currentProject?.series_id ? (
                             <EpisodeMiniList
@@ -276,22 +250,6 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                     }
                 />
             </ResizableSidePanel>
-
-            {/* Model Settings Modal */}
-            {modelSettingsOpen ? (
-                <ModelSettingsModal
-                    isOpen
-                    onClose={() => setModelSettingsOpen(false)}
-                />
-            ) : null}
-
-            {/* Prompt Config Modal */}
-            {promptConfigOpen ? (
-                <PromptConfigModal
-                    isOpen
-                    onClose={() => setPromptConfigOpen(false)}
-                />
-            ) : null}
 
             {/* Main Content Area — no z-index to avoid trapping fixed modals in a stacking context */}
             <div className="flex-1 flex overflow-hidden relative">

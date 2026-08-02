@@ -41,6 +41,7 @@ import ModalPortal from "@/components/common/ModalPortal";
 import GlobalPageHeader from "@/components/layout/GlobalPageHeader";
 import { appDateTimeFormatter, parseApiTimestamp } from "@/lib/dateTime";
 import { useNow } from "@/lib/useNow";
+import CompiledRequestDetails from "@/components/generation/CompiledRequestDetails";
 
 type StatusFilter = "all" | ApiCallStatus;
 
@@ -758,6 +759,11 @@ function JobDetailDrawer({
               <div className="mt-3 rounded-xl border border-glass-border bg-glass p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-text-muted">{t("promptLabel")}</p>
                 <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-text-secondary">{job.prompt}</p>
+              </div>
+            ) : null}
+            {job.compiled_request ? (
+              <div className="mt-3 rounded-xl border border-primary/20 bg-primary/[0.03] p-4">
+                <CompiledRequestDetails compiled={job.compiled_request} />
               </div>
             ) : null}
             {job.parameters && Object.keys(job.parameters).length ? (

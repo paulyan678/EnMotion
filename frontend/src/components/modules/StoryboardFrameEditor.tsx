@@ -14,6 +14,12 @@ import { VariantSelector } from "../common/VariantSelector";
 import { useProjectStore } from "@/store/projectStore";
 import { selectedStoryboardImage } from "@/lib/clipStartFrame";
 import { useModalFocusTrap } from "@/components/common/useModalFocusTrap";
+import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
+import {
+    DEFAULT_MODEL_SETTINGS,
+    PROJECT_IMAGE_MODELS,
+} from "@/lib/modelCatalog";
+import { primaryAssetImageUrl } from "@/lib/assetImage";
 
 interface StoryboardFrameEditorProps {
     frame: any;
@@ -23,16 +29,32 @@ interface StoryboardFrameEditorProps {
 export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: StoryboardFrameEditorProps) {
     const ts = useTranslations("storyboard");
     const tc = useTranslations("common");
+    const tg = useTranslations("generationRequest");
     const currentProject = useProjectStore(state => state.currentProject);
     const updateProject = useProjectStore(state => state.updateProject);
 
     // Get the latest frame data from the store (instead of using stale prop)
     const frame = currentProject?.frames?.find((f: any) => f.id === initialFrame.id) || initialFrame;
 
-    const externalPrompt = frame.image_prompt || frame.action_description || "";
+    const stylePrompt = currentProject?.art_direction?.style_config?.positive_prompt || "";
+    const externalPrompt = frame.image_prompt || [
+        stylePrompt,
+        frame.action_description,
+        frame.dialogue ? `Dialogue context: "${frame.dialogue}"` : "",
+    ].filter(Boolean).join(" . ");
     const [prompt, setPrompt] = useState(externalPrompt);
     const [syncedPrompt, setSyncedPrompt] = useState(externalPrompt);
     const [isGenerating, setIsGenerating] = useState(false);
+    const requestedImageModel = currentProject?.model_settings?.image_model;
+    const [imageModel, setImageModel] = useState(
+        requestedImageModel
+        && PROJECT_IMAGE_MODELS.some((model) => model.id === requestedImageModel)
+            ? requestedImageModel
+            : DEFAULT_MODEL_SETTINGS.image_model,
+    );
+    const [aspectRatio, setAspectRatio] = useState(
+        currentProject?.model_settings?.storyboard_aspect_ratio || "16:9",
+    );
     const externalFrameType = frameMovementTypeFromFrame(frame) ?? "";
     const [frameType, setFrameType] = useState<FrameMovementType | "">(externalFrameType);
     const [syncedFrameType, setSyncedFrameType] = useState<FrameMovementType | "">(externalFrameType);
@@ -40,6 +62,32 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
     const [frameTypeError, setFrameTypeError] = useState("");
     const dialogRef = useModalFocusTrap<HTMLDivElement>(onClose);
     const renderControllerRef = useRef<AbortController | null>(null);
+
+    const compositionData = (() => {
+        if (frame.composition_data) return frame.composition_data;
+        const references: string[] = [];
+        const add = (value?: string | null) => {
+            if (value && !references.includes(value)) references.push(value);
+        };
+        const scene = currentProject?.scenes?.find((item: any) => item.id === frame.scene_id);
+        add(scene ? primaryAssetImageUrl(scene, "scene") : null);
+        for (const characterId of frame.character_ids ?? []) {
+            const character = currentProject?.characters?.find(
+                (item: any) => item.id === characterId,
+            );
+            add(character ? primaryAssetImageUrl(character, "character") : null);
+        }
+        for (const propId of frame.prop_ids ?? []) {
+            const prop = currentProject?.props?.find((item: any) => item.id === propId);
+            add(prop ? primaryAssetImageUrl(prop, "prop") : null);
+        }
+        return {
+            character_ids: frame.character_ids ?? [],
+            prop_ids: frame.prop_ids ?? [],
+            scene_id: frame.scene_id ?? "",
+            reference_image_urls: references,
+        };
+    })();
 
     useEffect(() => () => {
         renderControllerRef.current?.abort();
@@ -67,18 +115,26 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
 
         setIsGenerating(true);
         try {
-            // Construct composition data (simplified for now, ideally passed from parent or re-calculated)
-            // For re-rendering, we might want to reuse existing composition data or just rely on prompt/I2I
-            // The api.renderFrame expects compositionData.
-            // If we don't pass it, pipeline uses existing.
-
+            const compiled = await api.previewStoryboardFrame(projectId, {
+                frame_id: frame.id,
+                composition_data: compositionData,
+                prompt,
+                batch_size: batchSize,
+                model_name: imageModel,
+                aspect_ratio: aspectRatio,
+            });
             const updatedProject = await api.renderFrame(
                 projectId,
                 frame.id,
-                null, // Use existing composition data
+                compositionData,
                 prompt,
                 batchSize,
-                { signal: controller.signal },
+                {
+                    signal: controller.signal,
+                    modelName: imageModel,
+                    aspectRatio,
+                    compiledRequestChecksum: compiled.checksum,
+                },
             );
             if (!controller.signal.aborted) {
                 updateProject(projectId, updatedProject);
@@ -170,7 +226,7 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
                             onDelete={handleDeleteVariant}
                             onGenerate={handleGenerate}
                             isGenerating={isGenerating}
-                            aspectRatio="16:9"
+                            aspectRatio={aspectRatio}
                             className="h-full"
                         />
                     </div>
@@ -246,6 +302,54 @@ export default function StoryboardFrameEditor({ frame: initialFrame, onClose }: 
                             <p className="text-xs text-text-muted mt-2">
                                 {ts("promptHint")}
                             </p>
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                <label className="space-y-1.5 text-xs text-text-secondary">
+                                    <span>{tg("model")}</span>
+                                    <select
+                                        value={imageModel}
+                                        onChange={(event) => setImageModel(event.target.value)}
+                                        className="glass-input w-full"
+                                    >
+                                        {PROJECT_IMAGE_MODELS.map((model) => (
+                                            <option key={model.id} value={model.id}>{model.name}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label className="space-y-1.5 text-xs text-text-secondary">
+                                    <span>{tg("aspectRatio")}</span>
+                                    <select
+                                        value={aspectRatio}
+                                        onChange={(event) => setAspectRatio(event.target.value)}
+                                        className="glass-input w-full"
+                                    >
+                                        {["16:9", "9:16", "1:1", "4:3", "3:4"].map((ratio) => (
+                                            <option key={ratio} value={ratio}>{ratio}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                            </div>
+                            <div className="mt-4">
+                                <GenerationRequestReview
+                                    fingerprint={JSON.stringify({
+                                        prompt,
+                                        compositionData,
+                                        imageModel,
+                                        aspectRatio,
+                                    })}
+                                    loadPreview={() => api.previewStoryboardFrame(
+                                        currentProject?.id || "",
+                                        {
+                                            frame_id: frame.id,
+                                            composition_data: compositionData,
+                                            prompt,
+                                            batch_size: 1,
+                                            model_name: imageModel,
+                                            aspect_ratio: aspectRatio,
+                                        },
+                                    )}
+                                    disabled={!currentProject || !prompt.trim()}
+                                />
+                            </div>
                         </div>
                     </div>
                 </div>

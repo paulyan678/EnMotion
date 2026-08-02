@@ -6,7 +6,6 @@ import { notifyAssetUsageChanged } from "@/lib/assetLibrarySync";
 import { isHybridModeEnabled } from "@/lib/serverMode";
 import { getAssetUrl } from "@/lib/utils";
 import { apiTimestampMilliseconds } from "@/lib/dateTime";
-import { readWorkspaceItem } from "@/lib/workspaceStorage";
 export { API_URL } from "@/lib/apiUrl";
 
 export const SERIES_MODEL_SETTINGS_TIMEOUT_MS = 30_000;
@@ -78,59 +77,6 @@ export interface PromptConfigPayload {
     style_analysis?: string;
     storyboard_extraction?: string;
     polish_model?: string;
-}
-
-const DEFAULT_MODEL_SETTINGS_KEY = "enmotion_default_model_settings";
-const DEFAULT_PROMPT_CONFIG_KEY = "enmotion_default_prompt_config";
-
-function workspaceDefaultModelSettings(): ModelSettingsPayload | undefined {
-    try {
-        const raw = readWorkspaceItem(DEFAULT_MODEL_SETTINGS_KEY);
-        if (!raw) return undefined;
-        const parsed = JSON.parse(raw) as ModelSettingsPayload;
-        const candidate: ModelSettingsPayload = {
-            chat_model: parsed.chat_model,
-            image_model: parsed.image_model ?? parsed.t2i_model ?? parsed.i2i_model,
-            video_model: parsed.video_model ?? parsed.i2v_model,
-            character_aspect_ratio: parsed.character_aspect_ratio,
-            scene_aspect_ratio: parsed.scene_aspect_ratio,
-            prop_aspect_ratio: parsed.prop_aspect_ratio,
-            storyboard_aspect_ratio: parsed.storyboard_aspect_ratio,
-        };
-        const present = Object.fromEntries(
-            Object.entries(candidate).filter(
-                ([, value]) => typeof value === "string" && value.trim().length > 0,
-            ),
-        ) as ModelSettingsPayload;
-        return Object.keys(present).length > 0 ? present : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-function workspaceDefaultPromptConfig(): PromptConfigPayload | undefined {
-    try {
-        const raw = readWorkspaceItem(DEFAULT_PROMPT_CONFIG_KEY);
-        if (!raw) return undefined;
-        const parsed = JSON.parse(raw) as PromptConfigPayload;
-        const candidate: PromptConfigPayload = {};
-        for (const field of [
-            "storyboard_polish",
-            "video_polish",
-            "entity_extraction",
-            "style_analysis",
-            "storyboard_extraction",
-            "polish_model",
-        ] as const) {
-            const value = parsed[field];
-            if (typeof value === "string" && value.trim()) {
-                candidate[field] = value;
-            }
-        }
-        return Object.keys(candidate).length > 0 ? candidate : undefined;
-    } catch {
-        return undefined;
-    }
 }
 
 export interface ImportFileConfirmResponse {
@@ -209,6 +155,7 @@ export interface AssetGenerationRequest {
     model_name?: string;
     aspect_ratio?: string;
     template_id?: string;
+    compiled_request_checksum?: string;
 }
 
 export interface AssetMotionGenerationRequest {
@@ -218,6 +165,36 @@ export interface AssetMotionGenerationRequest {
     batch_size?: number;
     model?: string;
     audio_url?: string;
+    compiled_request_checksum?: string;
+}
+
+export interface CompiledProviderRequest {
+    phase: string;
+    model: string;
+    prompt: string;
+    negative_prompt?: string;
+    parameters: Record<string, string | number | boolean>;
+    input_media: string[];
+}
+
+export interface CompiledPromptPart {
+    kind: string;
+    label: string;
+    text: string;
+    editable?: boolean;
+}
+
+export interface CompiledGenerationRequest {
+    compiler_version: string;
+    compiled_request_id: string;
+    checksum: string;
+    category: "text" | "image" | "video" | "other";
+    mode: string;
+    source: ApiCallSource;
+    user_prompt: string;
+    prompt_parts: CompiledPromptPart[];
+    target: Record<string, unknown>;
+    provider_requests: CompiledProviderRequest[];
 }
 
 export interface AssetDeleteReference {
@@ -306,6 +283,8 @@ export interface ApiCallActivity {
     error_diagnostic?: string | null;
     detail?: string | null;
     prompt?: string | null;
+    user_prompt?: string | null;
+    compiled_request?: CompiledGenerationRequest | null;
     model_name?: string | null;
     parameters?: Record<string, string | number | boolean>;
     source_context?: ApiCallSourceContext;
@@ -529,6 +508,7 @@ export interface VideoTask {
     provider_name?: string | null;
     provider_task_id?: string | null;
     provider_request_id?: string | null;
+    compiled_request?: CompiledGenerationRequest | null;
 }
 
 export interface CreateVideoTaskPayload {
@@ -547,6 +527,17 @@ export interface CreateVideoTaskPayload {
     ratio?: string | null;
     watermark?: boolean | null;
     workbench_tab?: "t2i_i2v" | "direct_r2v" | null;
+    compiled_request_checksum?: string;
+}
+
+export interface StoryboardRenderPayload {
+    frame_id: string;
+    composition_data?: Record<string, unknown> | null;
+    prompt: string;
+    batch_size?: number;
+    model_name?: string | null;
+    aspect_ratio?: string | null;
+    compiled_request_checksum?: string;
 }
 
 // ─── Storyboard Schema v2 types ─────────────────────────────────────────────
@@ -605,18 +596,11 @@ export interface RefineSSEEvent {
 
 export const api = {
     createProject: async (title: string, text: string, skipAnalysis: boolean = false, workflowMode: string = "i2v_legacy", seriesId?: string) => {
-        const standaloneDefaults = seriesId
-            ? {}
-            : {
-                model_settings: workspaceDefaultModelSettings(),
-                prompt_config: workspaceDefaultPromptConfig(),
-            };
         const res = await axios.post(`${API_URL}/projects`, {
             title,
             text,
             workflow_mode: workflowMode,
             series_id: seriesId,
-            ...standaloneDefaults,
         }, {
             params: { skip_analysis: skipAnalysis }
         });
@@ -687,13 +671,19 @@ export const api = {
         return res.data;
     },
 
-    generateAssets: async (scriptId: string) => {
-        const res = await axios.post(`${API_URL}/projects/${scriptId}/generate_assets`);
+    createVideoTask: async (id: string, payload: CreateVideoTaskPayload) => {
+        const res = await axios.post(`${API_URL}/projects/${id}/video_tasks`, payload);
         return res.data;
     },
 
-    createVideoTask: async (id: string, payload: CreateVideoTaskPayload) => {
-        const res = await axios.post(`${API_URL}/projects/${id}/video_tasks`, payload);
+    previewVideoTask: async (
+        id: string,
+        payload: CreateVideoTaskPayload,
+    ): Promise<CompiledGenerationRequest> => {
+        const res = await axios.post<CompiledGenerationRequest>(
+            `${API_URL}/projects/${id}/video_tasks/preview`,
+            payload,
+        );
         return res.data;
     },
 
@@ -868,23 +858,6 @@ export const api = {
         return response.json();
     },
 
-    generateAsset: async (scriptId: string, assetId: string, assetType: string, stylePreset: string, stylePrompt?: string, generationType: string = "all", prompt: string = "", applyStyle: boolean = true, negativePrompt: string = "", batchSize: number = 1, modelName?: string, aspectRatio?: string) => {
-        const res = await axios.post(`${API_URL}/projects/${scriptId}/assets/generate`, {
-            asset_id: assetId,
-            asset_type: assetType,
-            style_preset: stylePreset,
-            style_prompt: stylePrompt,
-            generation_type: generationType,
-            prompt: prompt,
-            apply_style: applyStyle,
-            negative_prompt: negativePrompt,
-            batch_size: batchSize,
-            model_name: modelName,
-            aspect_ratio: aspectRatio,
-        });
-        return res.data;
-    },
-
     getTaskStatus: async (
         taskId: string,
         options: { signal?: AbortSignal } = {},
@@ -916,35 +889,6 @@ export const api = {
                 return identifier ? [[identifier, task] as const] : [];
             }),
         );
-    },
-
-    generateAssetVideo: async (scriptId: string, assetType: string, assetId: string, data: { prompt?: string, duration?: number, aspect_ratio?: string }) => {
-        const res = await axios.post(`${API_URL}/projects/${scriptId}/assets/${assetType}/${assetId}/generate_video`, data);
-        return res.data;
-    },
-
-    /**
-     * Generate Motion Reference video for an asset (Character Full Body/Headshot, Scene, or Prop).
-     * This is part of Asset Activation v2.
-     */
-    generateMotionRef: async (
-        scriptId: string,
-        assetId: string,
-        assetType: 'full_body' | 'head_shot' | 'scene' | 'prop',
-        prompt?: string,
-        audioUrl?: string,
-        duration: number = 5,
-        batchSize: number = 1
-    ): Promise<any & { _task_id?: string }> => {
-        const res = await axios.post(`${API_URL}/projects/${scriptId}/assets/generate_motion_ref`, {
-            asset_id: assetId,
-            asset_type: assetType,
-            prompt,
-            audio_url: audioUrl,
-            duration,
-            batch_size: batchSize
-        });
-        return res.data;
     },
 
     deleteAssetVideo: async (scriptId: string, assetType: string, assetId: string, videoId: string) => {
@@ -1196,17 +1140,38 @@ export const api = {
         compositionData: any,
         prompt: string,
         batchSize: number = 1,
-        options: { signal?: AbortSignal } = {},
+        options: {
+            signal?: AbortSignal;
+            modelName?: string;
+            aspectRatio?: string;
+            compiledRequestChecksum?: string;
+        } = {},
     ) => {
         const res = await axios.post(`${API_URL}/projects/${scriptId}/storyboard/render`, {
             frame_id: frameId,
             composition_data: compositionData,
             prompt: prompt,
-            batch_size: batchSize
+            batch_size: batchSize,
+            ...(options.modelName ? { model_name: options.modelName } : {}),
+            ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}),
+            ...(options.compiledRequestChecksum
+                ? { compiled_request_checksum: options.compiledRequestChecksum }
+                : {}),
         }, {
             signal: options.signal,
         });
         return resolveProjectJobResponse(res.data, scriptId, options);
+    },
+
+    previewStoryboardFrame: async (
+        scriptId: string,
+        payload: StoryboardRenderPayload,
+    ): Promise<CompiledGenerationRequest> => {
+        const response = await axios.post<CompiledGenerationRequest>(
+            `${API_URL}/projects/${scriptId}/storyboard/render/preview`,
+            payload,
+        );
+        return response.data;
     },
 
     // === STORYBOARD DRAMATIZATION v2 ===
@@ -1428,8 +1393,6 @@ export const api = {
             workflow_mode: opts.workflow_mode ?? "i2v_legacy",
             content_mode: opts.content_mode ?? "scripted",
             default_generation_mode: opts.default_generation_mode ?? "i2v",
-            model_settings: workspaceDefaultModelSettings(),
-            prompt_config: workspaceDefaultPromptConfig(),
         }, {
             timeout: SERIES_CREATE_TIMEOUT_MS,
         });
@@ -1441,8 +1404,6 @@ export const api = {
             title,
             description,
             workflow_mode: workflowMode,
-            model_settings: workspaceDefaultModelSettings(),
-            prompt_config: workspaceDefaultPromptConfig(),
         }, {
             timeout: SERIES_CREATE_TIMEOUT_MS,
         });
@@ -1534,6 +1495,19 @@ export const api = {
         );
         return res.data;
     },
+    previewOwnedAssetGeneration: async (
+        sourceKind: AssetOwnerKind,
+        sourceId: string,
+        assetType: EditableAssetType,
+        assetId: string,
+        request: AssetGenerationRequest,
+    ): Promise<CompiledGenerationRequest> => {
+        const res = await axios.post<CompiledGenerationRequest>(
+            `${API_URL}/asset-sources/${sourceKind}/${sourceId}/assets/${assetType}/${assetId}/generate/preview`,
+            { asset_id: assetId, asset_type: assetType, ...request },
+        );
+        return res.data;
+    },
     selectOwnedAssetVariant: async (
         sourceKind: AssetOwnerKind,
         sourceId: string,
@@ -1599,6 +1573,19 @@ export const api = {
     ) => {
         const res = await axios.post(
             `${API_URL}/asset-sources/${sourceKind}/${sourceId}/assets/${assetType}/${assetId}/motion/generate`,
+            request,
+        );
+        return res.data;
+    },
+    previewOwnedAssetMotion: async (
+        sourceKind: AssetOwnerKind,
+        sourceId: string,
+        assetType: EditableAssetType,
+        assetId: string,
+        request: AssetMotionGenerationRequest,
+    ): Promise<CompiledGenerationRequest> => {
+        const res = await axios.post<CompiledGenerationRequest>(
+            `${API_URL}/asset-sources/${sourceKind}/${sourceId}/assets/${assetType}/${assetId}/motion/preview`,
             request,
         );
         return res.data;
@@ -1907,8 +1894,6 @@ export const api = {
             `${API_URL}/series/import/confirm`,
             {
                 ...data,
-                model_settings: workspaceDefaultModelSettings(),
-                prompt_config: workspaceDefaultPromptConfig(),
             },
         );
         notifyAssetUsageChanged();
@@ -2089,6 +2074,7 @@ function playgroundActivity(item: PlaygroundGenerationResponse): ApiCallActivity
     error_code: item.error_code ?? null,
     error_diagnostic: item.error_diagnostic ?? null,
     prompt: item.prompt,
+    compiled_request: item.compiled_request ?? null,
     model_name: item.model_id,
     parameters: primitiveParameters(item.parameters),
     source_context: {
@@ -2218,6 +2204,7 @@ export interface PlaygroundGenerateRequest {
   input_media?: string[];
   parameters?: Record<string, any>;
   batch_size?: number;
+  compiled_request_checksum?: string;
 }
 
 export interface PlaygroundGenerationResponse {
@@ -2228,6 +2215,7 @@ export interface PlaygroundGenerationResponse {
   negative_prompt?: string;
   input_media: string[];
   parameters: Record<string, any>;
+  compiled_request?: CompiledGenerationRequest | null;
   batch_size: number;
   outputs: Array<{
     id: string;
@@ -2265,6 +2253,9 @@ export interface PlaygroundTemplateResponse {
 }
 
 export const playgroundApi = {
+  preview: (data: PlaygroundGenerateRequest) =>
+    axios.post<CompiledGenerationRequest>(API_URL + "/playground/preview", data).then(r => r.data),
+
   generate: (data: PlaygroundGenerateRequest) =>
     axios.post<PlaygroundGenerationResponse>(API_URL + "/playground/generate", data).then(r => r.data),
 

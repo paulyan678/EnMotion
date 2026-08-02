@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ...utils import get_logger
 from ...utils.newapi_models import MissingNewAPIKeyError, validate_model_for_mode
 from ...utils.uploads import IMAGE_UPLOAD_POLICY, save_upload_file_async
+from ..generation_contract import assert_generation_checksum
 from ..web_runtime.background_dispatch import DetachedTaskDispatcher
 from ..web_runtime.context import get_tenant
 from ..web_runtime.pipeline_registry import (
@@ -25,6 +26,7 @@ from .models import (
     PlaygroundTemplate,
     SaveToLibraryRequest,
     UpdateTemplateRequest,
+    compile_playground_request,
 )
 from .service import PlaygroundService, UnsupportedPlaygroundLibraryMediaError
 from .storage import PlaygroundStorage
@@ -85,9 +87,23 @@ def active_playground_generation_blockers() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def preview_generation(request: GenerateRequest):
+    """Return the exact provider request without creating a job or spending credits."""
+
+    return compile_playground_request(request)
+
+
+router.add_api_route("/preview", preview_generation, methods=["POST"])
+
+
 def generate(request: GenerateRequest, background_tasks: BackgroundTasks):
     """Create a generation record and kick off processing in the background."""
     service = _current_service()
+    compiled_request = compile_playground_request(request)
+    try:
+        assert_generation_checksum(compiled_request, request.compiled_request_checksum)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     generation_id = str(uuid.uuid4())
     reservations = []
     database = None
@@ -122,6 +138,7 @@ def generate(request: GenerateRequest, background_tasks: BackgroundTasks):
                             "negative_prompt": request.negative_prompt,
                             "input_media": list(request.input_media or []),
                             "parameters": dict(request.parameters or {}),
+                            "compiled_request": compiled_request,
                             "activity_source": "playground",
                         },
                         job_id=generation_id,
@@ -139,7 +156,11 @@ def generate(request: GenerateRequest, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=507, detail=STORAGE_QUOTA_MESSAGE) from exc
 
     try:
-        gen = service.create_generation(request, generation_id=generation_id)
+        gen = service.create_generation(
+            request,
+            generation_id=generation_id,
+            compiled_request=compiled_request,
+        )
     except MissingNewAPIKeyError as exc:
         if reservations and database is not None:
             from ..server.jobs import abandon_reserved_jobs
@@ -245,6 +266,7 @@ def retry_generation(generation_id: str):
                     "negative_prompt": gen.negative_prompt,
                     "input_media": list(gen.input_media),
                     "parameters": dict(gen.parameters),
+                    "compiled_request": gen.compiled_request,
                     "activity_source": "playground",
                 },
             )

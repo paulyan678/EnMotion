@@ -213,6 +213,10 @@ class VideoTask(BaseModel):
     asset_id: Optional[str] = Field(None, description="ID of the asset this video belongs to")
     image_url: str
     prompt: str
+    compiled_request: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Frozen provider request used for this video task",
+    )
     status: str = "pending"  # pending, processing, completed, failed, canceled
     error: Optional[str] = Field(
         None, description="Failure reason, if any (set by pipeline / cancel / orphan recovery)"

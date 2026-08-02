@@ -72,6 +72,24 @@ const completedWithMedia: ApiCallActivity = {
   },
   model_name: "Seedance 2.0 Fast",
   prompt: "A paper boat crossing a moonlit harbor",
+  compiled_request: {
+    compiler_version: "1.0",
+    compiled_request_id: "genreq_activity",
+    checksum: "c".repeat(64),
+    category: "video",
+    mode: "i2v",
+    source: "playground",
+    user_prompt: "A paper boat crossing a moonlit harbor",
+    prompt_parts: [],
+    target: { surface: "playground" },
+    provider_requests: [{
+      phase: "video",
+      model: "doubao-seedance-2-0-fast-260128",
+      prompt: "A paper boat crossing a moonlit harbor. Smooth tracking shot.",
+      parameters: { resolution: "720p", duration: 5 },
+      input_media: ["playground/images/boat.png"],
+    }],
+  },
   parameters: { resolution: "720p", duration: 5 },
   outputs: [
     {
@@ -531,6 +549,9 @@ describe("API Calls dashboard", () => {
     expect(within(dialog).getByText("Processing timeline")).toBeInTheDocument();
     expect(within(dialog).getByText("A paper boat crossing a moonlit harbor")).toBeInTheDocument();
     expect(within(dialog).getByText("Seedance 2.0 Fast")).toBeInTheDocument();
+    expect(within(dialog).getByText("A paper boat crossing a moonlit harbor. Smooth tracking shot.")).toBeInTheDocument();
+    expect(within(dialog).getByText("doubao-seedance-2-0-fast-260128")).toBeInTheDocument();
+    expect(within(dialog).getByText("playground/images/boat.png")).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Open in Playground" }));
     expect(window.location.hash).toBe("#/playground");

@@ -13,7 +13,8 @@ import { useState, type ReactNode } from "react";
 import AssetEditorShell from "@/components/assets/AssetEditorShell";
 import { VariantSelector } from "@/components/common/VariantSelector";
 import { VideoVariantSelector } from "@/components/common/VideoVariantSelector";
-import type { EditableAssetType } from "@/lib/api";
+import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
+import type { CompiledGenerationRequest, EditableAssetType } from "@/lib/api";
 import { primaryAssetImage, primaryAssetImageUrl } from "@/lib/assetImage";
 import { normalizeVisualWeight } from "@/lib/assetMetadata";
 import {
@@ -28,8 +29,12 @@ type EditableScenePropAssetType = "character" | "scene" | "prop";
 type InspectorTab = "generate" | "details";
 type EditorMode = "static" | "motion";
 
-const DEFAULT_NEGATIVE_PROMPT =
-  "low quality, bad anatomy, text, error, cropped, jpeg artifacts, signature, watermark, blurry";
+function withVisibleStyle(prompt: string, style: string) {
+  const base = prompt.trim();
+  const layer = style.trim().replace(/^,+|,+$/g, "");
+  if (!layer || base.toLowerCase().includes(layer.toLowerCase())) return base;
+  return `${base}, ${layer}`;
+}
 
 export interface ScenePropMetadataDraft {
   assetType: EditableScenePropAssetType;
@@ -64,6 +69,18 @@ export interface ScenePropWorkbenchProps {
     duration: number,
     options?: MotionGenerationOptions,
   ) => void;
+  onPreviewGeneration?: (
+    prompt: string,
+    applyStyle: boolean,
+    negativePrompt: string,
+    batchSize: number,
+    options?: { modelName?: string; aspectRatio?: string },
+  ) => Promise<CompiledGenerationRequest>;
+  onPreviewVideo?: (
+    prompt: string,
+    duration: number,
+    options?: MotionGenerationOptions,
+  ) => Promise<CompiledGenerationRequest>;
   onSelectVideo?: (videoId: string) => Promise<void> | void;
   onDeleteVideo?: (videoId: string) => Promise<void> | void;
   onFavoriteVideo?: (
@@ -98,8 +115,9 @@ export default function ScenePropWorkbench({
   isGenerating,
   generatingBatchSize,
   stylePrompt = "",
-  styleNegativePrompt = "",
   onGenerateVideo,
+  onPreviewGeneration,
+  onPreviewVideo,
   onSelectVideo,
   onDeleteVideo,
   onFavoriteVideo,
@@ -122,7 +140,10 @@ export default function ScenePropWorkbench({
   const modelDisplayName = useModelDisplayName();
   const imageAsset = primaryAssetImage(asset, assetType);
   const imageUrl = primaryAssetImageUrl(asset, assetType);
-  const initialPrompt = asset.image_prompt || asset.description || "";
+  const initialPrompt = withVisibleStyle(
+    asset.image_prompt || asset.description || "",
+    stylePrompt,
+  );
   const initialVideoPrompt =
     asset.video_prompt
     || `Cinematic ${assetType} reference of ${asset.name}. ${asset.description}. Subtle natural motion, stable composition, high quality.`;
@@ -134,23 +155,16 @@ export default function ScenePropWorkbench({
   const [nextType, setNextType] =
     useState<EditableScenePropAssetType>(assetType);
   const [description, setDescription] = useState(asset.description || "");
-  const [timeOfDay, setTimeOfDay] = useState(
-    "time_of_day" in asset ? asset.time_of_day || "" : "",
-  );
-  const [lightingMood, setLightingMood] = useState(
-    "lighting_mood" in asset ? asset.lighting_mood || "" : "",
-  );
-  const [visualWeight, setVisualWeight] = useState(
-    normalizeVisualWeight(
-      "visual_weight" in asset ? asset.visual_weight ?? 1 : 1,
-    ),
+  // Preserve legacy metadata without exposing a second prompt-building UI.
+  const timeOfDay = "time_of_day" in asset ? asset.time_of_day || "" : "";
+  const lightingMood = "lighting_mood" in asset ? asset.lighting_mood || "" : "";
+  const visualWeight = normalizeVisualWeight(
+    "visual_weight" in asset ? asset.visual_weight ?? 1 : 1,
   );
   const [prompt, setPrompt] = useState(initialPrompt);
   const [videoPrompt, setVideoPrompt] = useState(initialVideoPrompt);
-  const [negativePrompt, setNegativePrompt] = useState(
-    styleNegativePrompt || DEFAULT_NEGATIVE_PROMPT,
-  );
-  const [applyStyle, setApplyStyle] = useState(true);
+  const negativePrompt = "";
+  const applyStyle = false;
   const [modelName, setModelName] = useState(
     defaultModelName || PROJECT_IMAGE_MODELS[0]?.id || "",
   );
@@ -423,6 +437,20 @@ export default function ScenePropWorkbench({
                     />
                   </div>
                 </GenerationSettings>
+                {onPreviewVideo ? (
+                  <GenerationRequestReview
+                    fingerprint={JSON.stringify({ videoPrompt, duration, videoModelName, motionBatchSize })}
+                    disabled={!motionReady || !videoPrompt.trim() || typeChanged}
+                    loadPreview={() => onPreviewVideo(
+                      videoPrompt,
+                      duration,
+                      {
+                        model: videoModelName || undefined,
+                        batchSize: motionBatchSize,
+                      },
+                    )}
+                  />
+                ) : null}
                 {!motionReady ? (
                   <p className="rounded-lg border border-status-pending-border bg-status-pending-bg p-3 text-xs text-status-pending-fg">
                     {motionDisabledReason || t("motionRequiresImage")}
@@ -488,39 +516,24 @@ export default function ScenePropWorkbench({
                       }))}
                     />
                   </div>
-                  <label className="block space-y-1.5">
-                    <span className="text-xs font-semibold text-text-muted">
-                      {t("negativePromptLabel")}
-                    </span>
-                    <textarea
-                      value={negativePrompt}
-                      onChange={(event) =>
-                        setNegativePrompt(event.target.value)
-                      }
-                      className="min-h-24 w-full resize-y rounded-lg border border-glass-border bg-input-bg p-2.5 font-mono text-xs text-foreground outline-none focus:border-primary"
-                    />
-                  </label>
                 </GenerationSettings>
 
-                <label className="flex min-h-12 min-w-0 cursor-pointer items-center justify-between gap-4 rounded-xl border border-glass-border bg-input-bg px-3 text-sm text-text-secondary">
-                  <span className="min-w-0 flex-1 overflow-hidden">
-                    <span className="block font-semibold text-foreground">
-                      {t("applyStyleLabel")}
-                    </span>
-                    {stylePrompt ? (
-                      <span className="mt-0.5 block truncate text-xs text-text-muted">
-                        {stylePrompt}
-                      </span>
-                    ) : null}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={applyStyle}
-                    onChange={(event) => setApplyStyle(event.target.checked)}
-                    className="h-4 w-4 shrink-0 accent-primary"
-                    aria-label={t("applyStyleLabel")}
+                {onPreviewGeneration ? (
+                  <GenerationRequestReview
+                    fingerprint={JSON.stringify({ prompt, modelName, aspectRatio, batchSize })}
+                    disabled={mutationDisabled || !prompt.trim()}
+                    loadPreview={() => onPreviewGeneration(
+                      prompt,
+                      false,
+                      "",
+                      batchSize,
+                      {
+                        modelName: modelName || undefined,
+                        aspectRatio,
+                      },
+                    )}
                   />
-                </label>
+                ) : null}
 
                 {typeChanged ? (
                   <p className="text-xs text-status-pending-fg">
@@ -587,42 +600,6 @@ export default function ScenePropWorkbench({
               value={description}
               onChange={setDescription}
             />
-            {nextType === "scene" ? (
-              <>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field
-                    label={t("timeOfDayLabel")}
-                    value={timeOfDay}
-                    onChange={setTimeOfDay}
-                  />
-                  <Field
-                    label={t("lightingMoodLabel")}
-                    value={lightingMood}
-                    onChange={setLightingMood}
-                  />
-                </div>
-                <label className="block space-y-2">
-                  <span className="flex justify-between text-xs font-semibold text-text-muted">
-                    <span>{t("visualWeightLabel")}</span>
-                    <span>{visualWeight}</span>
-                  </span>
-                  <input
-                    type="range"
-                    min="1"
-                    max="5"
-                    step="1"
-                    value={visualWeight}
-                    onChange={(event) =>
-                      setVisualWeight(
-                        normalizeVisualWeight(event.target.value),
-                      )
-                    }
-                    className="w-full accent-primary"
-                    aria-label={t("visualWeightLabel")}
-                  />
-                </label>
-              </>
-            ) : null}
           </div>
         )}
       </div>

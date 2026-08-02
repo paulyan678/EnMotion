@@ -43,7 +43,7 @@ class StoryboardGenerator:
 
         return script
 
-    def generate_frame(self, frame: StoryboardFrame, characters: List[Character], scene: Scene, ref_image_path: str = None, ref_image_paths: List[str] = None, prompt: str = None, batch_size: int = 1, size: str = None, model_name: str = None) -> StoryboardFrame:
+    def generate_frame(self, frame: StoryboardFrame, characters: List[Character], scene: Scene, ref_image_path: str = None, ref_image_paths: List[str] = None, prompt: str = None, batch_size: int = 1, size: str = None, model_name: str = None, exact_request: bool = False) -> StoryboardFrame:
         """Generates a storyboard frame image."""
         selected_model = model_name or get_selected_model(IMAGE)
         get_model_spec(selected_model, IMAGE)
@@ -60,7 +60,7 @@ class StoryboardGenerator:
 
         # If frontend provides explicit reference paths, use them directly
         # Otherwise, auto-collect from characters and scene
-        use_frontend_refs = (ref_image_paths and len(ref_image_paths) > 0) or ref_image_path
+        use_frontend_refs = exact_request or (ref_image_paths and len(ref_image_paths) > 0) or ref_image_path
 
         if use_frontend_refs:
             # Use only what frontend provided (already selected by user)
@@ -158,7 +158,7 @@ class StoryboardGenerator:
             if frame.camera_movement:
                 prompt += f", {frame.camera_movement}"
             prompt += "."
-        else:
+        elif not exact_request:
             # If prompt is provided by user/LLM, ensure character descriptions are still present for I2I consistency
             if char_text and char_text not in prompt:
                 prompt = f"{prompt} Characters: {char_text}."

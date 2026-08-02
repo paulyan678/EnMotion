@@ -89,8 +89,8 @@ describe("ScenePropWorkbench", () => {
 
     expect(onGenerate).toHaveBeenCalledWith(
       "Edited prompt",
-      true,
-      expect.any(String),
+      false,
+      "",
       1,
       {
         aspectRatio: "16:9",

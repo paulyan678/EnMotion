@@ -41,6 +41,7 @@ from ..comic_gen.video_failures import (
     VideoFailure,
     classify_video_failure,
 )
+from ..generation_contract import compile_generation_request, provider_request
 from ..web_runtime.context import bind_tenant, reset_tenant
 from ..web_runtime.file_lock import interprocess_lock
 from ..web_runtime.pipeline_registry import WorkspacePipelineRegistry
@@ -342,6 +343,50 @@ def _durable_activity_payload(job_type: str, payload: dict[str, Any]) -> dict[st
             normalized["source_route"] = f"#/project/{script_id}"
         else:
             normalized["source_route"] = "#/"
+    if not isinstance(normalized.get("compiled_request"), dict):
+        prompt = normalized.get("prompt")
+        model = next(
+            (
+                normalized.get(key)
+                for key in ("model", "model_name", "model_id")
+                if isinstance(normalized.get(key), str) and normalized.get(key).strip()
+            ),
+            None,
+        )
+        if isinstance(prompt, str) and prompt.strip() and isinstance(model, str):
+            category = _job_activity_category(job_type, normalized)
+            if category in {"image", "video"}:
+                parameters = _public_parameters(normalized)
+                normalized["compiled_request"] = compile_generation_request(
+                    category=category,
+                    mode=str(normalized.get("mode") or normalized.get("generation_mode") or job_type),
+                    source=str(normalized["activity_source"]),
+                    user_prompt=prompt,
+                    requests=[
+                        provider_request(
+                            phase=category,
+                            model=model,
+                            prompt=prompt,
+                            negative_prompt=normalized.get("negative_prompt"),
+                            parameters=parameters,
+                            input_media=[
+                                value
+                                for key in ("image_url", "source_image_url", "reference_image_url")
+                                if isinstance((value := normalized.get(key)), str)
+                            ]
+                            + list(normalized.get("input_media") or []),
+                        )
+                    ],
+                    target={"job_type": job_type},
+                    prompt_parts=[
+                        {
+                            "kind": "user",
+                            "label": "User prompt",
+                            "text": prompt.strip(),
+                            "editable": True,
+                        }
+                    ],
+                )
     return normalized
 
 
@@ -1163,6 +1208,13 @@ def _job_activity_source(job_type: str, payload: dict[str, Any]) -> str:
 
 
 def _job_activity_detail(payload: dict[str, Any]) -> str | None:
+    compiled = payload.get("compiled_request")
+    if isinstance(compiled, dict):
+        requests = compiled.get("provider_requests")
+        if isinstance(requests, list) and requests and isinstance(requests[0], dict):
+            value = requests[0].get("prompt")
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:240]
     for key in ("prompt", "style_prompt"):
         value = payload.get(key)
         if isinstance(value, str):
@@ -1173,11 +1225,25 @@ def _job_activity_detail(payload: dict[str, Any]) -> str | None:
 
 
 def _display_model_name(payload: dict[str, Any]) -> str | None:
+    compiled = payload.get("compiled_request")
+    compiled_requests = compiled.get("provider_requests") if isinstance(compiled, dict) else None
+    compiled_model = (
+        compiled_requests[0].get("model")
+        if isinstance(compiled_requests, list)
+        and compiled_requests
+        and isinstance(compiled_requests[0], dict)
+        else None
+    )
     model_id = next(
         (
             value
-            for key in ("model_name", "model_id", "model")
-            if isinstance((value := payload.get(key)), str) and value.strip()
+            for value in (
+                compiled_model,
+                payload.get("model_name"),
+                payload.get("model_id"),
+                payload.get("model"),
+            )
+            if isinstance(value, str) and value.strip()
         ),
         None,
     )
@@ -1234,7 +1300,7 @@ def _public_parameters(payload: dict[str, Any]) -> dict[str, Any]:
         "watermark",
         "seed",
     )
-    parameters = {
+    parameters: dict[str, Any] = {
         key: payload[key]
         for key in allowed
         if key in payload and isinstance(payload[key], (str, int, float, bool))
@@ -1244,6 +1310,16 @@ def _public_parameters(payload: dict[str, Any]) -> dict[str, Any]:
         for key in allowed:
             if key in nested and isinstance(nested[key], (str, int, float, bool)):
                 parameters[key] = nested[key]
+    compiled = payload.get("compiled_request")
+    compiled_requests = compiled.get("provider_requests") if isinstance(compiled, dict) else None
+    if isinstance(compiled_requests, list) and compiled_requests and isinstance(compiled_requests[0], dict):
+        exact = compiled_requests[0].get("parameters")
+        if isinstance(exact, dict):
+            parameters = {
+                str(key): value
+                for key, value in exact.items()
+                if isinstance(value, (str, int, float, bool))
+            }
     return parameters
 
 
@@ -1256,6 +1332,14 @@ def _public_input_media(payload: dict[str, Any]) -> list[dict[str, str]]:
     values = payload.get("input_media")
     if isinstance(values, list):
         candidates.extend(value for value in values if isinstance(value, str))
+    compiled = payload.get("compiled_request")
+    compiled_requests = compiled.get("provider_requests") if isinstance(compiled, dict) else None
+    if isinstance(compiled_requests, list):
+        for exact in compiled_requests:
+            if isinstance(exact, dict) and isinstance(exact.get("input_media"), list):
+                candidates.extend(
+                    value for value in exact["input_media"] if isinstance(value, str)
+                )
     result: list[dict[str, str]] = []
     for index, value in enumerate(candidates[:16]):
         if value.startswith(("data:", "blob:")):
@@ -1291,6 +1375,9 @@ def job_to_dict(record: GenerationJob, *, queue_position: int | None = None) -> 
     error_code = result.get("error_code") if isinstance(result, dict) else None
     error_diagnostic = result.get("error_diagnostic") if isinstance(result, dict) else None
     outputs = result.get("outputs") if isinstance(result, dict) else None
+    compiled_request = payload.get("compiled_request")
+    if not isinstance(compiled_request, dict):
+        compiled_request = None
     # Older rows stored the complete provider envelope in ``error``. Present
     # those safely as soon as this release is deployed without a data migration.
     if error and INPUT_IMAGE_PRIVACY_PROVIDER_CODE.casefold() in error.casefold():
@@ -1314,6 +1401,12 @@ def job_to_dict(record: GenerationJob, *, queue_position: int | None = None) -> 
         "source": _job_activity_source(record.job_type, payload),
         "detail": _job_activity_detail(payload),
         "prompt": _job_activity_detail(payload),
+        "user_prompt": (
+            compiled_request.get("user_prompt")
+            if compiled_request is not None
+            else payload.get("prompt")
+        ),
+        "compiled_request": compiled_request,
         "model_name": _display_model_name(payload),
         "parameters": _public_parameters(payload),
         "source_context": _source_context(record.job_type, payload),
@@ -2615,6 +2708,9 @@ def _process_storyboard_render_job(
                 payload.get("composition_data"),
                 payload["prompt"],
                 payload.get("batch_size", 1),
+                payload.get("model_name"),
+                payload.get("aspect_ratio"),
+                payload.get("compiled_request"),
             )
             # Future requests must load the processing snapshot, not reuse the
             # detached object that is entering the provider call.
@@ -2938,6 +3034,7 @@ def _project_asset(job: ClaimedJob) -> dict[str, Any]:
             payload.get("batch_size", 1),
             payload.get("model_name"),
             payload.get("aspect_ratio"),
+            payload.get("compiled_request"),
         )
     return {"script_id": payload["script_id"], "asset_id": payload["asset_id"]}
 
@@ -2959,6 +3056,7 @@ def _series_asset(job: ClaimedJob) -> dict[str, Any]:
             payload.get("batch_size", 1),
             payload.get("model_name"),
             aspect_ratio=payload.get("aspect_ratio"),
+            compiled_request=payload.get("compiled_request"),
         )
         try:
             pipeline.process_asset_generation_task(transient_id)
@@ -2986,6 +3084,7 @@ def _global_asset(job: ClaimedJob) -> dict[str, Any]:
             payload.get("batch_size", 1),
             payload.get("model_name"),
             payload.get("aspect_ratio"),
+            compiled_request=payload.get("compiled_request"),
         )
         try:
             pipeline.process_asset_generation_task(transient_id)
@@ -3012,6 +3111,7 @@ def _motion_reference(job: ClaimedJob) -> dict[str, Any]:
                 batch_size=payload.get("batch_size", 1),
                 model_id=payload.get("model"),
                 audio_url=payload.get("audio_url"),
+                compiled_request=payload.get("compiled_request"),
             )
             return {
                 "source_kind": payload["source_kind"],
@@ -3139,6 +3239,13 @@ def _generate_video(job: ClaimedJob) -> dict[str, Any]:
 
 def _storyboard_render(job: ClaimedJob) -> dict[str, Any]:
     payload = job.payload
+    exact_options: dict[str, Any] = {}
+    if payload.get("model_name") is not None:
+        exact_options["model_name"] = payload["model_name"]
+    if payload.get("aspect_ratio") is not None:
+        exact_options["aspect_ratio"] = payload["aspect_ratio"]
+    if payload.get("compiled_request") is not None:
+        exact_options["compiled_request"] = payload["compiled_request"]
     with _worker_pipelines.locked(job.workspace_id) as pipeline:
         pipeline.generate_storyboard_render(
             payload["script_id"],
@@ -3146,6 +3253,7 @@ def _storyboard_render(job: ClaimedJob) -> dict[str, Any]:
             payload.get("composition_data"),
             payload["prompt"],
             payload.get("batch_size", 1),
+            **exact_options,
         )
     return {
         "script_id": payload["script_id"],

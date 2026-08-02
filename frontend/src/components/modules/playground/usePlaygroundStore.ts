@@ -5,7 +5,7 @@ import {
   normalizeActiveModel,
 } from '@/lib/newApiModels';
 import { readWorkspaceItem, writeWorkspaceItem } from '@/lib/workspaceStorage';
-import { playgroundApi } from '@/lib/api';
+import { playgroundApi, type CompiledGenerationRequest } from '@/lib/api';
 import {
   getEffectivePlaygroundInputMedia,
   getEffectivePlaygroundParameters,
@@ -140,6 +140,7 @@ export interface PlaygroundGeneration {
   negative_prompt?: string;
   input_media: string[];
   parameters: Record<string, any>;
+  compiled_request?: CompiledGenerationRequest | null;
   batch_size: number;
   outputs: PlaygroundOutput[];
   status: 'pending' | 'processing' | 'completed' | 'failed';
@@ -176,6 +177,7 @@ export interface QueuedRequest {
   inputMedia: string[];
   parameters: Record<string, any>;
   batchSize: number;
+  compiledRequestChecksum?: string;
   status: 'pending' | 'dispatching';
   enqueuedAt: number;
 }

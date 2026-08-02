@@ -190,6 +190,24 @@ describe("StoryboardR2V frame deletion", () => {
       ...project,
       frames: [generatedFrame, secondFrame],
     });
+    vi.spyOn(api, "previewStoryboardFrame").mockResolvedValue({
+      compiler_version: "1.0",
+      compiled_request_id: "genreq_storyboard",
+      checksum: "e".repeat(64),
+      category: "image",
+      mode: "t2i",
+      source: "workspace",
+      user_prompt: firstFrame.action_description,
+      prompt_parts: [],
+      target: { project_id: project.id, frame_id: firstFrame.id },
+      provider_requests: [{
+        phase: "storyboard_frame",
+        model: "gpt-image-2",
+        prompt: firstFrame.action_description,
+        parameters: { size: "1536x1024", quality: "high", n: 1 },
+        input_media: [],
+      }],
+    });
     const taskStatusSpy = vi.spyOn(api, "getTaskStatus");
     renderWithIntl(<StoryboardR2V />, { locale: "en" });
 
@@ -202,10 +220,20 @@ describe("StoryboardR2V frame deletion", () => {
     expect(renderSpy).toHaveBeenCalledWith(
       project.id,
       firstFrame.id,
-      {},
+      {
+        character_ids: [],
+        prop_ids: [],
+        scene_id: "scene-1",
+        reference_image_urls: [],
+      },
       firstFrame.action_description,
       1,
-      { signal: expect.any(AbortSignal) },
+      {
+        signal: expect.any(AbortSignal),
+        modelName: "gpt-image-2",
+        aspectRatio: "16:9",
+        compiledRequestChecksum: "e".repeat(64),
+      },
     );
     expect(taskStatusSpy).not.toHaveBeenCalled();
     expect(useProjectStore.getState().currentProject?.frames[0]).toMatchObject({

@@ -10,6 +10,7 @@ from ...models.newapi import NewAPIImageModel, NewAPIProviderError
 from ...utils import get_logger
 from ...utils.newapi_models import IMAGE, get_model_spec, get_selected_model
 from ...utils.oss_utils import authoritative_media_reference, is_object_key
+from ..generation_contract import provider_request_for_phase
 
 logger = get_logger(__name__)
 
@@ -118,7 +119,32 @@ class AssetGenerator:
         get_model_spec(model_name or get_selected_model(IMAGE), IMAGE)
         return self.model
 
-    def generate_character(self, character: Character, generation_type: str = "all", prompt: str = "", positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, i2i_model_name: str = None, size: str = None) -> Character:
+    def _compiled_reference_path(
+        self,
+        compiled_phase: Optional[Dict[str, Any]],
+        *,
+        full_body_phase_output: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the one reference frozen in a provider-request snapshot."""
+
+        if not compiled_phase:
+            return None
+        values = compiled_phase.get("input_media")
+        reference = values[0] if isinstance(values, list) and values else None
+        if not isinstance(reference, str) or not reference.strip():
+            return None
+        reference = reference.strip()
+        if reference == "phase://full_body":
+            if not full_body_phase_output:
+                raise ValueError("The compiled full-body phase produced no reference image")
+            return full_body_phase_output
+        if reference.startswith(("http://", "https://", "data:")):
+            return reference
+        if Path(reference).is_absolute() or is_object_key(reference):
+            return reference
+        return os.path.join(self.output_root, reference)
+
+    def generate_character(self, character: Character, generation_type: str = "all", prompt: str = "", positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, i2i_model_name: str = None, size: str = None, compiled_request: Optional[Dict[str, Any]] = None) -> Character:
         """
         Generates character assets based on generation_type.
         Types: 'full_body', 'three_view', 'headshot', 'all'
@@ -135,8 +161,13 @@ class AssetGenerator:
         try:
             # === R2V: Single unified reference sheet (T2I only) ===
             if generation_type == "reference_sheet":
-                effective_prompt = prompt if prompt else f"Character reference sheet for {character.name}. {character.description}. Multiple views: front, side, back. Clean background, studio lighting."
-                if positive_prompt and positive_prompt not in effective_prompt:
+                compiled_phase = provider_request_for_phase(compiled_request, "reference_sheet")
+                effective_prompt = (
+                    str(compiled_phase["prompt"])
+                    if compiled_phase
+                    else prompt if prompt else f"Character reference sheet for {character.name}. {character.description}. Multiple views: front, side, back. Clean background, studio lighting."
+                )
+                if not compiled_phase and positive_prompt and positive_prompt not in effective_prompt:
                     effective_prompt = f"{effective_prompt}, {positive_prompt}"
 
                 if not character.reference_sheet:
@@ -145,7 +176,13 @@ class AssetGenerator:
                 character.reference_sheet.image_prompt = prompt or effective_prompt
                 character.full_body_prompt = prompt or effective_prompt
 
-                effective_size = size or "1024x1024"
+                effective_size = (
+                    str(compiled_phase.get("parameters", {}).get("size") or "1024x1024")
+                    if compiled_phase
+                    else size or "1024x1024"
+                )
+                phase_model = str(compiled_phase.get("model") or model_name) if compiled_phase else model_name
+                phase_negative = str(compiled_phase.get("negative_prompt") or negative_prompt) if compiled_phase else negative_prompt
 
                 successful_generations = 0
                 last_error = ""
@@ -159,8 +196,8 @@ class AssetGenerator:
 
                         self._get_model_for(model_name).generate(
                             effective_prompt, sheet_path,
-                            negative_prompt=negative_prompt,
-                            model_name=model_name,
+                            negative_prompt=phase_negative,
+                            model_name=phase_model,
                             size=effective_size
                         )
 
@@ -215,10 +252,15 @@ class AssetGenerator:
                 character.status = GenerationStatus.COMPLETED
                 return character
 
+            generated_full_body_phase_path: Optional[str] = None
+
             # 1. Full Body (Master)
             if generation_type in ["all", "full_body"]:
+                compiled_phase = provider_request_for_phase(compiled_request, "full_body")
                 # Use provided prompt or construct default
-                if not prompt:
+                if compiled_phase:
+                    base_prompt = str(compiled_phase["prompt"])
+                elif not prompt:
                     # Default prompt - no style included, emphasize clean background
                     # If there's a reference image (reverse generation), emphasize consistency
                     base_prompt = f"{FICTIONAL_CHARACTER_PROMPT_NOTICE} Full body character design of {character.name}, concept art. {character.description}. Standing pose, neutral expression, no emotion, looking at viewer. Clean white background, isolated, no other objects, no scenery, simple background, high quality, masterpiece."
@@ -229,7 +271,11 @@ class AssetGenerator:
                 character.full_body_prompt = base_prompt
 
                 # Generate the image with style suffix appended
-                generation_prompt = f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
+                generation_prompt = (
+                    base_prompt
+                    if compiled_phase or prompt
+                    else f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
+                )
 
                 # Check for base character reference (for variants)
                 ref_image_path = None
@@ -279,6 +325,12 @@ class AssetGenerator:
                                     ref_image_path = local_path
                                     logger.debug(f"Reverse generation: Using local headshot as reference: {local_path}")
 
+                # A compiled snapshot is authoritative, including an explicit
+                # empty input list. This prevents a worker or retry from
+                # silently selecting a different historical reference.
+                if compiled_phase:
+                    ref_image_path = self._compiled_reference_path(compiled_phase)
+
                 # Batch Generation Loop
                 successful_generations = 0
                 last_error = ""
@@ -291,20 +343,24 @@ class AssetGenerator:
                         )
 
                         # Image editing uses the same approved GPT Image model.
-                        effective_model_name = model_name
+                        effective_model_name = str(compiled_phase.get("model") or model_name) if compiled_phase else model_name
                         effective_generation_prompt = generation_prompt
-                        if ref_image_path:
+                        if ref_image_path and not compiled_phase:
                             # Override to I2I model when using reference image
                             effective_model_name = i2i_model_name or get_selected_model(IMAGE)
                             logger.debug(f"Reverse generation: Using I2I model {effective_model_name} with reference image")
 
                             # Enhance prompt for reverse generation to emphasize reference consistency (only if not already present)
                             reverse_enhancement = "STRICTLY MAINTAIN the SAME character appearance, face, hairstyle, skin tone, and clothing as the reference image. "
-                            if reverse_enhancement.strip() not in effective_generation_prompt:
+                            if not compiled_phase and not prompt and reverse_enhancement.strip() not in effective_generation_prompt:
                                 effective_generation_prompt = f"{reverse_enhancement}{generation_prompt}"
                                 logger.debug(f"Reverse generation enhanced prompt: {effective_generation_prompt[:100]}...")
 
-                        self._get_model_for(effective_model_name).generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=negative_prompt, model_name=effective_model_name, size=effective_size)
+                        phase_size = str(compiled_phase.get("parameters", {}).get("size") or effective_size) if compiled_phase else effective_size
+                        phase_negative = str(compiled_phase.get("negative_prompt") or negative_prompt) if compiled_phase else negative_prompt
+                        self._get_model_for(effective_model_name).generate(effective_generation_prompt, fullbody_path, ref_image_path=ref_image_path, negative_prompt=phase_negative, model_name=effective_model_name, size=phase_size)
+                        if generated_full_body_phase_path is None:
+                            generated_full_body_phase_path = fullbody_path
 
                         rel_fullbody_path = os.path.relpath(fullbody_path, self.output_root)
 
@@ -434,7 +490,20 @@ class AssetGenerator:
 
             # 2. Three View Sheet (Derived)
             if generation_type in ["all", "three_view"]:
-                if not prompt or generation_type == "all":
+                compiled_phase = provider_request_for_phase(compiled_request, "three_view")
+                phase_reference_path = (
+                    self._compiled_reference_path(
+                        compiled_phase,
+                        full_body_phase_output=(
+                            generated_full_body_phase_path or fullbody_path
+                        ),
+                    )
+                    if compiled_phase
+                    else fullbody_path
+                )
+                if compiled_phase:
+                    base_prompt = str(compiled_phase["prompt"])
+                elif not prompt or generation_type == "all":
                     # Add reference consistency emphasis
                     base_prompt = f"{FICTIONAL_CHARACTER_PROMPT_NOTICE} Character Reference Sheet for {character.name}. {character.description}. Three-view character design: Front view, Side view, and Back view. STRICTLY MAINTAIN the SAME character appearance, face, hairstyle, and clothing as the reference image. Full body, standing pose, neutral expression. Consistent clothing and details across all views. Simple white background, clean lines, studio lighting, high quality."
                 else:
@@ -444,9 +513,19 @@ class AssetGenerator:
                 character.three_view_prompt = base_prompt
 
                 # Generate with style suffix appended
-                generation_prompt = f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
+                generation_prompt = (
+                    base_prompt
+                    if compiled_phase or (prompt and generation_type != "all")
+                    else f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
+                )
 
-                sheet_negative = negative_prompt + ", background, scenery, landscape, shadows, complex background, text, watermark, messy, distorted, extra limbs"
+                sheet_negative = (
+                    str(compiled_phase.get("negative_prompt") or "")
+                    if compiled_phase
+                    else negative_prompt + ", background, scenery, landscape, shadows, complex background, text, watermark, messy, distorted, extra limbs"
+                )
+                phase_model = str(compiled_phase.get("model") or i2i_model_name) if compiled_phase else i2i_model_name
+                phase_size = str(compiled_phase.get("parameters", {}).get("size") or effective_size) if compiled_phase else effective_size
 
                 successful_generations = 0
                 last_error = ""
@@ -458,7 +537,7 @@ class AssetGenerator:
                             "characters", f"{character.id}_sheet_{variant_id}.png"
                         )
 
-                        self._get_model_for(i2i_model_name).generate(generation_prompt, sheet_path, ref_image_path=fullbody_path, negative_prompt=sheet_negative, ref_strength=0.8, model_name=i2i_model_name)
+                        self._get_model_for(phase_model).generate(generation_prompt, sheet_path, ref_image_path=phase_reference_path, negative_prompt=sheet_negative, ref_strength=0.8, model_name=phase_model, size=phase_size)
 
                         rel_sheet_path = os.path.relpath(sheet_path, self.output_root)
 
@@ -521,7 +600,20 @@ class AssetGenerator:
 
             # 3. Headshot (Derived)
             if generation_type in ["all", "headshot"]:
-                if not prompt or generation_type == "all":
+                compiled_phase = provider_request_for_phase(compiled_request, "headshot")
+                phase_reference_path = (
+                    self._compiled_reference_path(
+                        compiled_phase,
+                        full_body_phase_output=(
+                            generated_full_body_phase_path or fullbody_path
+                        ),
+                    )
+                    if compiled_phase
+                    else fullbody_path
+                )
+                if compiled_phase:
+                    base_prompt = str(compiled_phase["prompt"])
+                elif not prompt or generation_type == "all":
                     # Add reference consistency emphasis
                     base_prompt = f"{FICTIONAL_CHARACTER_PROMPT_NOTICE} Close-up portrait of the SAME character {character.name}. {character.description}. STRICTLY MAINTAIN the SAME face, hairstyle, skin tone, and facial features as the reference image. Zoom in on face and shoulders, detailed facial features, neutral expression, looking at viewer, high quality, masterpiece."
                 else:
@@ -531,7 +623,14 @@ class AssetGenerator:
                 character.headshot_prompt = base_prompt
 
                 # Generate with style suffix appended
-                generation_prompt = f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
+                generation_prompt = (
+                    base_prompt
+                    if compiled_phase or (prompt and generation_type != "all")
+                    else f"{base_prompt}, {style_suffix}" if style_suffix and style_suffix not in base_prompt else base_prompt
+                )
+                phase_model = str(compiled_phase.get("model") or i2i_model_name) if compiled_phase else i2i_model_name
+                phase_size = str(compiled_phase.get("parameters", {}).get("size") or effective_size) if compiled_phase else effective_size
+                phase_negative = str(compiled_phase.get("negative_prompt") or negative_prompt) if compiled_phase else negative_prompt
 
                 successful_generations = 0
                 last_error = ""
@@ -543,7 +642,7 @@ class AssetGenerator:
                             "characters", f"{character.id}_avatar_{variant_id}.png"
                         )
 
-                        self._get_model_for(i2i_model_name).generate(generation_prompt, avatar_path, ref_image_path=fullbody_path, negative_prompt=negative_prompt, ref_strength=0.8, model_name=i2i_model_name)
+                        self._get_model_for(phase_model).generate(generation_prompt, avatar_path, ref_image_path=phase_reference_path, negative_prompt=phase_negative, ref_strength=0.8, model_name=phase_model, size=phase_size)
 
                         rel_avatar_path = os.path.relpath(avatar_path, self.output_root)
 
@@ -620,7 +719,7 @@ class AssetGenerator:
 
         return character
 
-    def generate_scene(self, scene: Scene, positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, size: str = None, prompt: str = None) -> Scene:
+    def generate_scene(self, scene: Scene, positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, size: str = None, prompt: str = None, compiled_request: Optional[Dict[str, Any]] = None) -> Scene:
         """Generates a scene reference image."""
         self._validate_asset_identifier(scene.id)
         scene.status = GenerationStatus.PROCESSING
@@ -632,13 +731,17 @@ class AssetGenerator:
         # Default size for scenes (landscape)
         effective_size = size or "1536x1024"
 
-        base_prompt = prompt or f"Scene Concept Art: {scene.name}. {scene.description}. High quality, detailed."
+        compiled_phase = provider_request_for_phase(compiled_request, "scene")
+        base_prompt = str(compiled_phase["prompt"]) if compiled_phase else prompt or f"Scene Concept Art: {scene.name}. {scene.description}. High quality, detailed."
         scene.image_prompt = base_prompt
         generation_prompt = (
             f"{base_prompt} {positive_prompt}"
-            if positive_prompt and positive_prompt not in base_prompt
+            if not compiled_phase and not prompt and positive_prompt and positive_prompt not in base_prompt
             else base_prompt
         )
+        phase_model = str(compiled_phase.get("model") or model_name) if compiled_phase else model_name
+        phase_size = str(compiled_phase.get("parameters", {}).get("size") or effective_size) if compiled_phase else effective_size
+        phase_negative = str(compiled_phase.get("negative_prompt") or negative_prompt) if compiled_phase else negative_prompt
 
         try:
             for _ in range(batch_size):
@@ -647,7 +750,7 @@ class AssetGenerator:
                     "scenes", f"{scene.id}_{variant_id}.png"
                 )
 
-                image_path, _ = self._get_model_for(model_name).generate(generation_prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
+                image_path, _ = self._get_model_for(phase_model).generate(generation_prompt, output_path, negative_prompt=phase_negative, model_name=phase_model, size=phase_size)
 
                 rel_path = os.path.relpath(output_path, self.output_root)
 
@@ -693,7 +796,7 @@ class AssetGenerator:
 
         return scene
 
-    def generate_prop(self, prop: Prop, positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, size: str = None, prompt: str = None) -> Prop:
+    def generate_prop(self, prop: Prop, positive_prompt: str = None, negative_prompt: str = "", batch_size: int = 1, model_name: str = None, size: str = None, prompt: str = None, compiled_request: Optional[Dict[str, Any]] = None) -> Prop:
         """Generates a prop reference image."""
         self._validate_asset_identifier(prop.id)
         prop.status = GenerationStatus.PROCESSING
@@ -705,13 +808,17 @@ class AssetGenerator:
         # Default size for props (square)
         effective_size = size or "1024x1024"
 
-        base_prompt = prompt or f"Prop Design: {prop.name}. {prop.description}. Isolated on white background, high quality, detailed."
+        compiled_phase = provider_request_for_phase(compiled_request, "prop")
+        base_prompt = str(compiled_phase["prompt"]) if compiled_phase else prompt or f"Prop Design: {prop.name}. {prop.description}. Isolated on white background, high quality, detailed."
         prop.image_prompt = base_prompt
         generation_prompt = (
             f"{base_prompt} {positive_prompt}"
-            if positive_prompt and positive_prompt not in base_prompt
+            if not compiled_phase and not prompt and positive_prompt and positive_prompt not in base_prompt
             else base_prompt
         )
+        phase_model = str(compiled_phase.get("model") or model_name) if compiled_phase else model_name
+        phase_size = str(compiled_phase.get("parameters", {}).get("size") or effective_size) if compiled_phase else effective_size
+        phase_negative = str(compiled_phase.get("negative_prompt") or negative_prompt) if compiled_phase else negative_prompt
 
         try:
             for _ in range(batch_size):
@@ -720,7 +827,7 @@ class AssetGenerator:
                     "props", f"{prop.id}_{variant_id}.png"
                 )
 
-                image_path, _ = self._get_model_for(model_name).generate(generation_prompt, output_path, negative_prompt=negative_prompt, model_name=model_name, size=effective_size)
+                image_path, _ = self._get_model_for(phase_model).generate(generation_prompt, output_path, negative_prompt=phase_negative, model_name=phase_model, size=phase_size)
 
                 rel_path = os.path.relpath(output_path, self.output_root)
 

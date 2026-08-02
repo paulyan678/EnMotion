@@ -8,7 +8,10 @@ import {
     Trash2, Copy, Wand2, FileText, RefreshCw, Loader2, X, Lock, Unlock,
     Plus, ArrowUp, ArrowDown, Zap, Upload, Film
 } from "lucide-react";
-import { useProjectStore } from "@/store/projectStore";
+import {
+    useProjectStore,
+    type StoryboardFrame,
+} from "@/store/projectStore";
 import { api, crudApi } from "@/lib/api";
 import {
     frameMovementTypeFromFrame,
@@ -20,12 +23,33 @@ import { primaryAssetImageUrl } from "@/lib/assetImage";
 import StepPageHeader from "@/components/shared/StepPageHeader";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
+import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
+import {
+    DEFAULT_MODEL_SETTINGS,
+    PROJECT_IMAGE_MODELS,
+} from "@/lib/modelCatalog";
 
 import StoryboardFrameEditor from "./StoryboardFrameEditor";
+
+interface FrameRenderDraft {
+    frameId: string;
+    prompt: string;
+    compositionData: Record<string, unknown>;
+    batchSize: number;
+    modelName: string;
+    aspectRatio: string;
+}
+
+type RenderableStoryboardFrame = StoryboardFrame & {
+    character_ids?: string[];
+    prop_ids?: string[];
+    image_prompt?: string | null;
+};
 
 export default function StoryboardComposer() {
     const t = useTranslations("storyboard");
     const tStep = useTranslations("stepHeader");
+    const tg = useTranslations("generationRequest");
     const locale = useLocale();
     const currentProject = useProjectStore((state) => state.currentProject);
     const selectedFrameId = useProjectStore((state) => state.selectedFrameId);
@@ -46,6 +70,8 @@ export default function StoryboardComposer() {
     const [insertIndex, setInsertIndex] = useState<number | null>(null);
     const [extractingFrameId, setExtractingFrameId] = useState<string | null>(null);
     const [showScriptOverlay, setShowScriptOverlay] = useState(false);
+    const [renderDraft, setRenderDraft] = useState<FrameRenderDraft | null>(null);
+    const [renderError, setRenderError] = useState<string | null>(null);
     const [deletingFrameIds, setDeletingFrameIds] = useState<Set<string>>(() => new Set());
     const deletingFrameIdsRef = useRef<Set<string>>(new Set());
     const renderControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -261,101 +287,104 @@ export default function StoryboardComposer() {
         }
     };
 
-    const handleRenderFrame = async (frame: any, batchSize: number = 1, e?: React.MouseEvent) => {
-        e?.stopPropagation();
+    const openRenderComposer = (
+        frame: RenderableStoryboardFrame,
+        event: React.MouseEvent,
+    ) => {
+        event.stopPropagation();
         if (!currentProject) return;
+        const referenceImageUrls: string[] = [];
+        const addReference = (value?: string | null) => {
+            if (value && !referenceImageUrls.includes(value)) referenceImageUrls.push(value);
+        };
+        const scene = currentProject.scenes?.find((item) => item.id === frame.scene_id);
+        addReference(scene ? primaryAssetImageUrl(scene, "scene") : null);
+        for (const characterId of frame.character_ids ?? []) {
+            const character = currentProject.characters?.find(
+                (item) => item.id === characterId,
+            );
+            addReference(character ? primaryAssetImageUrl(character, "character") : null);
+        }
+        for (const propId of frame.prop_ids ?? []) {
+            const prop = currentProject.props?.find((item) => item.id === propId);
+            addReference(prop ? primaryAssetImageUrl(prop, "prop") : null);
+        }
+
+        const stylePrompt = currentProject.art_direction?.style_config?.positive_prompt || "";
+        const basePrompt = frame.image_prompt?.trim()
+            ? frame.image_prompt.trim()
+            : [
+                frame.action_description,
+                frame.dialogue ? `Dialogue context: "${frame.dialogue}"` : "",
+            ].filter(Boolean).join(" . ");
+        const fullPrompt = [stylePrompt, basePrompt].filter(Boolean).join(" . ");
+        const requestedModel = currentProject.model_settings?.image_model;
+        const modelName = requestedModel
+            && PROJECT_IMAGE_MODELS.some((model) => model.id === requestedModel)
+            ? requestedModel
+            : DEFAULT_MODEL_SETTINGS.image_model;
+        setRenderError(null);
+        setRenderDraft({
+            frameId: frame.id,
+            prompt: fullPrompt,
+            compositionData: {
+                character_ids: frame.character_ids ?? [],
+                prop_ids: frame.prop_ids ?? [],
+                scene_id: frame.scene_id ?? "",
+                reference_image_urls: referenceImageUrls,
+            },
+            batchSize: 1,
+            modelName,
+            aspectRatio: currentProject.model_settings?.storyboard_aspect_ratio || "16:9",
+        });
+    };
+
+    const handleRenderFrame = async () => {
+        if (!currentProject || !renderDraft || !renderDraft.prompt.trim()) return;
         const projectId = currentProject.id;
+        const draft = renderDraft;
         const controller = new AbortController();
-        renderControllersRef.current.get(frame.id)?.abort();
-        renderControllersRef.current.set(frame.id, controller);
+        renderControllersRef.current.get(draft.frameId)?.abort();
+        renderControllersRef.current.set(draft.frameId, controller);
 
-        addRenderingFrame(frame.id);
+        addRenderingFrame(draft.frameId);
+        setRenderError(null);
         try {
-            // Construct composition data with references
-            const compositionData: any = {
-                character_ids: frame.character_ids,
-                prop_ids: frame.prop_ids,
-                scene_id: frame.scene_id,
-                reference_image_urls: []
-            };
-
-            // 1. Add Scene Image from the same canonical source used by all
-            // asset panels. Keep the raw persisted path for the backend API.
-            if (frame.scene_id) {
-                const scene = currentProject.scenes?.find((s: any) => s.id === frame.scene_id);
-                if (scene) {
-                    const sceneUrl = primaryAssetImageUrl(scene, "scene");
-                    if (sceneUrl) compositionData.reference_image_urls.push(sceneUrl);
-                }
-            }
-
-            // 2. Add Character Images (reference_sheet -> legacy fallbacks).
-            if (frame.character_ids && frame.character_ids.length > 0) {
-                frame.character_ids.forEach((charId: string) => {
-                    const char = currentProject.characters?.find((c: any) => c.id === charId);
-                    if (char) {
-                        const charUrl = primaryAssetImageUrl(char, "character");
-                        if (charUrl) compositionData.reference_image_urls.push(charUrl);
-                    }
-                });
-            }
-
-            // 3. Add Prop Images from the canonical image container.
-            if (frame.prop_ids && frame.prop_ids.length > 0) {
-                frame.prop_ids.forEach((propId: string) => {
-                    const prop = currentProject.props?.find((p: any) => p.id === propId);
-                    if (prop) {
-                        const propUrl = primaryAssetImageUrl(prop, "prop");
-                        if (propUrl) compositionData.reference_image_urls.push(propUrl);
-                    }
-                });
-            }
-
-            // Construct enhanced prompt using Art Direction style config.
-            const artDirection = currentProject?.art_direction;
-            const globalStylePrompt = artDirection?.style_config?.positive_prompt || "";
-
-            // Construct final prompt:
-            // If image_prompt exists (polished or manually edited), it already contains action/dialogue,
-            // so only prepend the style. Otherwise, build from action_description and dialogue.
-            let finalPrompt = "";
-
-            if (frame.image_prompt && frame.image_prompt.trim()) {
-                // User has a custom/polished prompt - only add style prefix
-                finalPrompt = globalStylePrompt
-                    ? `${globalStylePrompt} . ${frame.image_prompt}`
-                    : frame.image_prompt;
-            } else {
-                // No custom prompt - build from action_description and dialogue
-                const parts = [
-                    globalStylePrompt,
-                    frame.action_description,
-                    frame.dialogue ? `Dialogue context: "${frame.dialogue}"` : ""
-                ].filter(Boolean);
-                finalPrompt = parts.join(" . ");
-            }
-
+            const compiled = await api.previewStoryboardFrame(projectId, {
+                frame_id: draft.frameId,
+                composition_data: draft.compositionData,
+                prompt: draft.prompt,
+                batch_size: draft.batchSize,
+                model_name: draft.modelName,
+                aspect_ratio: draft.aspectRatio,
+            });
             const updatedProject = await api.renderFrame(
                 projectId,
-                frame.id,
-                compositionData,
-                finalPrompt,
-                batchSize,
-                { signal: controller.signal },
+                draft.frameId,
+                draft.compositionData,
+                draft.prompt,
+                draft.batchSize,
+                {
+                    signal: controller.signal,
+                    modelName: draft.modelName,
+                    aspectRatio: draft.aspectRatio,
+                    compiledRequestChecksum: compiled.checksum,
+                },
             );
             if (!controller.signal.aborted) {
                 useProjectStore.getState().updateProject(projectId, updatedProject);
+                setRenderDraft(null);
             }
 
         } catch (error) {
             if (controller.signal.aborted) return;
             console.error("Render failed:", error);
-            alert(t("renderFailed"));
+            setRenderError(extractErrorDetail(error, t("renderFailed")));
         } finally {
-            if (renderControllersRef.current.get(frame.id) === controller) {
-                renderControllersRef.current.delete(frame.id);
+            if (renderControllersRef.current.get(draft.frameId) === controller) {
+                renderControllersRef.current.delete(draft.frameId);
             }
-            removeRenderingFrame(frame.id);
+            removeRenderingFrame(draft.frameId);
         }
     };
 
@@ -481,21 +510,16 @@ export default function StoryboardComposer() {
                                                             <span className="text-xs text-foreground">{t("renderingFrame")}</span>
                                                         </div>
                                                     ) : (
-                                                        <>
-                                                            {[1, 2, 3, 4].map(size => (
-                                                                <button
-                                                                    key={size}
-                                                                    onClick={(e) => { e.stopPropagation(); handleRenderFrame(frame, size); }}
-                                                                    className="px-2 py-1.5 bg-primary/80 hover:bg-primary text-foreground rounded text-xs font-bold transition-colors"
-                                                                    title={t("generateVariants", { count: size })}
-                                                                >
-                                                                    <div className="flex items-center gap-1">
-                                                                        <Wand2 size={12} />
-                                                                        <span>×{size}</span>
-                                                                    </div>
-                                                                </button>
-                                                            ))}
-                                                        </>
+                                                        <button
+                                                            onClick={(event) => openRenderComposer(frame, event)}
+                                                            className="px-3 py-1.5 bg-primary/80 hover:bg-primary text-foreground rounded text-xs font-bold transition-colors"
+                                                            title={tg("composeTitle")}
+                                                        >
+                                                            <span className="flex items-center gap-1.5">
+                                                                <Wand2 size={12} />
+                                                                {tg("generate")}
+                                                            </span>
+                                                        </button>
                                                     )}
                                                 </div>
                                             )}
@@ -605,6 +629,146 @@ export default function StoryboardComposer() {
                         ))}
                 </div>
             </div>
+
+            <AnimatePresence>
+                {renderDraft ? (
+                    <motion.div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label={tg("composeTitle")}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0 z-50 flex items-center justify-center bg-overlay p-4 backdrop-blur-sm"
+                        onClick={() => {
+                            if (!renderingFrames.has(renderDraft.frameId)) setRenderDraft(null);
+                        }}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.97, y: 12 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.97, y: 12 }}
+                            className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-glass-border bg-surface shadow-2xl"
+                            onClick={(event) => event.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between border-b border-glass-border px-6 py-4">
+                                <h3 className="text-base font-semibold text-foreground">{tg("composeTitle")}</h3>
+                                <button
+                                    type="button"
+                                    onClick={() => setRenderDraft(null)}
+                                    disabled={renderingFrames.has(renderDraft.frameId)}
+                                    className="rounded-lg p-1.5 text-text-secondary hover:bg-hover-bg hover:text-foreground disabled:opacity-40"
+                                    aria-label={tg("cancel")}
+                                >
+                                    <X size={17} />
+                                </button>
+                            </div>
+                            <div className="space-y-4 overflow-y-auto px-6 py-5">
+                                <label className="block space-y-2 text-sm text-text-secondary">
+                                    <span>{tg("fullPrompt")}</span>
+                                    <textarea
+                                        value={renderDraft.prompt}
+                                        onChange={(event) => setRenderDraft((current) => current ? {
+                                            ...current,
+                                            prompt: event.target.value,
+                                        } : current)}
+                                        rows={7}
+                                        className="glass-input w-full resize-y"
+                                    />
+                                </label>
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <label className="space-y-1.5 text-xs text-text-secondary">
+                                        <span>{tg("model")}</span>
+                                        <select
+                                            value={renderDraft.modelName}
+                                            onChange={(event) => setRenderDraft((current) => current ? {
+                                                ...current,
+                                                modelName: event.target.value,
+                                            } : current)}
+                                            className="glass-input w-full"
+                                        >
+                                            {PROJECT_IMAGE_MODELS.map((model) => (
+                                                <option key={model.id} value={model.id}>{model.name}</option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                    <label className="space-y-1.5 text-xs text-text-secondary">
+                                        <span>{tg("aspectRatio")}</span>
+                                        <select
+                                            value={renderDraft.aspectRatio}
+                                            onChange={(event) => setRenderDraft((current) => current ? {
+                                                ...current,
+                                                aspectRatio: event.target.value,
+                                            } : current)}
+                                            className="glass-input w-full"
+                                        >
+                                            {["16:9", "9:16", "1:1", "4:3", "3:4"].map((ratio) => (
+                                                <option key={ratio} value={ratio}>{ratio}</option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                    <label className="space-y-1.5 text-xs text-text-secondary">
+                                        <span>{tg("batchSize")}</span>
+                                        <select
+                                            value={renderDraft.batchSize}
+                                            onChange={(event) => setRenderDraft((current) => current ? {
+                                                ...current,
+                                                batchSize: Number(event.target.value),
+                                            } : current)}
+                                            className="glass-input w-full"
+                                        >
+                                            {[1, 2, 3, 4].map((count) => (
+                                                <option key={count} value={count}>×{count}</option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                </div>
+                                <GenerationRequestReview
+                                    fingerprint={JSON.stringify(renderDraft)}
+                                    loadPreview={() => api.previewStoryboardFrame(
+                                        currentProject!.id,
+                                        {
+                                            frame_id: renderDraft.frameId,
+                                            composition_data: renderDraft.compositionData,
+                                            prompt: renderDraft.prompt,
+                                            batch_size: renderDraft.batchSize,
+                                            model_name: renderDraft.modelName,
+                                            aspect_ratio: renderDraft.aspectRatio,
+                                        },
+                                    )}
+                                    disabled={!renderDraft.prompt.trim()}
+                                />
+                                {renderError ? (
+                                    <p role="alert" className="text-sm text-status-failed-fg">{renderError}</p>
+                                ) : null}
+                            </div>
+                            <div className="flex justify-end gap-2 border-t border-glass-border px-6 py-4">
+                                <button
+                                    type="button"
+                                    onClick={() => setRenderDraft(null)}
+                                    disabled={renderingFrames.has(renderDraft.frameId)}
+                                    className="glass-button px-4 py-2 text-sm disabled:opacity-40"
+                                >
+                                    {tg("cancel")}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleRenderFrame()}
+                                    disabled={!renderDraft.prompt.trim() || renderingFrames.has(renderDraft.frameId)}
+                                    className="inline-flex min-w-28 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+                                >
+                                    {renderingFrames.has(renderDraft.frameId) ? (
+                                        <Loader2 size={15} className="animate-spin" />
+                                    ) : (
+                                        <Wand2 size={15} />
+                                    )}
+                                    {renderingFrames.has(renderDraft.frameId) ? t("renderingFrame") : tg("submit")}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                ) : null}
+            </AnimatePresence>
 
             {/* Script Overlay */}
             <AnimatePresence>

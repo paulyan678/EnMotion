@@ -32,6 +32,25 @@ const project = {
   updatedAt: "2026-07-22T00:00:00.000Z",
 } satisfies Project;
 
+const compiledStoryboardRequest = {
+  compiler_version: "1.0",
+  compiled_request_id: "genreq_storyboard",
+  checksum: "d".repeat(64),
+  category: "image" as const,
+  mode: "t2i",
+  source: "workspace" as const,
+  user_prompt: "A character enters.",
+  prompt_parts: [],
+  target: { project_id: project.id, frame_id: "frame-clickable" },
+  provider_requests: [{
+    phase: "storyboard_frame",
+    model: "gpt-image-2",
+    prompt: "A character enters.",
+    parameters: { size: "1536x1024", quality: "high", n: 1 },
+    input_media: [],
+  }],
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
   useProjectStore.setState({
@@ -94,10 +113,12 @@ describe("StoryboardComposer frame navigation", () => {
       currentProject: project,
       renderingFrames: new Set<string>(),
     });
+    vi.spyOn(api, "previewStoryboardFrame").mockResolvedValue(compiledStoryboardRequest);
     vi.spyOn(api, "renderFrame").mockReturnValue(pendingRender);
     renderWithIntl(<StoryboardComposer />, { locale: "zh" });
 
-    fireEvent.click(screen.getByTitle("生成 1 张候选图"));
+    fireEvent.click(screen.getByTitle("审核并生成"));
+    fireEvent.click(screen.getByRole("button", { name: "提交生成" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("生成中…");
     expect(screen.getByRole("status").parentElement?.parentElement).toHaveClass("opacity-100");
