@@ -422,6 +422,8 @@
     "offlineBannerText": "You're offline — you can continue once reconnected",
     "collapseLeftPanel": "Collapse left panel",
     "restoreLeftPanel": "Restore left panel",
+    "collapseTopNavigation": "Collapse workspace navigation",
+    "restoreTopNavigation": "Restore workspace navigation",
     "resizeLeftPanel": "Resize left panel",
     "collapseRightPanel": "Collapse right panel",
     "restoreRightPanel": "Restore right panel",
@@ -2641,6 +2643,9 @@
     "modeText": "Text generation",
     "modeImage": "Image generation",
     "modeVideo": "Video generation",
+    "modeEntityExtraction": "Entity extraction",
+    "modeStyleAnalysis": "Script style analysis",
+    "modeStoryboardExtraction": "Storyboard generation",
     "modeGeneration": "Content generation",
     "parameterDuration": "Duration",
     "parameterResolution": "Resolution",
@@ -2661,6 +2666,21 @@
     "composeTitle": "Review and generate",
     "generate": "Generate",
     "submit": "Submit generation",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "textComposerDescription": "Choose a compatible model and review every instruction sent to the provider. Changes apply to this run only.",
+    "textRunSettings": "Request settings",
+    "textInstructions": "Instructions",
+    "textOutputContract": "Required output contract",
+    "textSourceContent": "Source content",
+    "locked": "Locked",
+    "textRun": "Run request",
+    "textRunning": "Running…",
+    "textConfigFailed": "The request configuration could not be loaded.",
+    "textExecutionFailed": "The request failed. Review the content and model, then try again.",
+    "textOperations": {
+      "entity_extraction": "Extract entities",
+      "style_analysis": "Analyze script style",
+      "storyboard_extraction": "Generate storyboard"
+    }
   }
 }

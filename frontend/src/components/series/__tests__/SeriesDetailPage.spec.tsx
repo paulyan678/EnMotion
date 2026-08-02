@@ -167,7 +167,12 @@ const mockEpisodes: Project[] = [
 // ── Helpers ──
 
 function renderPage(seriesId = 'series-1') {
-    return renderWithIntl(<SeriesDetailPage seriesId={seriesId} />);
+    return renderWithIntl(
+        <TopBarNavigationProvider>
+            <RegisteredTopBar />
+            <SeriesDetailPage seriesId={seriesId} />
+        </TopBarNavigationProvider>,
+    );
 }
 
 function RegisteredTopBar() {
@@ -191,12 +196,7 @@ function RegisteredTopBar() {
 
 function renderServerPage(seriesId = 'series-1') {
     authState.serverMode = true;
-    return renderWithIntl(
-        <TopBarNavigationProvider>
-            <RegisteredTopBar />
-            <SeriesDetailPage seriesId={seriesId} />
-        </TopBarNavigationProvider>,
-    );
+    return renderPage(seriesId);
 }
 
 // ── Tests ──

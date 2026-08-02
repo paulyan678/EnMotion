@@ -4,6 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import GlobalSidebar from "../GlobalSidebar";
 import { renderWithIntl } from "@/test/renderWithIntl";
 
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    serverMode: false,
+    status: "authenticated",
+    user: null,
+  }),
+}));
+
 describe("GlobalSidebar API activity navigation", () => {
   it("adds a bilingual Generation Records destination and routes to its dashboard", () => {
     const onTabChange = vi.fn();

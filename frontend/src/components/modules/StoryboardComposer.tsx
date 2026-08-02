@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import {
     useProjectStore,
+    type Project,
     type StoryboardFrame,
 } from "@/store/projectStore";
 import { api, crudApi } from "@/lib/api";
@@ -20,10 +21,11 @@ import {
 import { extractErrorDetail } from "@/lib/utils";
 import { selectedStoryboardImage } from "@/lib/clipStartFrame";
 import { primaryAssetImageUrl } from "@/lib/assetImage";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
+import ScrollFlowActions from "@/components/shared/ScrollFlowActions";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
+import TextGenerationRequestDialog from "@/components/generation/TextGenerationRequestDialog";
 import {
     DEFAULT_MODEL_SETTINGS,
     PROJECT_IMAGE_MODELS,
@@ -61,10 +63,6 @@ export default function StoryboardComposer() {
     const addRenderingFrame = useProjectStore((state) => state.addRenderingFrame);
     const removeRenderingFrame = useProjectStore((state) => state.removeRenderingFrame);
 
-    // Use global storyboard analysis state (persists across tab switches)
-    const isAnalyzing = useProjectStore((state) => state.isAnalyzingStoryboard);
-    const setIsAnalyzing = useProjectStore((state) => state.setIsAnalyzingStoryboard);
-
     const [editingFrameId, setEditingFrameId] = useState<string | null>(null);
     const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
     const [insertIndex, setInsertIndex] = useState<number | null>(null);
@@ -72,6 +70,7 @@ export default function StoryboardComposer() {
     const [showScriptOverlay, setShowScriptOverlay] = useState(false);
     const [renderDraft, setRenderDraft] = useState<FrameRenderDraft | null>(null);
     const [renderError, setRenderError] = useState<string | null>(null);
+    const [textComposerOpen, setTextComposerOpen] = useState(false);
     const [deletingFrameIds, setDeletingFrameIds] = useState<Set<string>>(() => new Set());
     const deletingFrameIdsRef = useRef<Set<string>>(new Set());
     const renderControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -90,7 +89,7 @@ export default function StoryboardComposer() {
     }, [currentProject?.id]);
 
     // NEW: Analyze script text to generate storyboard frames
-    const handleAnalyzeToStoryboard = async () => {
+    const handleAnalyzeToStoryboard = () => {
         if (!currentProject) return;
 
         const text = currentProject.originalText;
@@ -99,30 +98,17 @@ export default function StoryboardComposer() {
             return;
         }
 
-        if (currentProject.frames?.length > 0) {
-            if (!confirm(t("overwriteConfirm"))) return;
-        }
+        setTextComposerOpen(true);
+    };
 
-        setIsAnalyzing(true);
-        try {
-            const updatedProject = await api.analyzeToStoryboard(currentProject.id, text);
-            const frameCount = updatedProject.frames?.length || 0;
-            if (frameCount > 0) {
-                updateProject(currentProject.id, updatedProject);
-                alert(t("framesGenerated", { count: frameCount }));
-            } else {
-                alert(t("aiInvalidOutput"));
-            }
-        } catch (error: any) {
-            console.error("Analyze to storyboard failed:", error);
-            const detail = extractErrorDetail(error, "");
-            if (detail.includes("JSON") || detail.includes("格式")) {
-                alert(t("aiFormatRetry"));
-            } else {
-                alert(locale === "zh" ? t("generateFailed") : t("genFailedDetail", { detail }));
-            }
-        } finally {
-            setIsAnalyzing(false);
+    const handleStoryboardCompleted = (updatedProject: Project) => {
+        if (!currentProject) return;
+        const frameCount = updatedProject.frames?.length || 0;
+        if (frameCount > 0) {
+            updateProject(currentProject.id, updatedProject);
+            alert(t("framesGenerated", { count: frameCount }));
+        } else {
+            alert(t("aiInvalidOutput"));
         }
     };
 
@@ -397,12 +383,18 @@ export default function StoryboardComposer() {
 
     return (
         <div className="flex flex-col h-full text-foreground overflow-hidden">
-            <StepPageHeader
-                title={tStep("storyboardComposerTitle")}
-                trailing={(
-                    <>
-                        <WorkflowActionButton
-                            variant="ghost"
+            <h1 className="sr-only">{tStep("storyboardComposerTitle")}</h1>
+
+            {/* Frame List — full width */}
+            <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                <div className="max-w-4xl mx-auto space-y-6">
+                    <ScrollFlowActions
+                        label={tStep("storyboardComposerTitle")}
+                        className="pb-1"
+                    >
+                        <>
+                            <WorkflowActionButton
+                                variant="ghost"
                             size="sm"
                             leftIcon={<FileText />}
                             onClick={() => setShowScriptOverlay(true)}
@@ -413,21 +405,14 @@ export default function StoryboardComposer() {
                         <WorkflowActionButton
                             variant="primary"
                             size="sm"
-                            leftIcon={isAnalyzing ? undefined : <Zap />}
-                            loading={isAnalyzing}
+                            leftIcon={<Zap />}
                             onClick={handleAnalyzeToStoryboard}
-                            disabled={isAnalyzing}
                             title={t("generateFromScript")}
                         >
-                            {isAnalyzing ? t("generatingFrames") : t("generateStoryboard")}
-                        </WorkflowActionButton>
-                    </>
-                )}
-            />
-
-            {/* Frame List — full width */}
-            <div className="flex-1 overflow-y-auto p-8">
-                <div className="max-w-4xl mx-auto space-y-6">
+                                {t("generateStoryboard")}
+                            </WorkflowActionButton>
+                        </>
+                    </ScrollFlowActions>
                         {/* Add Frame Button (Top) */}
                         <div className="flex justify-center">
                             <button
@@ -840,6 +825,18 @@ export default function StoryboardComposer() {
                 className="hidden"
                 onChange={handleFileSelected}
             />
+
+            {currentProject ? (
+                <TextGenerationRequestDialog<Project>
+                    open={textComposerOpen}
+                    scriptId={currentProject.id}
+                    operation="storyboard_extraction"
+                    initialSourceText={currentProject.originalText}
+                    warning={currentProject.frames?.length ? t("overwriteConfirm") : undefined}
+                    onClose={() => setTextComposerOpen(false)}
+                    onCompleted={handleStoryboardCompleted}
+                />
+            ) : null}
         </div >
     );
 }

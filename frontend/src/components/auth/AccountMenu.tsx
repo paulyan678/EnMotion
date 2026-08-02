@@ -3,20 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { KeyRound, LoaderCircle, LogOut, ShieldCheck, UserRound, UsersRound, X } from "lucide-react";
 import { useTranslations } from "next-intl";
+
 import { useAuth } from "@/components/auth/AuthProvider";
-import BreadcrumbBar from "@/components/layout/BreadcrumbBar";
-import { useTopBarNavigation } from "@/components/layout/TopBarNavigationContext";
 import UserManagementDialog from "@/components/auth/UserManagementDialog";
-import UpdatePill from "@/components/update/UpdatePill";
-import { useUpdater } from "@/components/update/UpdaterProvider";
-import AccountControl from "@/components/auth/AccountControl";
 import ModalPortal from "@/components/common/ModalPortal";
 
-export default function ServerAccountBar() {
+export default function AccountMenu({ className = "" }: { className?: string }) {
   const t = useTranslations("ui.auth");
   const { serverMode, status, user, logout, changePassword } = useAuth();
-  const { navigation } = useTopBarNavigation();
-  const { supported: updaterSupported, checkForUpdates } = useUpdater();
   const [menuOpen, setMenuOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [usersOpen, setUsersOpen] = useState(false);
@@ -25,17 +19,6 @@ export default function ServerAccountBar() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const updateCheckedRef = useRef(false);
-
-  useEffect(() => {
-    if (status !== "authenticated") {
-      updateCheckedRef.current = false;
-      return;
-    }
-    if (!updaterSupported || updateCheckedRef.current) return;
-    updateCheckedRef.current = true;
-    void checkForUpdates();
-  }, [checkForUpdates, status, updaterSupported]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -73,70 +56,59 @@ export default function ServerAccountBar() {
   };
 
   return (
-    <header className="relative z-40 flex h-11 flex-shrink-0 items-center gap-3 border-b border-glass-border bg-surface/70 px-3 backdrop-blur-xl md:px-5">
-      <div className="min-w-0 flex-1 self-stretch">
-        {navigation && (
-          <BreadcrumbBar
-            segments={navigation.segments}
-            currentContent={navigation.currentContent}
-            description={navigation.description}
-            actions={navigation.actions}
-            embedded
-          />
-        )}
-      </div>
-      <UpdatePill />
-      <AccountControl enabled={Boolean(user.id)} />
-      <button
-        type="button"
-        onClick={() => setMenuOpen((open) => !open)}
-        aria-expanded={menuOpen}
-        aria-haspopup="menu"
-        aria-controls="server-account-menu"
-        aria-label={t("accountMenu", { username: user.username })}
-        className="flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:bg-hover-bg hover:text-foreground"
-      >
-        <UserRound size={16} className="text-primary" />
-        <span className="hidden max-w-40 truncate font-medium md:inline">{user.username}</span>
-        {user.role === "admin" && <ShieldCheck aria-label={t("administrator")} size={14} className="text-accent" />}
-      </button>
+    <>
+      <div ref={menuRef} className={`relative min-w-0 ${className}`.trim()}>
+        <button
+          type="button"
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-expanded={menuOpen}
+          aria-haspopup="menu"
+          aria-controls="sidebar-account-menu"
+          aria-label={t("accountMenu", { username: user.username })}
+          className="flex min-h-10 w-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm text-text-secondary transition-colors hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+        >
+          <UserRound size={16} className="shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate text-left font-medium">{user.username}</span>
+          {user.role === "admin" && <ShieldCheck aria-label={t("administrator")} size={14} className="shrink-0 text-accent" />}
+        </button>
 
-      {menuOpen && (
-        <div ref={menuRef} id="server-account-menu" role="menu" className="absolute right-3 top-[calc(100%+6px)] w-64 rounded-xl border border-glass-border bg-elevated p-2 shadow-2xl md:right-5">
-          <div className="border-b border-glass-border px-2.5 pb-2.5 pt-1">
-            <p className="truncate text-sm font-semibold text-foreground">{user.username}</p>
-            <p className="mt-0.5 font-mono text-[0.625rem] uppercase tracking-wider text-text-muted">
-              {user.role === "admin" ? t("administrator") : t("privateWorkspace")}
-            </p>
-          </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => { setPasswordOpen(true); setMenuOpen(false); setMessage(null); }}
-            className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-text-secondary hover:bg-hover-bg hover:text-foreground"
-          >
-            <KeyRound size={15} /> {t("changePassword")}
-          </button>
-          {user.role === "admin" && (
+        {menuOpen && (
+          <div id="sidebar-account-menu" role="menu" className="absolute bottom-[calc(100%+6px)] left-0 z-[90] w-64 rounded-xl border border-glass-border bg-elevated p-2 shadow-2xl">
+            <div className="border-b border-glass-border px-2.5 pb-2.5 pt-1">
+              <p className="truncate text-sm font-semibold text-foreground">{user.username}</p>
+              <p className="mt-0.5 font-mono text-[0.625rem] uppercase tracking-wider text-text-muted">
+                {user.role === "admin" ? t("administrator") : t("privateWorkspace")}
+              </p>
+            </div>
             <button
               type="button"
               role="menuitem"
-              onClick={() => { setUsersOpen(true); setMenuOpen(false); }}
+              onClick={() => { setPasswordOpen(true); setMenuOpen(false); setMessage(null); }}
+              className="mt-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-text-secondary hover:bg-hover-bg hover:text-foreground"
+            >
+              <KeyRound size={15} /> {t("changePassword")}
+            </button>
+            {user.role === "admin" && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setUsersOpen(true); setMenuOpen(false); }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-text-secondary hover:bg-hover-bg hover:text-foreground"
+              >
+                <UsersRound size={15} /> {t("manageUsers")}
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void logout()}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-text-secondary hover:bg-hover-bg hover:text-foreground"
             >
-              <UsersRound size={15} /> {t("manageUsers")}
+              <LogOut size={15} /> {t("signOut")}
             </button>
-          )}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => void logout()}
-            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-text-secondary hover:bg-hover-bg hover:text-foreground"
-          >
-            <LogOut size={15} /> {t("signOut")}
-          </button>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       {passwordOpen && (
         <ModalPortal isOpen={passwordOpen} onClose={() => setPasswordOpen(false)}>
@@ -149,7 +121,7 @@ export default function ServerAccountBar() {
                 aria-labelledby="change-password-title"
                 tabIndex={-1}
                 onMouseDown={(event) => event.stopPropagation()}
-                className="max-h-[calc(100dvh-3rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-glass-border bg-elevated p-6 shadow-2xl"
+                className="max-h-[calc(100dvh-3rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-glass-border bg-elevated p-6 shadow-2xl outline-none"
               >
                 <form onSubmit={submitPassword}>
                   <div className="flex items-center justify-between">
@@ -179,6 +151,6 @@ export default function ServerAccountBar() {
         </ModalPortal>
       )}
       {usersOpen && user.role === "admin" && <UserManagementDialog onClose={() => setUsersOpen(false)} />}
-    </header>
+    </>
   );
 }

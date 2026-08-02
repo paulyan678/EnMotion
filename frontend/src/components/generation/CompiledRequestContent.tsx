@@ -16,6 +16,9 @@ const MODE_KEYS: Record<string, string> = {
   text: "modeText",
   image: "modeImage",
   video: "modeVideo",
+  entity_extraction: "modeEntityExtraction",
+  style_analysis: "modeStyleAnalysis",
+  storyboard_extraction: "modeStoryboardExtraction",
 };
 
 const PARAMETER_KEYS: Record<string, string> = {

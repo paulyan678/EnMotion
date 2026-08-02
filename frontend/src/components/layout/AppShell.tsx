@@ -3,6 +3,7 @@
 import GlobalSidebar, { type GlobalTab } from "./GlobalSidebar";
 import OfflineBanner from "./OfflineBanner";
 import BottomTabBar from "./BottomTabBar";
+import AccountNavigationControls from "@/components/auth/AccountNavigationControls";
 
 interface AppShellProps {
   activeTab: GlobalTab;
@@ -16,7 +17,10 @@ export default function AppShell({ activeTab, onTabChange, children }: AppShellP
       <OfflineBanner />
       <div className="flex min-h-0 flex-1">
         <GlobalSidebar activeTab={activeTab} onTabChange={onTabChange} />
-        <div className="flex-1 overflow-y-auto">{children}</div>
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {activeTab === "settings" ? <AccountNavigationControls compact /> : null}
+          <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        </div>
       </div>
       <BottomTabBar activeTab={activeTab} onTabChange={onTabChange} />
     </div>

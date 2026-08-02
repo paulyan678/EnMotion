@@ -621,12 +621,12 @@ export default function Home() {
     return <ProjectClient id={projectId} />;
   }
 
-  // 系列集数编辑 — 全屏，BreadcrumbBar 内嵌在 ProjectClient
+  // 系列集数编辑 — 全屏，路径注册到可折叠工作区导航
   if (currentView === 'series-episode' && seriesId && episodeId) {
     return <EpisodeBreadcrumbWrapper seriesId={seriesId} episodeId={episodeId} />;
   }
 
-  // 系列详情页 — 全屏，自带 BreadcrumbBar
+  // 系列详情页 — 全屏，路径注册到可折叠工作区导航
   if (currentView === 'series' && seriesId) {
     return <SeriesDetailPage seriesId={seriesId} />;
   }

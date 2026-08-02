@@ -57,8 +57,8 @@ export default function PipelineSidebar({ activeStep, onStepChange, steps, bread
             animate={{ x: 0, opacity: 1 }}
             className="w-full flex-1 min-h-0 border-r border-glass-border bg-surface backdrop-blur-xl flex flex-col z-50"
         >
-            {/* Desktop fallback header. In server mode, navigation lives in the
-                persistent account bar, so the sidebar starts directly with its content. */}
+            {/* Optional fallback header for isolated embeds that do not use the
+                shared collapsible workspace navigation. */}
             {breadcrumbSegments && (
                 <div className="p-5 border-b border-glass-border">
                     <div className="space-y-3">

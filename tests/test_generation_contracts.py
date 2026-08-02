@@ -73,6 +73,115 @@ def _script(*frames):
     )
 
 
+@pytest.mark.parametrize(
+    "operation,expected_requests",
+    [
+        ("entity_extraction", 1),
+        ("style_analysis", 1),
+        ("storyboard_extraction", 2),
+    ],
+)
+def test_structured_text_compiler_exposes_exact_model_instructions_and_source(
+    operation,
+    expected_requests,
+):
+    script = _script()
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline._text_generation_project_fingerprint = lambda _script: "project-revision"
+    pipeline._storyboard_analysis_context = lambda _script: {
+        "entities": {"characters": [], "scenes": [], "props": []},
+    }
+    pipeline.script_processor = SimpleNamespace(
+        _construct_prompt=lambda text, template: template.replace("{text}", text),
+    )
+
+    compiled = pipeline.compile_text_generation_request(
+        script.id,
+        operation,
+        instructions="Visible custom instructions",
+        source_text="Visible source text",
+        model="qwen3.7-max",
+    )
+
+    assert compiled["mode"] == operation
+    assert len(compiled["provider_requests"]) == expected_requests
+    assert all(request["model"] == "qwen3.7-max" for request in compiled["provider_requests"])
+    assert all(
+        "Visible custom instructions" in request["prompt"]
+        and "Visible source text" in request["prompt"]
+        for request in compiled["provider_requests"]
+    )
+    assert any(
+        part["kind"] == "output_contract" and part["editable"] is False
+        for part in compiled["prompt_parts"]
+    )
+    assert len(compiled["checksum"]) == 64
+
+
+def test_structured_text_execute_reuses_reviewed_result_before_recompiling(monkeypatch):
+    checksum = "a" * 64
+    compile_calls = []
+    provider_calls = []
+    compiled = {
+        "checksum": checksum,
+        "compiled_request_id": f"genreq_{checksum[:24]}",
+        "provider_requests": [{"model": "qwen3.7-max", "prompt": "Reviewed prompt"}],
+    }
+
+    def compile_request(*_args, **_kwargs):
+        compile_calls.append(True)
+        return compiled
+
+    fake_pipeline = SimpleNamespace(
+        compile_text_generation_request=compile_request,
+        text_generation_system_template=lambda _operation, instructions: instructions,
+        script_processor=SimpleNamespace(
+            analyze_script_for_styles=lambda text, instructions, model: (
+                provider_calls.append((text, instructions, model))
+                or [{"name": "A"}, {"name": "B"}, {"name": "C"}]
+            ),
+        ),
+    )
+
+    class NoopActivity:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(comic_api, "pipeline", fake_pipeline)
+    monkeypatch.setattr(comic_api, "_HybridTextActivity", NoopActivity)
+    monkeypatch.setattr(
+        comic_api,
+        "_project_text_activity_metadata",
+        lambda _script_id: (SimpleNamespace(id="project-1"), "#/workspace", {}),
+    )
+    with comic_api._text_execution_guard:
+        comic_api._text_execution_cache.clear()
+        comic_api._text_execution_locks.clear()
+
+    request = comic_api.TextGenerationRequest(
+        operation="style_analysis",
+        model="qwen3.7-max",
+        instructions="Reviewed instructions",
+        source_text="Reviewed source",
+        compiled_request_checksum=checksum,
+    )
+    first = comic_api.execute_text_generation("project-1", request)
+    second = comic_api.execute_text_generation("project-1", request)
+
+    assert first == second
+    assert len(compile_calls) == 1
+    assert provider_calls == [
+        ("Reviewed source", "Reviewed instructions", "qwen3.7-max"),
+    ]
+
+
 class _RefineLLM:
     def __init__(self, *, content=None, config_error=None, chat_error=None):
         self.content = content

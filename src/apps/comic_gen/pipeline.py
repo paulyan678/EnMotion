@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import platform
@@ -33,7 +34,11 @@ from ..generation_contract import (
 )
 from .assets import AssetGenerator
 from .export import ExportManager
-from .llm import ScriptProcessor
+from .llm import (
+    ScriptProcessor,
+    TEXT_OPERATION_DEFAULT_INSTRUCTIONS,
+    TEXT_OPERATION_OUTPUT_CONTRACTS,
+)
 from .models import (
     ArtDirection,
     AssetUnit,
@@ -1939,20 +1944,28 @@ class ComicGenPipeline:
 
         return self._effective_chat_model(script)
 
-    def extract_preview(self, script_id: str, text: str) -> tuple[Script, str]:
+    def extract_preview(
+        self,
+        script_id: str,
+        text: str,
+        *,
+        instructions: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> tuple[Script, str]:
         """Run entity extraction without saving. Cache result for subsequent apply."""
         existing_script = self.scripts.get(script_id)
         if not existing_script:
             raise ValueError("Script not found")
-        custom_extraction = self._effective_prompt_override(
-            "entity_extraction",
-            existing_script,
+        custom_extraction = (
+            instructions
+            if instructions is not None
+            else self._effective_prompt_override("entity_extraction", existing_script)
         )
         new_script = self.script_processor.parse_novel(
             existing_script.title,
             text,
             custom_extraction,
-            model=self._effective_chat_model(existing_script),
+            model=model or self._effective_chat_model(existing_script),
         )
         # The revision is opaque to clients.  Applying an old preview must
         # never silently trigger a new LLM parse or overwrite newer text.
@@ -1960,6 +1973,162 @@ class ComicGenPipeline:
         self._consumed_extraction_revisions.pop(script_id, None)
         self._extraction_cache[script_id] = (time.time(), revision, new_script)
         return new_script, revision
+
+    def text_generation_config(self, script_id: str, operation: str) -> Dict[str, Any]:
+        """Return visible generation-time defaults for one structured text action."""
+
+        script = self.scripts.get(script_id)
+        if not script:
+            raise ValueError("Script not found")
+        if operation not in TEXT_OPERATION_DEFAULT_INSTRUCTIONS:
+            raise ValueError("Unsupported text generation operation")
+        return {
+            "operation": operation,
+            "model": self._effective_chat_model(script),
+            "instructions": TEXT_OPERATION_DEFAULT_INSTRUCTIONS[operation],
+            "source_text": script.original_text or "",
+            "output_contract": TEXT_OPERATION_OUTPUT_CONTRACTS[operation],
+        }
+
+    def _text_generation_project_fingerprint(self, script: Script) -> str:
+        resolved = self.resolve_episode_assets(script)
+        payload = {
+            "updated_at": script.updated_at,
+            "original_text": script.original_text,
+            "frames": [frame.model_dump(mode="json") for frame in script.frames],
+            "characters": [item.model_dump(mode="json") for item in resolved["characters"]],
+            "scenes": [item.model_dump(mode="json") for item in resolved["scenes"]],
+            "props": [item.model_dump(mode="json") for item in resolved["props"]],
+        }
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def text_generation_system_template(self, operation: str, instructions: str) -> str:
+        if operation not in TEXT_OPERATION_OUTPUT_CONTRACTS:
+            raise ValueError("Unsupported text generation operation")
+        clean_instructions = (instructions or "").strip()
+        if not clean_instructions:
+            raise ValueError("Text generation instructions cannot be empty")
+        return (
+            f"{clean_instructions}\n\n# 必须遵守的输出契约\n"
+            f"{TEXT_OPERATION_OUTPUT_CONTRACTS[operation]}"
+        )
+
+    def compile_text_generation_request(
+        self,
+        script_id: str,
+        operation: str,
+        *,
+        instructions: str,
+        source_text: str,
+        model: str,
+        activity_source: str = "workspace",
+    ) -> Dict[str, Any]:
+        """Compile the exact messages used by a structured text action."""
+
+        script = self.scripts.get(script_id)
+        if not script:
+            raise ValueError("Script not found")
+        if operation not in TEXT_OPERATION_DEFAULT_INSTRUCTIONS:
+            raise ValueError("Unsupported text generation operation")
+        clean_instructions = (instructions or "").strip()
+        clean_source = (source_text or "").strip()
+        if not clean_instructions:
+            raise ValueError("Text generation instructions cannot be empty")
+        if not clean_source:
+            raise ValueError("Text generation source cannot be empty")
+        selected_model = get_model_spec(model, CHAT).model_id
+        output_contract = TEXT_OPERATION_OUTPUT_CONTRACTS[operation]
+        system_template = self.text_generation_system_template(operation, clean_instructions)
+        prompt_parts: List[Dict[str, Any]] = [
+            {
+                "kind": "instructions",
+                "label": "Instructions",
+                "text": clean_instructions,
+                "editable": True,
+            },
+            {
+                "kind": "output_contract",
+                "label": "Required output contract",
+                "text": output_contract,
+                "editable": False,
+            },
+        ]
+        target: Dict[str, Any] = {
+            "project_id": script_id,
+            "operation": operation,
+            "project_fingerprint": self._text_generation_project_fingerprint(script),
+        }
+        exact_requests: List[Dict[str, Any]] = []
+
+        if operation == "entity_extraction":
+            provider_prompt = self.script_processor._construct_prompt(
+                clean_source,
+                f"{system_template}\n\n# 剧本内容\n{{text}}",
+            )
+            exact_requests.append(provider_request(
+                phase="extract_entities",
+                model=selected_model,
+                prompt=provider_prompt,
+            ))
+        elif operation == "style_analysis":
+            user_message = f"剧本内容：\n\n{clean_source[:2000]}"
+            provider_prompt = f"[system]\n{system_template}\n\n[user]\n{user_message}"
+            exact_requests.append(provider_request(
+                phase="analyze_style",
+                model=selected_model,
+                prompt=provider_prompt,
+                parameters={"response_format": "json_object"},
+            ))
+        else:
+            analysis_context = self._storyboard_analysis_context(script)
+            entities_text = json.dumps(
+                analysis_context["entities"],
+                ensure_ascii=False,
+                indent=2,
+            )
+            system_prompt = (
+                f"{system_template}\n\n# 已提取实体\n{{entities_str}}\n\n# 剧本内容\n{{text}}"
+                .replace("{entities_str}", entities_text)
+                .replace("{text}", clean_source)
+            )
+            primary_user = "请开始生成分镜帧列表，确保覆盖剧本中的所有内容。"
+            retry_user = f"{primary_user} 请务必输出合法的JSON格式。"
+            exact_requests.extend([
+                provider_request(
+                    phase="generate_storyboard",
+                    model=selected_model,
+                    prompt=f"[system]\n{system_prompt}\n\n[user]\n{primary_user}",
+                ),
+                provider_request(
+                    phase="retry_invalid_json",
+                    model=selected_model,
+                    prompt=f"[system]\n{system_prompt}\n\n[user]\n{retry_user}",
+                    parameters={"response_format": "json_object"},
+                ),
+            ])
+            prompt_parts.append({
+                "kind": "entity_context",
+                "label": "Project entities",
+                "text": entities_text,
+                "editable": False,
+            })
+
+        prompt_parts.append({
+            "kind": "source",
+            "label": "Source content",
+            "text": clean_source,
+            "editable": True,
+        })
+        return compile_generation_request(
+            category="text",
+            mode=operation,
+            source=activity_source,
+            user_prompt=clean_source,
+            requests=exact_requests,
+            target=target,
+            prompt_parts=prompt_parts,
+        )
 
     def reparse_project(self, script_id: str, text: str, preview_revision: str = "") -> Script:
         """Re-parse the text for an existing project, replacing all entities."""
@@ -4475,7 +4644,14 @@ class ComicGenPipeline:
             default=str,
         )
 
-    def analyze_text_to_frames(self, script_id: str, text: str) -> Script:
+    def analyze_text_to_frames(
+        self,
+        script_id: str,
+        text: str,
+        *,
+        instructions: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Script:
         """
         Analyzes script text and generates storyboard frames using LLM.
         Replaces existing frames with newly generated ones.
@@ -4499,8 +4675,12 @@ class ComicGenPipeline:
         raw_frames = self.script_processor.analyze_to_storyboard(
             text,
             analysis_context["entities"],
-            custom_extraction_prompt=analysis_context["extraction_prompt"],
-            model=analysis_context["chat_model"],
+            custom_extraction_prompt=(
+                instructions
+                if instructions is not None
+                else analysis_context["extraction_prompt"]
+            ),
+            model=model or analysis_context["chat_model"],
         )
 
         if not raw_frames:

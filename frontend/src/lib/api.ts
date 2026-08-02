@@ -197,6 +197,27 @@ export interface CompiledGenerationRequest {
     provider_requests: CompiledProviderRequest[];
 }
 
+export type TextGenerationOperation =
+    | "entity_extraction"
+    | "style_analysis"
+    | "storyboard_extraction";
+
+export interface TextGenerationConfig {
+    operation: TextGenerationOperation;
+    model: string;
+    instructions: string;
+    source_text: string;
+    output_contract: string;
+}
+
+export interface TextGenerationRequestDraft {
+    operation: TextGenerationOperation;
+    model: string;
+    instructions: string;
+    source_text: string;
+    compiled_request_checksum?: string;
+}
+
 export interface AssetDeleteReference {
     reference_type: "storyboard" | "generation_task" | string;
     owner_kind: AssetOwnerKind | string;
@@ -657,6 +678,39 @@ export const api = {
             props: any[];
             preview_revision?: string;
         };
+    },
+
+    getTextGenerationConfig: async (
+        scriptId: string,
+        operation: TextGenerationOperation,
+    ): Promise<TextGenerationConfig> => {
+        const res = await axios.get<TextGenerationConfig>(
+            `${API_URL}/projects/${scriptId}/text-generation/config`,
+            { params: { operation } },
+        );
+        return res.data;
+    },
+
+    previewTextGeneration: async (
+        scriptId: string,
+        request: TextGenerationRequestDraft,
+    ): Promise<CompiledGenerationRequest> => {
+        const res = await axios.post<CompiledGenerationRequest>(
+            `${API_URL}/projects/${scriptId}/text-generation/preview`,
+            request,
+        );
+        return res.data;
+    },
+
+    executeTextGeneration: async <T = unknown>(
+        scriptId: string,
+        request: TextGenerationRequestDraft,
+    ): Promise<T> => {
+        const res = await axios.post<T>(
+            `${API_URL}/projects/${scriptId}/text-generation/execute`,
+            request,
+        );
+        return res.data;
     },
 
     /** Persist `original_text` without LLM reparse. Used for textarea

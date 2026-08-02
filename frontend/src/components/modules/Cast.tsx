@@ -26,8 +26,8 @@ import { api } from "@/lib/api";
 import { getAssetUrl } from "@/lib/utils";
 import { primaryAssetImageUrl } from "@/lib/assetImage";
 import { useLightbox } from "@/components/shared/preview/LightboxProvider";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
+import ScrollFlowActions from "@/components/shared/ScrollFlowActions";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
 import { notifyAssetLibraryChanged } from "@/lib/assetLibrarySync";
 import SharedAssetEditor from "@/components/assets/SharedAssetEditor";
@@ -168,9 +168,7 @@ export default function Cast() {
 
     return (
         <div className="flex h-full w-full flex-col overflow-hidden">
-            <StepPageHeader
-                title={tStep("castTitle")}
-            />
+            <h1 className="sr-only">{tStep("castTitle")}</h1>
 
             {/* Empty state — no entities extracted yet */}
             {totalCast === 0 ? (
@@ -188,11 +186,13 @@ export default function Cast() {
                     </div>
                 </div>
             ) : (
-                <>
-                    {/* Tab bar — '全部' is the default so users coming in fresh see
-                        the full inventory before filtering down. Counts are
-                        always visible so empty kinds telegraph themselves. */}
-                    <div className="shrink-0 flex items-center gap-1 px-6 pt-3 border-b border-glass-border bg-surface">
+                <div className="flex-1 overflow-y-auto bg-surface custom-scrollbar">
+                    {/* Tabs intentionally leave with the inventory on scroll. */}
+                    <ScrollFlowActions
+                        align="start"
+                        label={tStep("castTitle")}
+                        className="gap-1 border-b border-glass-border px-6 pt-3"
+                    >
                         {([
                             { id: "all" as const, label: t("tabAll"), icon: <Layers size={11} />, count: totalCast },
                             { id: "character" as const, label: t("tabCharacters"), icon: <Users size={11} />, count: characters.length },
@@ -218,9 +218,9 @@ export default function Cast() {
                                 )}
                             </button>
                         ))}
-                    </div>
+                    </ScrollFlowActions>
 
-                    <div className="flex-1 overflow-y-auto bg-surface px-8 py-6 space-y-10 custom-scrollbar">
+                    <div className="px-8 py-6 space-y-10">
                         {(activeTab === "all" || activeTab === "character") && (
                             <CastSection
                                 kind="character"
@@ -262,7 +262,7 @@ export default function Cast() {
                             />
                         )}
                     </div>
-                </>
+                </div>
             )}
 
             {workbenchAssetRef ? (

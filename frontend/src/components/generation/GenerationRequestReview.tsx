@@ -2,7 +2,7 @@
 
 import { ChevronDown, Eye, Loader2, RefreshCw } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { CompiledGenerationRequest } from "@/lib/api";
 import CompiledRequestContent from "@/components/generation/CompiledRequestContent";
@@ -12,6 +12,8 @@ interface GenerationRequestReviewProps {
   loadPreview: () => Promise<CompiledGenerationRequest>;
   disabled?: boolean;
   className?: string;
+  defaultOpen?: boolean;
+  onReviewed?: (compiled: CompiledGenerationRequest, fingerprint: string) => void;
 }
 
 /**
@@ -25,9 +27,11 @@ export default function GenerationRequestReview({
   loadPreview,
   disabled = false,
   className = "",
+  defaultOpen = false,
+  onReviewed,
 }: GenerationRequestReviewProps) {
   const t = useTranslations("generationRequest");
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [compiled, setCompiled] = useState<CompiledGenerationRequest | null>(null);
@@ -37,11 +41,14 @@ export default function GenerationRequestReview({
 
   const refresh = async () => {
     if (disabled || loading) return;
+    setCompiled(null);
     setReviewedFingerprint(fingerprint);
     setLoading(true);
     setError(null);
     try {
-      setCompiled(await loadPreview());
+      const next = await loadPreview();
+      setCompiled(next);
+      onReviewed?.(next, fingerprint);
     } catch {
       setCompiled(null);
       setError(t("previewFailed"));
@@ -55,6 +62,15 @@ export default function GenerationRequestReview({
     setOpen(next);
     if (next && !currentCompiled && !loading) void refresh();
   };
+
+  useEffect(() => {
+    if (!open || disabled || loading || currentCompiled || currentError) return;
+    const timer = window.setTimeout(() => void refresh(), 0);
+    // `fingerprint` is the invalidation contract. Loading/error/current state
+    // guards prevent duplicate previews while keeping default-open surfaces live.
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disabled, fingerprint, open]);
 
   return (
     <section

@@ -10,7 +10,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
   const t = useTranslations("ui.auth");
 
-  if (status === "disabled") return children;
+  if (status === "disabled") return <AuthenticatedViewport>{children}</AuthenticatedViewport>;
   if (status === "authenticated") return <AuthenticatedViewport>{children}</AuthenticatedViewport>;
   if (status === "unauthenticated") return <LoginScreen />;
 

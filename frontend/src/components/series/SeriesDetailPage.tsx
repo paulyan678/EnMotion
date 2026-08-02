@@ -20,8 +20,6 @@ import SeriesSidebar, { type SidebarItem } from "./SeriesSidebar";
 import { subscribeToAssetLibraryChanges } from "@/lib/assetLibrarySync";
 import { subscribeToStoryboardFrameChanges } from "@/lib/storyboardFrameSync";
 import { selectedStoryboardImage } from "@/lib/clipStartFrame";
-import { useAuth } from "@/components/auth/AuthProvider";
-import BreadcrumbBar from "@/components/layout/BreadcrumbBar";
 import { useTopBarNavigation } from "@/components/layout/TopBarNavigationContext";
 import PreviewImage from "@/components/shared/preview/PreviewImage";
 import SharedAssetEditor from "@/components/assets/SharedAssetEditor";
@@ -83,7 +81,6 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
   const [isDeletingSeries, setIsDeletingSeries] = useState(false);
   const deleteSeries = useProjectStore((state) => state.deleteSeries);
   const updateProject = useProjectStore((state) => state.updateProject);
-  const { serverMode } = useAuth();
   const { registerNavigation } = useTopBarNavigation();
 
   const t = useTranslations("series");
@@ -208,9 +205,9 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
   ), [series, seriesDescription, seriesTitle, topBarTitle]);
 
   useEffect(() => {
-    if (!serverMode || !seriesNavigation) return;
+    if (!seriesNavigation) return;
     return registerNavigation(seriesNavigation);
-  }, [registerNavigation, seriesNavigation, serverMode]);
+  }, [registerNavigation, seriesNavigation]);
 
   const handleAddEpisode = async () => {
     if (!newEpisodeTitle.trim()) return;
@@ -326,14 +323,6 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
 
   return (
     <main className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background">
-      {!serverMode && seriesNavigation && (
-        <BreadcrumbBar
-          segments={seriesNavigation.segments}
-          currentContent={seriesNavigation.currentContent}
-          description={seriesNavigation.description}
-        />
-      )}
-
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
         {/* ── Sidebar ── */}
         <SeriesSidebar

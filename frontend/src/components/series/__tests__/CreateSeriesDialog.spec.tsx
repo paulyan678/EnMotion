@@ -17,6 +17,14 @@ vi.mock("@/lib/api", () => ({
   api: apiMocks,
 }));
 
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    serverMode: false,
+    status: "disabled",
+    user: null,
+  }),
+}));
+
 import Home, { CreateSeriesDialog } from "@/app/page";
 
 describe("CreateSeriesDialog request recovery", () => {
