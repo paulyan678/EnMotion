@@ -74,7 +74,7 @@
         ]
       },
       "default_backend": "newapi",
-      "display_name": "New API Chat",
+      "display_name": "Chat",
       "docs": {
         "official_snapshot_ids": [
           "newapi/chat-completions/2026-07-18"
@@ -164,7 +164,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "GPT Image 2 through New API for text-to-image generation and image editing",
+      "description": "GPT Image 2 for text-to-image generation and image editing",
       "display_name": "GPT Image 2",
       "docs": {
         "context_hub_doc_ids": [
@@ -220,7 +220,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Fast DeepSeek V4 chat model through New API",
+      "description": "Fast DeepSeek V4 chat model for prompt and script generation",
       "display_name": "DeepSeek V4 Flash",
       "docs": {
         "context_hub_doc_ids": [
@@ -276,7 +276,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "High-capability DeepSeek V4 chat model through New API",
+      "description": "High-capability DeepSeek V4 chat model for prompt and script generation",
       "display_name": "DeepSeek V4 Pro",
       "docs": {
         "context_hub_doc_ids": [
@@ -332,7 +332,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Qwen 3.7 Max chat model through New API",
+      "description": "Qwen 3.7 Max chat model for prompt and script generation",
       "display_name": "Qwen 3.7 Max",
       "docs": {
         "context_hub_doc_ids": [
@@ -388,7 +388,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Seedance 2.0 through New API for text-to-video and single-image image-to-video",
+      "description": "Seedance 2.0 for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0",
       "docs": {
         "context_hub_doc_ids": [
@@ -444,7 +444,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "description": "Faster Seedance 2.0 generation for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0 Fast",
       "docs": {
         "context_hub_doc_ids": [
@@ -500,7 +500,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "description": "Cost-efficient Seedance 2.0 generation for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0 Mini",
       "docs": {
         "context_hub_doc_ids": [
@@ -561,7 +561,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Fast DeepSeek V4 chat model through New API",
+      "description": "Fast DeepSeek V4 chat model for prompt and script generation",
       "display_name": "DeepSeek V4 Flash",
       "docs": {
         "context_hub_doc_ids": [
@@ -620,7 +620,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "High-capability DeepSeek V4 chat model through New API",
+      "description": "High-capability DeepSeek V4 chat model for prompt and script generation",
       "display_name": "DeepSeek V4 Pro",
       "docs": {
         "context_hub_doc_ids": [
@@ -680,7 +680,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Seedance 2.0 through New API for text-to-video and single-image image-to-video",
+      "description": "Seedance 2.0 for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0",
       "docs": {
         "context_hub_doc_ids": [
@@ -770,7 +770,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "description": "Faster Seedance 2.0 generation for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0 Fast",
       "docs": {
         "context_hub_doc_ids": [
@@ -860,7 +860,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "description": "Cost-efficient Seedance 2.0 generation for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0 Mini",
       "docs": {
         "context_hub_doc_ids": [
@@ -950,7 +950,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "GPT Image 2 through New API for text-to-image generation and image editing",
+      "description": "GPT Image 2 for text-to-image generation and image editing",
       "display_name": "GPT Image 2",
       "docs": {
         "context_hub_doc_ids": [
@@ -1029,7 +1029,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Qwen 3.7 Max chat model through New API",
+      "description": "Qwen 3.7 Max chat model for prompt and script generation",
       "display_name": "Qwen 3.7 Max",
       "docs": {
         "context_hub_doc_ids": [
@@ -1091,7 +1091,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "GPT Image 2 through New API for text-to-image generation and image editing",
+      "description": "GPT Image 2 for text-to-image generation and image editing",
       "display_name": "GPT Image 2",
       "docs": {
         "context_hub_doc_ids": [
@@ -1178,7 +1178,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Fast DeepSeek V4 chat model through New API",
+      "description": "Fast DeepSeek V4 chat model for prompt and script generation",
       "display_name": "DeepSeek V4 Flash",
       "docs": {
         "context_hub_doc_ids": [
@@ -1245,7 +1245,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "High-capability DeepSeek V4 chat model through New API",
+      "description": "High-capability DeepSeek V4 chat model for prompt and script generation",
       "display_name": "DeepSeek V4 Pro",
       "docs": {
         "context_hub_doc_ids": [
@@ -1312,7 +1312,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Qwen 3.7 Max chat model through New API",
+      "description": "Qwen 3.7 Max chat model for prompt and script generation",
       "display_name": "Qwen 3.7 Max",
       "docs": {
         "context_hub_doc_ids": [
@@ -1380,7 +1380,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Seedance 2.0 through New API for text-to-video and single-image image-to-video",
+      "description": "Seedance 2.0 for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0",
       "docs": {
         "context_hub_doc_ids": [
@@ -1478,7 +1478,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "description": "Faster Seedance 2.0 generation for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0 Fast",
       "docs": {
         "context_hub_doc_ids": [
@@ -1576,7 +1576,7 @@
         ]
       },
       "default_backend": "newapi",
-      "description": "Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video",
+      "description": "Cost-efficient Seedance 2.0 generation for text-to-video and single-image image-to-video",
       "display_name": "Seedance 2.0 Mini",
       "docs": {
         "context_hub_doc_ids": [

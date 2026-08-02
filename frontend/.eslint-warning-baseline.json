@@ -2,11 +2,11 @@
   "description": "Per-rule warning ceilings for incremental cleanup. These values may stay fixed or decrease, but must not increase.",
   "rules": {
     "@typescript-eslint/no-explicit-any": 262,
-    "@typescript-eslint/no-unused-vars": 76,
-    "@next/next/no-img-element": 26,
+    "@typescript-eslint/no-unused-vars": 75,
+    "@next/next/no-img-element": 25,
     "react-hooks/immutability": 1,
     "react-hooks/exhaustive-deps": 13,
     "react-hooks/set-state-in-effect": 17,
-    "jsx-a11y/alt-text": 7
+    "jsx-a11y/alt-text": 6
   }
 }

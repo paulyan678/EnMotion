@@ -279,6 +279,7 @@ def validate_configuration(release: bool, staged: bool, target: str | None) -> N
         "NSDocumentsFolderUsageDescription" not in info_plist_source
         and ".document_dir()" not in sidecar_source
         and 'data_dir.join("enmotion-output")' in sidecar_source
+        and 'app_data_dir.join("qa-profiles").join(profile)' in sidecar_source
         and base["bundle"]["shortDescription"] == "企业专用的本地 AI 创作工作区"
         and "企业内部使用" in base["bundle"]["longDescription"],
         "native package must use private app storage and Simplified Chinese descriptions",

@@ -30,6 +30,8 @@ afterEach(() => {
   usePlaygroundStore.setState({
     mode: 't2i',
     modelId: 'gpt-image-2',
+    prompt: '',
+    negativePrompt: '',
     inputMedia: [],
     parameters: {},
     modelPreferences: {},
@@ -259,5 +261,38 @@ describe('Playground video parameter contracts', () => {
       });
     });
     consoleError.mockRestore();
+  });
+
+  it('applies a prompt template without silently changing visible generation choices', () => {
+    usePlaygroundStore.setState({
+      mode: 'i2v',
+      modelId: MINI_MODEL,
+      prompt: 'Old prompt',
+      negativePrompt: 'Old negative prompt',
+      inputMedia: ['playground/uploads/visible-first-frame.png'],
+      parameters: { ...VIDEO_DEFAULTS, duration: 10 },
+    });
+
+    usePlaygroundStore.getState().applyTemplate({
+      id: 'legacy-template',
+      name: 'Legacy preset',
+      category: 'video',
+      prompt: 'Template prompt only',
+      negative_prompt: 'Template negative prompt',
+      default_mode: 't2v',
+      default_model_id: STANDARD_MODEL,
+      default_parameters: { duration: 5, resolution: '1080p' },
+      created_at: '2026-08-01T00:00:00Z',
+      updated_at: '2026-08-01T00:00:00Z',
+    });
+
+    expect(usePlaygroundStore.getState()).toMatchObject({
+      mode: 'i2v',
+      modelId: MINI_MODEL,
+      prompt: 'Template prompt only',
+      negativePrompt: 'Template negative prompt',
+      inputMedia: ['playground/uploads/visible-first-frame.png'],
+      parameters: { ...VIDEO_DEFAULTS, duration: 10 },
+    });
   });
 });

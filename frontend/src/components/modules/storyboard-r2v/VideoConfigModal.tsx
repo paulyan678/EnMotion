@@ -107,7 +107,7 @@ export default function VideoConfigModal({
                                 </span>
                                 <div>
                                     <h2 className="text-sm font-semibold text-foreground">{t("videoSettings")}</h2>
-                                    <p className="mt-0.5 text-xs text-text-muted">{t("newApiLabel")} · {activeModel ? tm(`${getModelTranslationKey(activeModel.id)}.name`) : ""}</p>
+                                    <p className="mt-0.5 text-xs text-text-muted">{t("videoGenerationLabel")} · {activeModel ? tm(`${getModelTranslationKey(activeModel.id)}.name`) : ""}</p>
                                 </div>
                             </div>
                             <button type="button" onClick={onClose} className="rounded-lg p-2 text-text-muted hover:bg-hover-bg hover:text-foreground">

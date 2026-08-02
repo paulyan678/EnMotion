@@ -711,6 +711,41 @@ def test_asset_generation_preview_freezes_only_the_selected_reference(
     assert requests["headshot"]["input_media"] == ["phase://full_body"]
 
 
+def test_reference_sheet_preview_respects_generation_aspect_ratio(
+    tmp_path, monkeypatch
+):
+    pipeline = _pipeline(tmp_path)
+    character = pipeline.create_library_asset(
+        "character",
+        {
+            "name": "Imported hero",
+            "description": "A fictional courier",
+            "image_url": "uploads/imported.png",
+        },
+    )
+    monkeypatch.setattr(comic_api, "pipeline", pipeline)
+    response = TestClient(comic_api.app).post(
+        (
+            f"/asset-sources/global/global/assets/character/{character.id}"
+            "/generate/preview"
+        ),
+        json={
+            "asset_id": character.id,
+            "asset_type": "character",
+            "generation_type": "reference_sheet",
+            "prompt": "Full-body portrait of the courier",
+            "apply_style": False,
+            "model_name": "gpt-image-2",
+            "aspect_ratio": "9:16",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider_requests"][0]["parameters"]["size"] == (
+        "1024x1536"
+    )
+
+
 def test_exact_owner_motion_variant_actions_persist_for_global_character(
     tmp_path, monkeypatch
 ):

@@ -25,6 +25,7 @@ use tauri_plugin_shell::{
 
 const RUNTIME_CONFIG_ENV: &str = "ENMOTION_DESKTOP_RUNTIME_CONFIG";
 const DEMUCS_WORKER_ENV: &str = "ENMOTION_DEMUCS_WORKER";
+const QA_PROFILE_ENV: &str = "ENMOTION_QA_PROFILE";
 const NONCE_HEADER: &str = "X-EnMotion-Desktop-Nonce";
 const HYBRID_SESSION_COOKIE: &str = "enmotion_session";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -199,6 +200,24 @@ pub fn create_main_window<R: Runtime>(
         .build()
 }
 
+fn runtime_data_dir(app_data_dir: PathBuf, qa_profile: Option<&str>) -> Result<PathBuf, String> {
+    let Some(profile) = qa_profile else {
+        return Ok(app_data_dir);
+    };
+    if profile.is_empty()
+        || profile.len() > 64
+        || !profile
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_'))
+    {
+        return Err(
+            "ENMOTION_QA_PROFILE must contain 1-64 ASCII letters, numbers, hyphens, or underscores"
+                .to_string(),
+        );
+    }
+    Ok(app_data_dir.join("qa-profiles").join(profile))
+}
+
 pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let startup_started = Instant::now();
     report_startup_phase(
@@ -210,10 +229,11 @@ pub async fn launch<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let port = reserve_loopback_port()?;
     let nonce = random_nonce();
     let static_dir = resolve_static_dir(&app)?;
-    let data_dir = app
+    let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("cannot resolve EnMotion data directory: {error}"))?;
+    let data_dir = runtime_data_dir(app_data_dir, std::env::var(QA_PROFILE_ENV).ok().as_deref())?;
     let output_dir = data_dir.join("enmotion-output");
     std::fs::create_dir_all(&data_dir)
         .map_err(|error| format!("cannot create EnMotion data directory: {error}"))?;
@@ -758,6 +778,25 @@ mod tests {
         let value = control_plane_url().unwrap();
         assert!(value.starts_with("https://"));
         assert!(!value.ends_with('/'));
+    }
+
+    #[test]
+    fn qa_profiles_stay_beneath_private_app_data() {
+        let base = PathBuf::from("/private/app-data");
+        assert_eq!(runtime_data_dir(base.clone(), None).unwrap(), base.clone(),);
+        assert_eq!(
+            runtime_data_dir(base.clone(), Some("qa-20260802_ab12")).unwrap(),
+            base.join("qa-profiles").join("qa-20260802_ab12"),
+        );
+        for invalid in [
+            "",
+            "../escape",
+            "nested/profile",
+            "profile with spaces",
+            "é",
+        ] {
+            assert!(runtime_data_dir(PathBuf::from("/private/app-data"), Some(invalid)).is_err());
+        }
     }
 
     #[test]

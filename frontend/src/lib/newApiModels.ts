@@ -186,6 +186,20 @@ export function buildSecretReplacementPatch(
   return patch;
 }
 
+/**
+ * Provider setup is independent from creative model selection. A partial
+ * setup is valid; generation surfaces can disable only the unavailable models.
+ */
+export function hasConfiguredNewApiModel(
+  configured: Partial<Record<NewApiSecretField, boolean>>,
+  replacements: Partial<Record<NewApiSecretField, string>> = {},
+): boolean {
+  return NEWAPI_SECRET_FIELDS.some((field) => {
+    const replacement = replacements[field]?.trim();
+    return configured[field] === true || Boolean(replacement && !isMaskedSecretValue(replacement));
+  });
+}
+
 export interface ActiveNewApiSelection {
   chat: string;
   image: string;

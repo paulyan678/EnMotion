@@ -21,7 +21,10 @@ from src.apps.comic_gen.pipeline import (
 )
 
 
+STANDARD_VIDEO_MODEL = "doubao-seedance-2-0-260128"
 VIDEO_MODEL = "doubao-seedance-2-0-fast-260128"
+MINI_VIDEO_MODEL = "doubao-seedance-2-0-mini-260615"
+VIDEO_MODELS = (STANDARD_VIDEO_MODEL, VIDEO_MODEL, MINI_VIDEO_MODEL)
 
 
 @pytest.fixture
@@ -358,3 +361,155 @@ def test_invalid_model_parameter_combinations_are_rejected_before_persistence(
                 frame_type="follow",
             )
     assert script.video_tasks == []
+
+
+@pytest.mark.parametrize("model", VIDEO_MODELS)
+@pytest.mark.parametrize("generation_mode", ["t2v", "i2v"])
+def test_every_seedance_model_runs_through_workspace_preview_enqueue_and_provider_boundary(
+    pipeline, tmp_path, model, generation_mode
+):
+    frame = make_frame()
+    script = install_script(pipeline, frame)
+    image_url = "storyboard/a.png" if generation_mode == "i2v" else None
+    compiled = pipeline.compile_video_task_request(
+        script.id,
+        image_url=image_url,
+        prompt="A controlled tracking shot through fictional rain.",
+        frame_id=frame.id,
+        frame_type="follow",
+        duration=5,
+        resolution="720p",
+        generate_audio=False,
+        model=model,
+        generation_mode=generation_mode,
+        ratio="16:9",
+        watermark=False,
+    )
+
+    with patch("src.apps.comic_gen.pipeline.resolve_model_api_key", return_value="test-key"):
+        _, task_id = pipeline.create_video_task(
+            script_id=script.id,
+            image_url=image_url,
+            source_image_id="render-a" if image_url else None,
+            source_image_url=image_url,
+            frame_id=frame.id,
+            frame_type="follow",
+            prompt="A controlled tracking shot through fictional rain.",
+            model=model,
+            generation_mode=generation_mode,
+            duration=5,
+            resolution="720p",
+            ratio="16:9",
+            compiled_request=compiled,
+        )
+
+    task = next(item for item in script.video_tasks if item.id == task_id)
+    output = tmp_path / f"{model}-{generation_mode}.mp4"
+    output.write_bytes(b"video")
+    provider = Mock()
+    provider.generate.return_value = (str(output), {})
+    pipeline._newapi_video_model = provider
+    pipeline._download_temp_image = Mock(return_value=str(tmp_path / "input.png"))
+
+    pipeline.process_video_task(script.id, task.id)
+
+    request = provider.generate.call_args.kwargs
+    assert request["model_id"] == model
+    assert request["generation_mode"] == generation_mode
+    assert request["img_url"] == (task.image_url or None)
+    assert request["img_path"] == (
+        str(tmp_path / "input.png") if generation_mode == "i2v" else None
+    )
+    assert task.status == "completed"
+
+
+def test_compiled_video_model_is_validated_with_its_own_exact_credential(pipeline):
+    frame = make_frame()
+    script = install_script(pipeline, frame)
+    compiled = pipeline.compile_video_task_request(
+        script.id,
+        image_url=None,
+        prompt="A fictional skyline at dawn.",
+        model=STANDARD_VIDEO_MODEL,
+        generation_mode="t2v",
+    )
+
+    with patch(
+        "src.apps.comic_gen.pipeline.resolve_model_api_key",
+        side_effect=ValueError("missing exact model credential"),
+    ) as resolve:
+        with pytest.raises(ValueError, match="missing exact model credential"):
+            pipeline.create_video_task(
+                script_id=script.id,
+                image_url=None,
+                prompt="A fictional skyline at dawn.",
+                model=VIDEO_MODEL,
+                generation_mode="t2v",
+                compiled_request=compiled,
+            )
+
+    resolve.assert_called_once_with(STANDARD_VIDEO_MODEL, "video")
+    assert script.video_tasks == []
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value", "message"),
+    [
+        ("duration", "5", "duration must be between"),
+        ("resolution", "1080p", "supports only 720p"),
+        ("aspect_ratio", "4:3", "aspect ratio must be"),
+        ("seed", True, "seed must be an integer"),
+        ("generate_audio", "false", "audio setting must be true or false"),
+        ("watermark", 1, "watermark setting must be true or false"),
+    ],
+)
+def test_invalid_compiled_video_parameters_are_rejected_before_persistence(
+    pipeline, parameter, value, message
+):
+    frame = make_frame()
+    script = install_script(pipeline, frame)
+    compiled = pipeline.compile_video_task_request(
+        script.id,
+        image_url="storyboard/a.png",
+        prompt="Move gently.",
+        model=VIDEO_MODEL,
+        generation_mode="i2v",
+    )
+    compiled["provider_requests"][0]["parameters"][parameter] = value
+
+    with patch("src.apps.comic_gen.pipeline.resolve_model_api_key", return_value="test-key"):
+        with pytest.raises(ValueError, match=message):
+            pipeline.create_video_task(
+                script_id=script.id,
+                image_url="storyboard/a.png",
+                prompt="Move gently.",
+                model=VIDEO_MODEL,
+                generation_mode="i2v",
+                compiled_request=compiled,
+            )
+
+    assert script.video_tasks == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"duration": True}, "duration must be between"),
+        ({"seed": False}, "seed must be an integer"),
+        ({"generate_audio": "false"}, "audio setting must be true or false"),
+        ({"watermark": "true"}, "watermark setting must be true or false"),
+    ],
+)
+def test_workspace_preview_rejects_loose_video_parameter_types(pipeline, overrides, message):
+    frame = make_frame()
+    script = install_script(pipeline, frame)
+    arguments = {
+        "image_url": None,
+        "prompt": "A fictional skyline at dawn.",
+        "model": VIDEO_MODEL,
+        "generation_mode": "t2v",
+    }
+    arguments.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        pipeline.compile_video_task_request(script.id, **arguments)

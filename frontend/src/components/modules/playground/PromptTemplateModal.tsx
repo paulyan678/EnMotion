@@ -51,8 +51,6 @@ export default function PromptTemplateModal() {
     addTemplate,
     prompt: currentPrompt,
     mode: currentMode,
-    modelId: currentModelId,
-    parameters: currentParams,
     negativePrompt: currentNegativePrompt,
     toggleTemplateFavorite,
     isTemplateFavorited,
@@ -143,9 +141,6 @@ export default function PromptTemplateModal() {
         category: form.category,
         prompt: form.prompt.trim(),
         negative_prompt: currentNegativePrompt || undefined,
-        default_mode: currentMode,
-        default_model_id: currentModelId || undefined,
-        default_parameters: Object.keys(currentParams).length > 0 ? currentParams : undefined,
       });
       addTemplate(created as unknown as PlaygroundTemplate);
       setForm(EMPTY_FORM);
@@ -155,7 +150,7 @@ export default function PromptTemplateModal() {
     } finally {
       setBusy(false);
     }
-  }, [form, addTemplate, currentMode, currentModelId, currentParams, currentNegativePrompt]);
+  }, [form, addTemplate, currentNegativePrompt]);
 
   // Enter CREATE — resume an in-progress draft if any, else prefill from current state.
   const openCreate = useCallback(() => {

@@ -254,6 +254,7 @@ describe("shot-specific Motion Creator", () => {
       "motion-project",
       "",
       ["storyboard/shot-5.png"],
+      "deepseek-v4-flash",
     ));
     await waitFor(() => expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
       kind: "warning",
@@ -261,6 +262,35 @@ describe("shot-specific Motion Creator", () => {
     }));
     expect(updateSpy).not.toHaveBeenCalled();
     expect(screen.queryByText("AI polish failed")).not.toBeInTheDocument();
+  });
+
+  it("sends the chat model chosen for this polish request", async () => {
+    const selectedFrame = frame(6);
+    seed([selectedFrame]);
+    const polishSpy = vi.spyOn(api, "polishVideoPrompt").mockResolvedValue({
+      prompt_cn: "润色后的镜头",
+      prompt_en: "Polished shot",
+    });
+    vi.spyOn(api, "updateFrameWorkbench").mockResolvedValue({
+      ...selectedFrame,
+      video_prompt: "Polished shot",
+    });
+    renderCreator();
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure clip for shot 1" }));
+    fireEvent.change(screen.getByLabelText("Polish model"), {
+      target: { value: "qwen3.7-max" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Smart Prompt Polish" }));
+
+    await waitFor(() => expect(polishSpy).toHaveBeenCalledWith(
+      selectedFrame.video_prompt,
+      "",
+      "motion-project",
+      "",
+      ["storyboard/shot-6.png"],
+      "qwen3.7-max",
+    ));
   });
 
   it("submits the exact shot, selected image, frame type, prompt, model, and parameters", async () => {

@@ -120,6 +120,32 @@ def test_provider_config_preflight_rejects_bad_credentials_without_persisting(
         )
 
 
+def test_admin_can_revalidate_model_access_without_a_billable_generation(
+    app_env,
+    provider_calls,
+):
+    client, _app = app_env
+    admin = login(client, "admin", "Admin-password-123")
+
+    response = client.post(
+        "/api/v1/admin/provider-config/validate",
+        headers=bearer(admin["access_token"]),
+        json={},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["balance_available"] is False
+    assert response.json()["configured_models"] == [
+        "deepseek-v4-flash",
+        "doubao-seedance-2-0-fast-260128",
+        "gpt-image-2",
+    ]
+    assert response.json()["validated_at"].endswith("Z")
+    validation_calls = [call for call in provider_calls if call.url.path.endswith("/models")]
+    assert len(validation_calls) == 3
+    assert all(call.method == "GET" for call in validation_calls)
+
+
 def test_rotated_config_is_shared_by_users_and_video_tasks_keep_their_version(
     app_env,
     provider_calls,

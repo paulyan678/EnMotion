@@ -13,10 +13,7 @@ import {
   DEFAULT_ACTIVE_MODELS,
   buildSecretReplacementPatch,
   configuredSecretFields,
-  getNewApiValidationErrors,
   normalizeActiveModel,
-  type ActiveNewApiSelection,
-  type NewApiCapability,
   type NewApiSecretField,
 } from "@/lib/newApiModels";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -151,17 +148,7 @@ export default function SettingsPage() {
   }, []);
 
   const handleSaveApiConfig = async () => {
-    const activeSelection: ActiveNewApiSelection = {
-      chat: config.NEWAPI_CHAT_MODEL,
-      image: config.NEWAPI_IMAGE_MODEL,
-      video: config.NEWAPI_VIDEO_MODEL,
-    };
-    const errors = getNewApiValidationErrors(
-      config.NEWAPI_BASE_URL,
-      activeSelection,
-      configuredSecrets,
-      secretReplacements,
-    );
+    const errors = config.NEWAPI_BASE_URL.trim() ? [] : ["NEWAPI_BASE_URL"];
     if (errors.length > 0) {
       toast.error(t("fillRequired"), { body: `- ${errors.join("\n- ")}` });
       return;
@@ -170,9 +157,11 @@ export default function SettingsPage() {
     try {
       await api.saveEnvConfig({
         NEWAPI_BASE_URL: config.NEWAPI_BASE_URL,
-        NEWAPI_CHAT_MODEL: activeSelection.chat,
-        NEWAPI_IMAGE_MODEL: activeSelection.image,
-        NEWAPI_VIDEO_MODEL: activeSelection.video,
+        // Kept only as backend compatibility fallbacks. Creative requests
+        // always send the model selected in the generation composer.
+        NEWAPI_CHAT_MODEL: config.NEWAPI_CHAT_MODEL,
+        NEWAPI_IMAGE_MODEL: config.NEWAPI_IMAGE_MODEL,
+        NEWAPI_VIDEO_MODEL: config.NEWAPI_VIDEO_MODEL,
         ...buildSecretReplacementPatch(secretReplacements),
       });
       await loadConfig();
@@ -259,22 +248,9 @@ export default function SettingsPage() {
         <>
           <NewApiModelManager
             baseUrl={config.NEWAPI_BASE_URL}
-            active={{
-              chat: config.NEWAPI_CHAT_MODEL,
-              image: config.NEWAPI_IMAGE_MODEL,
-              video: config.NEWAPI_VIDEO_MODEL,
-            }}
             replacements={secretReplacements}
             configured={configuredSecrets}
             onBaseUrlChange={(value) => handleChange("NEWAPI_BASE_URL", value)}
-            onActiveChange={(capability: NewApiCapability, modelId: string) => {
-              const field = capability === "chat"
-                ? "NEWAPI_CHAT_MODEL"
-                : capability === "image"
-                  ? "NEWAPI_IMAGE_MODEL"
-                  : "NEWAPI_VIDEO_MODEL";
-              setConfig((current) => ({ ...current, [field]: modelId }));
-            }}
             onSecretChange={(field, value) => {
               setSecretReplacements((current) => ({ ...current, [field]: value }));
             }}

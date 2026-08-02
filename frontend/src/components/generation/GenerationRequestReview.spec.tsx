@@ -21,7 +21,7 @@ function snapshot(prompt: string, checksumCharacter: string): CompiledGeneration
       phase: "storyboard_video",
       model: "doubao-seedance-2-0-fast-260128",
       prompt,
-      parameters: { duration: 5, resolution: "720p" },
+      parameters: { duration: 5, resolution: "720p", n: 1 },
       input_media: ["frames/first.png"],
     }],
   };
@@ -39,16 +39,17 @@ describe("GenerationRequestReview", () => {
     );
     expect(screen.getByTestId("generation-request-review")).toHaveClass("shrink-0");
 
-    fireEvent.click(screen.getByRole("button", { name: /Review provider request/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Review content to send/ }));
     await waitFor(() => expect(screen.getByDisplayValue("First exact prompt")).toBeInTheDocument());
-    expect(screen.getByText("doubao-seedance-2-0-fast-260128")).toBeInTheDocument();
-    expect(screen.getByText("frames/first.png")).toBeInTheDocument();
+    expect(screen.getByText("Seedance 2.0 Fast")).toBeInTheDocument();
+    expect(screen.getByText("first.png")).toBeInTheDocument();
+    expect(screen.getByText("Outputs")).toBeInTheDocument();
 
     view.rerender(
       <GenerationRequestReview fingerprint="second" loadPreview={loadSecond} />,
     );
     expect(screen.queryByDisplayValue("First exact prompt")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Compile current request" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh content to send" }));
     await waitFor(() => expect(screen.getByDisplayValue("Second exact prompt")).toBeInTheDocument());
     expect(loadSecond).toHaveBeenCalledTimes(1);
   });

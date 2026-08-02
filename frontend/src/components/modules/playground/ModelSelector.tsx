@@ -30,8 +30,6 @@ export default function ModelSelector() {
     const key = getModelTranslationKey(id);
     return key ? tm(`${key}.name`) : fallback;
   };
-  const localizeFamily = (family: string) => family === 'newapi' ? tm('familyNewApi') : family;
-
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
@@ -75,9 +73,6 @@ export default function ModelSelector() {
         <span className="flex-1 text-[0.8125rem] font-medium text-foreground truncate">
           {selected ? localizeModelName(selected.id, selected.displayName) : t('model.selectPlaceholder')}
         </span>
-        <span className="font-mono text-[0.625rem] text-text-muted uppercase tracking-wider shrink-0">
-          {selected ? localizeFamily(selected.family) : ''}
-        </span>
         <ChevronDown
           className={`w-3 h-3 text-text-muted shrink-0 transition-transform ${
             open ? 'rotate-180' : ''
@@ -93,10 +88,10 @@ export default function ModelSelector() {
           {groupedModels.map((group, gi) => (
             <div key={group.family}>
               {gi > 0 && <div className="border-t border-border-subtle mx-2" />}
-              {groupedModels.length > 1 && (
+              {groupedModels.length > 1 && group.family !== 'newapi' && (
                 <div className="px-3 pt-2 pb-1">
                   <span className="font-mono text-[0.5625rem] text-text-muted uppercase tracking-[0.15em]">
-                    {localizeFamily(group.family)}
+                    {group.family}
                   </span>
                 </div>
               )}

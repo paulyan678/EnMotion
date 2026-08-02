@@ -76,7 +76,6 @@ const APPROVED_CHAT_OPTIONS: SelectableModelOption[] = getApprovedModels("chat")
     id: model.id,
     name: model.name,
     description: model.description,
-    family: "New API",
     recommended: model.id === DEFAULT_ACTIVE_MODELS.chat,
     status: "active",
 }));
@@ -85,7 +84,6 @@ const APPROVED_IMAGE_OPTIONS: SelectableModelOption[] = getApprovedModels("image
     id: model.id,
     name: model.name,
     description: model.description,
-    family: "New API",
     recommended: true,
     status: "active",
 }));
@@ -94,7 +92,6 @@ const APPROVED_VIDEO_OPTIONS: I2VModelConfig[] = getApprovedModels("video").map(
     id: model.id,
     name: model.name,
     description: model.description,
-    family: "New API",
     recommended: model.id === DEFAULT_ACTIVE_MODELS.video,
     status: "active",
     duration: { type: "slider", min: 4, max: 15, step: 1, default: 5 },

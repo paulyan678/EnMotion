@@ -1,5 +1,5 @@
 family: newapi-chat
-display_name: "New API Chat"
+display_name: "Chat"
 provider: newapi
 routing_prefixes:
   - deepseek-v4-
@@ -27,7 +27,7 @@ transport:
 models:
   - id: deepseek-v4-flash
     display_name: DeepSeek V4 Flash
-    description: Fast DeepSeek V4 chat model through New API
+    description: Fast DeepSeek V4 chat model for prompt and script generation
     status: active
     release_stage: stable
     capabilities: [chat]
@@ -46,7 +46,7 @@ models:
 
   - id: qwen3.7-max
     display_name: Qwen 3.7 Max
-    description: Qwen 3.7 Max chat model through New API
+    description: Qwen 3.7 Max chat model for prompt and script generation
     status: active
     release_stage: stable
     capabilities: [chat]
@@ -64,7 +64,7 @@ models:
 
   - id: deepseek-v4-pro
     display_name: DeepSeek V4 Pro
-    description: High-capability DeepSeek V4 chat model through New API
+    description: High-capability DeepSeek V4 chat model for prompt and script generation
     status: active
     release_stage: stable
     capabilities: [chat]

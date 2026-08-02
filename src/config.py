@@ -80,7 +80,7 @@ class ArgParser:
         parser.add_argument(
             '--model_name',
             type=str,
-            help='Exact New API video model ID (for example, doubao-seedance-2-0-fast-260128)',
+            help='Exact video generation model ID (for example, doubao-seedance-2-0-fast-260128)',
         )
         parser.add_argument('--dry-run', action='store_true', help='Run without calling actual APIs')
 

@@ -58,6 +58,27 @@ python3 -m compileall -q desktop/python desktop/scripts
 python3 desktop/scripts/validate.py
 ```
 
+Packaged-app QA can use a disposable profile without reading or changing the
+normal workspace. Quit any running EnMotion instance, then launch the verified
+bundle with:
+
+```sh
+python3 desktop/scripts/run_qa_profile.py --detach --keep
+```
+
+The command prints the profile name, exact private app-data path, and process
+ID. The native shell keeps all QA databases, session state, logs, and generated
+media under `com.enmotion.desktop/qa-profiles/<profile>/`; it never redirects
+output to Documents. After the QA app has stopped, remove only that verified
+profile with:
+
+```sh
+python3 desktop/scripts/run_qa_profile.py --cleanup qa-20260802T120000Z-a1b2c3
+```
+
+Cleanup refuses unknown paths, missing/mismatched manifests, symlinks, and live
+processes.
+
 To make a native package on a supported machine:
 
 ```sh

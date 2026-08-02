@@ -130,7 +130,16 @@
               <div class="full provider-summary" aria-live="polite">
                 <span>配置版本：<strong id="provider-version">0</strong></span>
                 <span>已配置模型：<strong id="provider-configured-count">0</strong></span>
+                <span>最近访问检查：<strong id="provider-last-check">尚未检查</strong></span>
+                <button id="provider-check-access" data-provider-access-check class="secondary" type="button">
+                  检查模型访问权限
+                </button>
               </div>
+
+              <p class="full notice">
+                服务商余额：无法在 EnMotion 中可靠读取。服务商目前没有提供可确认现金余额的接口；
+                EnMotion 额度仅用于内部计费，不等于服务商账户余额。请在服务商门户核对实际余额。
+              </p>
 
               <fieldset class="full provider-models">
                 <legend>模型 API 密钥</legend>

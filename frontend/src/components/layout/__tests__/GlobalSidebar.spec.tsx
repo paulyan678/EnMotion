@@ -5,14 +5,14 @@ import GlobalSidebar from "../GlobalSidebar";
 import { renderWithIntl } from "@/test/renderWithIntl";
 
 describe("GlobalSidebar API activity navigation", () => {
-  it("adds a bilingual API Calls destination and routes to its dashboard", () => {
+  it("adds a bilingual Generation Records destination and routes to its dashboard", () => {
     const onTabChange = vi.fn();
     renderWithIntl(
       <GlobalSidebar activeTab="apiCalls" onTabChange={onTabChange} />,
       { locale: "en" },
     );
 
-    const button = screen.getByRole("button", { name: "API Calls" });
+    const button = screen.getByRole("button", { name: "Generation Records" });
     expect(button).toHaveAttribute("aria-current", "page");
     fireEvent.click(button);
     expect(onTabChange).toHaveBeenCalledWith("apiCalls");
@@ -24,7 +24,7 @@ describe("GlobalSidebar API activity navigation", () => {
       <GlobalSidebar activeTab="workspace" onTabChange={vi.fn()} />,
       { locale: "zh" },
     );
-    expect(screen.getByRole("button", { name: "接口调用" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成记录" })).toBeInTheDocument();
   });
 
   it("starts with navigation instead of rendering a decorative brand block", () => {

@@ -500,11 +500,13 @@ function AddCastPlaceholderModal({
                         </div>
                     )}
 
-                    {/* AI tab hint */}
+                    {/* Manual asset setup hint. Generation happens from the
+                        shared asset editor so users can review the complete
+                        prompt and model before submission. */}
                     {tab === "ai" && (
                         <div className="rounded-lg bg-primary/[0.06] border border-primary/20 px-3 py-2.5">
                             <p className="text-[0.71875rem] text-text-secondary leading-relaxed">
-                                {t("aiTabHint")}
+                                {t("manualCreateHint")}
                             </p>
                         </div>
                     )}
@@ -529,7 +531,7 @@ function AddCastPlaceholderModal({
                         disabled={!name.trim() || !seriesId}
                         className="flex-1"
                     >
-                        {tab === "ai" ? t("createAndGenerate") : t("create")}
+                        {t("create")}
                     </WorkflowActionButton>
                 </div>
             </div>

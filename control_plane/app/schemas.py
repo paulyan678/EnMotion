@@ -280,6 +280,12 @@ class ProviderConfigPublic(UtcResponseModel):
     models: list[ProviderModelStatus]
 
 
+class ProviderValidationPublic(UtcResponseModel):
+    validated_at: datetime
+    configured_models: list[str]
+    balance_available: Literal[False] = False
+
+
 class ProviderConfigUpdate(BaseModel):
     base_url: str | None = Field(default=None, min_length=8, max_length=2048)
     credentials: dict[str, str | None] = Field(default_factory=dict)

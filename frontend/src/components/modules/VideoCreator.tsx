@@ -40,6 +40,8 @@ import {
 } from "@/store/projectStore";
 import { toast } from "@/store/toastStore";
 import GenerationRequestReview from "@/components/generation/GenerationRequestReview";
+import ChatModelSelect from "@/components/generation/ChatModelSelect";
+import { DEFAULT_ACTIVE_MODELS } from "@/lib/newApiModels";
 
 interface VideoCreatorProps {
     onTaskCreated: (project: Project) => void;
@@ -102,6 +104,7 @@ export default function VideoCreator({
     const [isUploading, setIsUploading] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isPolishing, setIsPolishing] = useState(false);
+    const [polishModel, setPolishModel] = useState<string>(DEFAULT_ACTIVE_MODELS.chat);
     const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
     const [submitSuccess, setSubmitSuccess] = useState(false);
     const [inlineError, setInlineError] = useState<string | null>(null);
@@ -277,6 +280,7 @@ export default function VideoCreator({
                 currentProject.id,
                 "",
                 generationMode === "i2v" && selectedImage ? [selectedImage.url] : [],
+                polishModel,
             );
             const polished = result.prompt_en || result.prompt_cn || prompt;
             setPrompt(polished);
@@ -650,8 +654,15 @@ export default function VideoCreator({
                             <section>
                                 <div className="mb-2 flex items-center justify-between gap-3">
                                     <label htmlFor="shot-motion-prompt" className="text-sm font-semibold text-foreground">{t("promptLabel")}</label>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
                                         {isSavingPrompt ? <span className="text-xs text-text-muted">{t("savingPrompt")}</span> : null}
+                                        <ChatModelSelect
+                                            id="shot-polish-model"
+                                            label={t("polishModel")}
+                                            value={polishModel}
+                                            onChange={setPolishModel}
+                                            disabled={isPolishing}
+                                        />
                                         <button type="button" onClick={() => void polishPrompt()} disabled={!prompt.trim() || isPolishing} className="glass-button flex items-center gap-2 px-3 py-1.5 text-xs disabled:opacity-50">
                                             {isPolishing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                                             {isPolishing ? t("polishing") : t("smartPromptPolish")}

@@ -235,7 +235,7 @@ class VideoTask(BaseModel):
     resolution: str = Field("720p", description="Video resolution")
     generate_audio: bool = Field(False, description="Whether to generate audio")
     audio_url: Optional[str] = Field(None, description="URL of generated/uploaded audio")
-    model: str = Field(DEFAULT_MODELS[VIDEO], description="Exact New API model ID")
+    model: str = Field(DEFAULT_MODELS[VIDEO], description="Exact video generation model ID")
     generation_mode: str = Field("i2v", description="Generation mode: t2v or i2v")
     ratio: Optional[str] = Field(None, description="Video aspect ratio")
     watermark: Optional[bool] = Field(
@@ -625,9 +625,9 @@ class ModelSettings(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
-    chat_model: str = Field(DEFAULT_MODELS[CHAT], description="Active New API chat model")
-    image_model: str = Field(DEFAULT_MODELS[IMAGE], description="Active New API image model")
-    video_model: str = Field(DEFAULT_MODELS[VIDEO], description="Active New API video model")
+    chat_model: str = Field(DEFAULT_MODELS[CHAT], description="Active text generation model")
+    image_model: str = Field(DEFAULT_MODELS[IMAGE], description="Active image generation model")
+    video_model: str = Field(DEFAULT_MODELS[VIDEO], description="Active video generation model")
     t2i_model: str = Field(DEFAULT_MODELS[IMAGE], description="Legacy alias of image_model")
     i2i_model: str = Field(DEFAULT_MODELS[IMAGE], description="Legacy alias of image_model")
     i2v_model: str = Field(DEFAULT_MODELS[VIDEO], description="Legacy alias of video_model")
@@ -761,7 +761,7 @@ class PromptConfig(BaseModel):
     # The explicit chat-model override used by prompt polish.  This must live
     # with the prompt configuration rather than only in the UI so a project
     # or series selection survives reloads and is actually used at runtime.
-    polish_model: str = Field("", description="Optional New API chat model for prompt polish")
+    polish_model: str = Field("", description="Optional text model for prompt polish")
 
     @field_validator("polish_model")
     @classmethod
@@ -773,6 +773,16 @@ class Script(BaseModel):
     id: str = Field(..., description="Unique identifier for the script project")
     title: str = Field(..., description="Title of the comic/video")
     original_text: str = Field(..., description="The original novel text")
+    description: str = Field(
+        "",
+        max_length=20_000,
+        description="User-authored episode or standalone-project description",
+    )
+    script_summary: str = Field(
+        "",
+        max_length=20_000,
+        description="User-authored summary shown separately from the full script",
+    )
 
     characters: List[Character] = Field(default_factory=list)
     scenes: List[Scene] = Field(default_factory=list)

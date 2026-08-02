@@ -666,6 +666,14 @@ export const api = {
         return { ...res.data, originalText: res.data.original_text };
     },
 
+    updateProjectMetadata: async (
+        scriptId: string,
+        patch: { title?: string; description?: string; script_summary?: string },
+    ) => {
+        const res = await axios.put(`${API_URL}/projects/${scriptId}/metadata`, patch);
+        return { ...res.data, originalText: res.data.original_text };
+    },
+
     syncDescriptions: async (scriptId: string) => {
         const res = await axios.post(`${API_URL}/projects/${scriptId}/sync_descriptions`);
         return res.data;

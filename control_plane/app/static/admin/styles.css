@@ -119,6 +119,7 @@ code { white-space: pre-wrap; color: var(--muted); }
   color: var(--muted);
   font-size: .84rem;
 }
+.provider-summary button { margin-left: auto; }
 .provider-models {
   min-width: 0;
   margin: 0;

@@ -2,14 +2,18 @@
 
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { Play, Film, Clock, Star } from "lucide-react";
+import { Play, Film, Clock, Star, Pencil } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { Project } from "@/store/projectStore";
+import { Project, useProjectStore } from "@/store/projectStore";
 import { getAssetUrl } from "@/lib/utils";
 import { primaryAssetDisplayUrl } from "@/lib/assetImage";
 import { coverGradient, GRAIN_URL } from "@/lib/atelierCover";
 import { api } from "@/lib/api";
 import ProjectDeleteButton from "./ProjectDeleteButton";
+import ContentMetadataDialog, {
+    type ContentMetadataValue,
+} from "@/components/shared/ContentMetadataDialog";
+import { toast } from "@/store/toastStore";
 
 interface ProjectCardProps {
     project: Project;
@@ -51,6 +55,9 @@ export function deriveStatus(project: Project): DerivedStatus {
 
 export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
     const t = useTranslations("project");
+    const tm = useTranslations("contentMetadata");
+    const updateProject = useProjectStore((state) => state.updateProject);
+    const [editingMetadata, setEditingMetadata] = useState(false);
 
     const cover = deriveCover(project);
     const status = deriveStatus(project);
@@ -73,6 +80,16 @@ export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
         } catch {
             setStarred(prev); // rollback on failure
         }
+    };
+
+    const handleSaveMetadata = async (value: ContentMetadataValue) => {
+        const updated = await api.updateProjectMetadata(project.id, {
+            title: value.title,
+            description: value.description,
+            script_summary: value.scriptSummary || "",
+        });
+        updateProject(project.id, updated);
+        toast.success(tm("saved"));
     };
 
     const handleOpen = () => {
@@ -101,6 +118,7 @@ export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
         : "";
 
     return (
+        <>
         <motion.article
             className={`glass-panel atelier-proj-card ${isFeatured ? "atelier-proj-featured" : ""} group relative rounded-2xl overflow-hidden cursor-pointer border border-glass-border`}
             onClick={handleOpen}
@@ -156,7 +174,19 @@ export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
                 ) : null}
 
                 {/* Star toggle — top-right; always shown when starred, hover/focus-revealed otherwise */}
-                <div className="absolute top-3 right-3 z-[3]">
+                <div className="absolute top-3 right-3 z-[3] flex items-center gap-1.5">
+                    <button
+                        type="button"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            setEditingMetadata(true);
+                        }}
+                        aria-label={tm("editAction")}
+                        title={tm("editAction")}
+                        className="grid h-8 w-8 place-items-center rounded-full bg-black/35 text-foreground/75 opacity-0 backdrop-blur-md transition-all hover:bg-black/55 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 group-hover:opacity-100"
+                    >
+                        <Pencil size={14} aria-hidden="true" />
+                    </button>
                     <button
                         type="button"
                         onClick={handleToggleStar}
@@ -215,5 +245,17 @@ export default function ProjectCard({ project, onDelete }: ProjectCardProps) {
                 <ProjectDeleteButton project={project} onDelete={onDelete} />
             </div>
         </motion.article>
+        <ContentMetadataDialog
+            open={editingMetadata}
+            kind={project.series_id ? "episode" : "project"}
+            value={{
+                title: project.title,
+                description: project.description || "",
+                scriptSummary: project.script_summary || "",
+            }}
+            onClose={() => setEditingMetadata(false)}
+            onSave={handleSaveMetadata}
+        />
+        </>
     );
 }

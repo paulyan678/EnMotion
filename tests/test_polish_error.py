@@ -151,6 +151,57 @@ class TestPolishVideoPromptErrors:
             "warning": "model_echo",
         }
 
+    def test_api_records_successful_hybrid_text_activity(self, monkeypatch):
+        class SuccessfulProcessor:
+            def polish_video_prompt(self, *args, **kwargs):
+                return {
+                    "prompt_cn": "镜头缓慢推近雨中的霓虹招牌",
+                    "prompt_en": "The camera slowly pushes toward the neon sign in the rain",
+                }
+
+        rows: list[dict] = []
+        updates: list[dict] = []
+        monkeypatch.setattr(comic_api, "ScriptProcessor", SuccessfulProcessor)
+        monkeypatch.setattr(comic_api, "hybrid_mode_enabled", lambda: True)
+        monkeypatch.setattr(
+            comic_api,
+            "get_tenant",
+            lambda required=False: type(
+                "Tenant",
+                (),
+                {"workspace_id": "workspace-alice"},
+            )(),
+        )
+        monkeypatch.setattr(
+            comic_api,
+            "record_text_activity",
+            lambda workspace_id, **payload: rows.append({"workspace_id": workspace_id, **payload}),
+        )
+        monkeypatch.setattr(
+            comic_api,
+            "update_asset_activity",
+            lambda workspace_id, task_id, **payload: updates.append(
+                {"workspace_id": workspace_id, "task_id": task_id, **payload}
+            ),
+        )
+
+        response = comic_api.polish_video_prompt(
+            comic_api.PolishVideoPromptRequest(
+                draft_prompt="A neon sign in the rain",
+                feedback="让镜头缓慢推近",
+                polish_model="qwen3.7-max",
+            )
+        )
+
+        assert response["prompt_en"].startswith("The camera")
+        assert len(rows) == 1
+        assert rows[0]["workspace_id"] == "workspace-alice"
+        assert rows[0]["detail"] == "优化视频提示词"
+        assert rows[0]["model_name"] == "qwen3.7-max"
+        assert "A neon sign in the rain" in rows[0]["prompt"]
+        assert "让镜头缓慢推近" in rows[0]["prompt"]
+        assert [update["status"] for update in updates] == ["running", "completed"]
+
     def test_text_only_catalog_model_omits_available_first_frame(self, tmp_path):
         image = tmp_path / "first-frame.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\nimage")

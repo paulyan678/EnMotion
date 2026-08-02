@@ -42,6 +42,7 @@ import GlobalPageHeader from "@/components/layout/GlobalPageHeader";
 import { appDateTimeFormatter, parseApiTimestamp } from "@/lib/dateTime";
 import { useNow } from "@/lib/useNow";
 import CompiledRequestDetails from "@/components/generation/CompiledRequestDetails";
+import { getApprovedModel } from "@/lib/newApiModels";
 
 type StatusFilter = "all" | ApiCallStatus;
 
@@ -102,6 +103,11 @@ const STATUS_TONES: Record<ApiCallStatus, string> = {
   failed: "border-red-400/30 bg-red-400/10 text-red-300",
   canceled: "border-glass-border bg-glass text-text-muted",
 };
+
+function modelDisplayName(modelId?: string | null): string | null {
+  if (!modelId) return null;
+  return getApprovedModel(modelId)?.name || modelId;
+}
 
 function parseTimestamp(value?: string | null): number | null {
   return parseApiTimestamp(value)?.getTime() ?? null;
@@ -529,7 +535,7 @@ export default function ApiCallsPage() {
                         </div>
                         <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-muted">
                           <span>{t("source", { source: t(`sources.${job.source}`) })}</span>
-                          {job.model_name ? <span>{job.model_name}</span> : null}
+                          {modelDisplayName(job.model_name) ? <span>{modelDisplayName(job.model_name)}</span> : null}
                           {job.attempts > 1 ? <span>{t("attempt", { count: job.attempts })}</span> : null}
                         </div>
                         {job.detail
@@ -734,7 +740,6 @@ function JobDetailDrawer({
                 {t(`status.${job.status}`)}
               </span>
             </div>
-            <p className="mt-1 font-mono text-[0.6875rem] text-text-muted">{job.id}</p>
           </div>
           <button type="button" onClick={onClose} aria-label={t("closeDetails")} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-glass-border text-text-muted hover:text-foreground">
             <X className="h-4 w-4" />
@@ -749,7 +754,7 @@ function JobDetailDrawer({
               <Detail label={t("statusLabel")} value={t(`status.${job.status}`)} />
               <Detail label={t("typeLabel")} value={t(`category.${job.category}`)} />
               <Detail label={t("sourceLabel")} value={t(`sources.${job.source}`)} />
-              <Detail label={t("modelLabel")} value={job.model_name || t("notAvailable")} />
+              <Detail label={t("modelLabel")} value={modelDisplayName(job.model_name) || t("notAvailable")} />
               <Detail label={t("createdLabel")} value={dateFormatter.format(parseTimestamp(job.created_at) ?? now)} />
               <Detail label={t("startedLabel")} value={job.started_at ? dateFormatter.format(parseTimestamp(job.started_at) ?? now) : t("notAvailable")} />
               <Detail label={t("completedLabel")} value={job.finished_at ? dateFormatter.format(parseTimestamp(job.finished_at) ?? now) : t("notAvailable")} />
@@ -844,6 +849,16 @@ function JobDetailDrawer({
               ) : null}
             </ol>
           </section>
+
+          <details className="rounded-xl border border-glass-border bg-black/10">
+            <summary className="min-h-11 cursor-pointer px-4 py-3 text-xs font-semibold text-text-secondary transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+              {t("requestDiagnostics")}
+            </summary>
+            <dl className="grid grid-cols-1 gap-3 border-t border-glass-border p-4 text-xs sm:grid-cols-2">
+              <Detail label={t("jobIdLabel")} value={job.id} />
+              <Detail label={t("rawModelLabel")} value={job.model_name || t("notAvailable")} />
+            </dl>
+          </details>
 
           {job.status === "failed" && failureMessage ? (
             <section className="rounded-xl border border-red-400/30 bg-red-400/[0.07] p-4 text-sm text-red-200">
