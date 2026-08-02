@@ -19,7 +19,6 @@ import {
 import { useAuth } from "@/components/auth/AuthProvider";
 import UpdateSettingsCard from "@/components/update/UpdateSettingsCard";
 import { isHybridModeEnabled } from "@/lib/serverMode";
-type SettingsCategory = "general" | "apikeys";
 import {
   FormRow,
   Toggle,
@@ -47,14 +46,14 @@ const normalizeEnvConfig = (existing: EnvConfig, data?: EnvConfigPayload): EnvCo
   NEWAPI_VIDEO_MODEL: normalizeActiveModel("video", data?.NEWAPI_VIDEO_MODEL),
 });
 
-// `name` / `desc` hold i18n keys (relative to the `settings` namespace) so the
+// `name` holds an i18n key (relative to the `settings` namespace) so the
 // module-scope list can be resolved with t(...) at render time.
-const THEME_OPTIONS: { id: ThemePreset; name: string; desc: string; base: string; primary: string; accent: string }[] = [
-  { id: "atelier-dark",  name: "themeAtelierDark",  desc: "themeAtelierDarkDesc",  base: "#0c0b0e", primary: "#34d8c4", accent: "#ffa94d" },
-  { id: "bridge-dark",   name: "themeBridgeDark",   desc: "themeBridgeDarkDesc",   base: "#0a0a0d", primary: "#646cff", accent: "#ffa94d" },
-  { id: "brand-dark",    name: "themeBrandDark",    desc: "themeBrandDarkDesc",    base: "#050508", primary: "#646cff", accent: "#ff0080" },
-  { id: "atelier-light", name: "themeAtelierLight", desc: "themeAtelierLightDesc", base: "#f6f1e9", primary: "#1d9c8d", accent: "#e8852b" },
-  { id: "brand-light",   name: "themeBrandLight",   desc: "themeBrandLightDesc",   base: "#f8f9fa", primary: "#646cff", accent: "#ff0080" },
+const THEME_OPTIONS: { id: ThemePreset; name: string; base: string; primary: string; accent: string }[] = [
+  { id: "atelier-dark",  name: "themeAtelierDark",  base: "#0c0b0e", primary: "#34d8c4", accent: "#ffa94d" },
+  { id: "bridge-dark",   name: "themeBridgeDark",   base: "#0a0a0d", primary: "#646cff", accent: "#ffa94d" },
+  { id: "brand-dark",    name: "themeBrandDark",    base: "#050508", primary: "#646cff", accent: "#ff0080" },
+  { id: "atelier-light", name: "themeAtelierLight", base: "#f6f1e9", primary: "#1d9c8d", accent: "#e8852b" },
+  { id: "brand-light",   name: "themeBrandLight",   base: "#f8f9fa", primary: "#646cff", accent: "#ff0080" },
 ];
 
 /* Atelier section panel — restored per Line B mockup `.panel` (translucent
@@ -65,12 +64,10 @@ const THEME_OPTIONS: { id: ThemePreset; name: string; desc: string; base: string
 function Section({
   id,
   title,
-  desc,
   children,
 }: {
   id?: string;
   title: string;
-  desc?: string;
   children: ReactNode;
 }) {
   return (
@@ -86,7 +83,6 @@ function Section({
         >
           {title}
         </h2>
-        {desc && <p className="text-[0.75rem] text-text-secondary mt-1 leading-relaxed">{desc}</p>}
       </div>
       <div className="px-[22px] pt-[18px] pb-[22px]">{children}</div>
     </section>
@@ -101,8 +97,6 @@ export default function SettingsPage() {
   const mayManageServer = !serverMode || user?.role === "admin";
   const mayManageProviderConfig = mayManageServer && !hybridMode;
   const mayInspectApiKeys = serverMode && user?.role === "admin" && !hybridMode;
-
-  const [active, setActive] = useState<SettingsCategory>("general");
 
   // ── API Config ──
   const [config, setConfig] = useState<EnvConfig>(DEFAULT_CONFIG);
@@ -181,7 +175,7 @@ export default function SettingsPage() {
 
   const renderGeneral = () => (
     <Section id="general" title={t("secGeneralTitle")}>
-      <FormRow label={t("theme")} hint={t("themeDesc")}>
+      <FormRow label={t("theme")}>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2" role="radiogroup" aria-label={t("theme")} onKeyDown={rovingKeyDown}>
           {THEME_OPTIONS.map((preset) => (
             <button
@@ -204,10 +198,7 @@ export default function SettingsPage() {
                 <span className="h-3 w-3 rounded-full" style={{ background: preset.primary }} />
                 <span className="h-3 w-3 rounded-full" style={{ background: preset.accent }} />
               </div>
-              <div className="min-w-0">
-                <div className="text-xs font-medium text-foreground truncate">{t(preset.name)}</div>
-                <div className="text-[0.625rem] text-text-muted truncate">{t(preset.desc)}</div>
-              </div>
+              <div className="min-w-0 text-xs font-medium text-foreground truncate">{t(preset.name)}</div>
               {theme === preset.id && (
                 <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-primary" />
               )}
@@ -216,12 +207,11 @@ export default function SettingsPage() {
         </div>
       </FormRow>
 
-      <FormRow label={t("motionLabel")} hint={t("motionHint")}>
+      <FormRow label={t("motionLabel")}>
         <Toggle
           checked={animations}
           onChange={setAnimations}
           label={animations ? t("motionOn") : t("motionReduced")}
-          sub={t("motionSub")}
           ariaLabel={t("motionToggleAria")}
         />
       </FormRow>
@@ -230,11 +220,7 @@ export default function SettingsPage() {
   );
 
   const renderApiKeys = () => (
-    <Section
-      id="apikeys"
-      title={t("secApiTitle")}
-      desc={t("secApiDesc")}
-    >
+    <Section id="apikeys" title={t("secApiTitle")}>
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 size={24} className="animate-spin text-primary" />
@@ -272,62 +258,17 @@ export default function SettingsPage() {
     </Section>
   );
 
-  const renderActive = () => {
-    switch (active) {
-      case "general":
-        return renderGeneral();
-      case "apikeys":
-        return renderApiKeys();
-      default:
-        return null;
-    }
-  };
-
-  // 横向 Tab 短标签（取代竖向 SettingsSidebar；与全局品牌侧栏轴向正交，不再撞脸）。
-  const allTabs: { id: SettingsCategory; label: string }[] = [
-    { id: "general", label: t("tabGeneral") },
-    { id: "apikeys", label: t("tabApikeys") },
-  ];
-  const TABS = allTabs.filter((tab) => {
-    if (tab.id === "apikeys") return mayManageProviderConfig;
-    if (!mayManageServer) return tab.id === "general";
-    return true;
-  });
-
   return (
     <div className="relative h-full flex flex-col">
       {/* Atelier signature layers — inert on non-atelier themes. */}
       <div className="atelier-page-bloom" aria-hidden="true" />
       <div className="atelier-page-grain" aria-hidden="true" />
 
-      {/* Head: 「设置」标题 + 横向 Tab —— 取代竖向子栏 */}
-      <header className="flex-shrink-0 border-b border-glass-border px-4 md:px-7 pt-6 pb-4 relative z-10">
+      <header className="relative z-10 flex-shrink-0 border-b border-glass-border px-4 py-6 md:px-7">
         <div className="w-full">
         <h1 className="font-display atelier-display text-[1.625rem] md:text-[2.125rem] font-semibold text-foreground tracking-tight">
           {t("title")}
         </h1>
-        <nav className="flex flex-wrap gap-1 mt-5" role="tablist" aria-label={t("tabsAria")} onKeyDown={rovingKeyDown}>
-          {TABS.map((tab) => {
-            const isActive = active === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                tabIndex={isActive ? 0 : -1}
-                onClick={() => setActive(tab.id)}
-                className={`px-3.5 py-1.5 rounded-full text-[0.8125rem] transition-colors ${
-                  isActive
-                    ? "bg-primary/10 text-foreground font-semibold"
-                    : "text-text-muted hover:text-foreground hover:bg-hover-bg font-medium"
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </nav>
         </div>
       </header>
 
@@ -340,16 +281,12 @@ export default function SettingsPage() {
               className="flex items-center gap-3 px-4 py-3 rounded-lg bg-status-processing-bg border border-status-processing-border"
             >
               <WifiOff size={18} className="text-status-processing-fg flex-shrink-0" />
-              <div className="flex-1">
-                <div className="text-[0.78125rem] font-semibold text-foreground">{t("offlineTitle")}</div>
-                <div className="text-[0.6875rem] text-text-secondary mt-0.5">
-                  {t("offlineBody")}
-                </div>
-              </div>
+              <div className="flex-1 text-[0.78125rem] font-semibold text-foreground">{t("offlineTitle")}</div>
             </div>
           )}
 
-          {renderActive()}
+          {renderGeneral()}
+          {mayManageProviderConfig ? renderApiKeys() : null}
           <div className="pb-8" />
         </div>
       </div>

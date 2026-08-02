@@ -8,7 +8,6 @@ import { useProjectStore, type Project, type StoryboardFrame, type VideoTask } f
 import { api, type BgmPreset } from "@/lib/api";
 import { saveAuthenticatedMedia } from "@/lib/download";
 import { getAssetUrl, extractErrorDetail } from "@/lib/utils";
-import StepPageHeader from "@/components/shared/StepPageHeader";
 import SidePanelHeader from "@/components/shared/SidePanelHeader";
 import { useModelDisplayName } from "@/lib/useModelDisplayName";
 import ResizableSidePanel, {
@@ -56,7 +55,6 @@ function subtitleUrlFor(mediaUrl: string): string {
 
 export default function VideoAssembly() {
     const ta = useTranslations("assembly");
-    const tStep = useTranslations("stepHeader");
     const modelDisplayName = useModelDisplayName();
     const locale = useLocale();
     const currentProject = useProjectStore((state) => state.currentProject);
@@ -217,15 +215,11 @@ export default function VideoAssembly() {
     const framesTotal = currentProject?.frames?.length ?? 0;
 
     return (
-        // Layout v4: outer horizontal split. The compact step header belongs to main
-        // column; right Variants panel is floor-to-ceiling with its own
-        // SidePanelHeader.
+        // Layout v4: outer horizontal split. The workflow content owns the full
+        // height; the right Variants panel keeps its own compact header.
         <div className="relative h-full flex overflow-hidden">
             {/* Left: main column */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                <StepPageHeader
-                    title={tStep("assemblyTitle")}
-                />
                 {/* PR-3k · Phase tabs — Takes / Mix / Export */}
                 <div className="flex items-center gap-1 px-6 pt-2 border-b border-glass-border bg-surface">
                     {[

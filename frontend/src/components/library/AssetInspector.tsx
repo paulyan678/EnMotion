@@ -225,7 +225,7 @@ function AssetInspectorForAsset({
     <aside
       ref={asideRef}
       tabIndex={-1}
-      className="fixed inset-0 z-50 w-full md:static md:inset-auto md:z-auto md:w-[340px] flex-shrink-0 h-full flex flex-col overflow-y-auto bg-surface border-l border-glass-border shadow-2xl atelier-reveal focus:outline-none"
+      className="fixed inset-0 z-50 flex h-full w-full flex-shrink-0 flex-col overflow-y-auto border-l border-glass-border bg-surface shadow-2xl atelier-reveal focus:outline-none md:relative md:inset-auto md:z-50 md:w-[340px]"
       aria-label={t("inspectorAria")}
     >
       {/* Hero — 磨砂铺底 + object-contain：三视图/横竖混杂的资产完整展示不裁切（避免裁头）。 */}

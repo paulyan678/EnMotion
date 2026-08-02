@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Loader2, RefreshCw, Share2 } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -108,32 +108,6 @@ export default function SharedAssetEditor({
     ? undefined
     : context?.capabilities.motionDisabledReason || t("motionRequiresImage");
 
-  const ownerNotice = context ? (
-    <div
-      className={`inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-        context.ownerScope === "project"
-          ? "border-glass-border bg-glass text-text-secondary"
-          : "border-status-pending-border bg-status-pending-bg text-status-pending-fg"
-      }`}
-      title={t("ownerScopeDetail", {
-        owner: context.ownerLabel || context.ownerScope,
-        count: context.affectedEpisodeCount,
-      })}
-    >
-      <Share2 size={12} aria-hidden="true" />
-      <span className="truncate">
-        {t(`ownerScope.${context.ownerScope}`, {
-          owner: context.ownerLabel || context.ownerScope,
-        })}
-      </span>
-      {context.ownerScope !== "project" && context.affectedEpisodeCount > 0 ? (
-        <span className="whitespace-nowrap">
-          · {t("sharedEpisodeCount", { count: context.affectedEpisodeCount })}
-        </span>
-      ) : null}
-    </div>
-  ) : null;
-
   if (renderedType === "character") {
     return (
       <CharacterWorkbench
@@ -198,7 +172,6 @@ export default function SharedAssetEditor({
         canChangeAssetType
         isSavingMetadata={controller.saving}
         supportsMotion={Boolean(context?.capabilities.motionGeneration)}
-        ownerNotice={ownerNotice}
         defaultModelName={settings?.image_model}
         defaultVideoModelName={settings?.video_model}
         defaultAspectRatio={defaultAspectRatio}
@@ -267,7 +240,6 @@ export default function SharedAssetEditor({
       canChangeAssetType
       isSavingMetadata={controller.saving}
       supportsMotion={Boolean(context?.capabilities.motionGeneration)}
-      ownerNotice={ownerNotice}
       defaultModelName={settings?.image_model}
       defaultVideoModelName={settings?.video_model}
       defaultAspectRatio={defaultAspectRatio}

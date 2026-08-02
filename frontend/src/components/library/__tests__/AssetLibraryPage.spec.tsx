@@ -72,7 +72,7 @@ vi.mock("../AssetInspector", () => ({
     onDelete: () => void;
     deleting: boolean;
   }) => (
-    <div>
+    <div data-testid="mock-asset-inspector">
       <button type="button" onClick={onEdit}>编辑所选资产</button>
       <button type="button" onClick={onDelete} disabled={deleting}>
         {deleting ? "正在删除所选资产" : "删除所选资产"}
@@ -338,6 +338,18 @@ describe("AssetLibraryPage strict feed states", () => {
     expect(editor).toHaveAttribute("data-source-id", "series-1");
     expect(editor).toHaveAttribute("data-asset-type", "character");
     expect(editor).toHaveAttribute("data-asset-id", "character-1");
+  });
+
+  it("closes the asset inspector when the user clicks outside it", async () => {
+    renderWithIntl(<AssetLibraryPage />);
+    fireEvent.click(await screen.findByText("Visible Hero"));
+
+    const inspector = screen.getByTestId("mock-asset-inspector");
+    fireEvent.click(inspector);
+    expect(screen.getByTestId("mock-asset-inspector")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("asset-inspector-backdrop"));
+    expect(screen.queryByTestId("mock-asset-inspector")).not.toBeInTheDocument();
   });
 
   it("broadcasts global asset updates to synchronized views", async () => {

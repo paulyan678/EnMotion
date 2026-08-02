@@ -68,16 +68,20 @@ describe("SettingsPage categories", () => {
     const title = screen.getByRole("heading", { name: "设置" });
     expect(title.previousElementSibling).toBeNull();
     expect(screen.queryByText("通用与主题")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("tab")).toHaveLength(2);
-    expect(screen.queryByRole("tab", { name: "存储" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "关于" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "设置分类" })).not.toBeInTheDocument();
+    expect(screen.queryByText("通用")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "主题与动效" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "模型访问权限" })).toBeInTheDocument();
+    expect(screen.queryByText("选择界面配色方案")).not.toBeInTheDocument();
+    expect(screen.queryByText("暖石墨 · 青绿色")).not.toBeInTheDocument();
+    expect(screen.queryByText("关闭后将降低过渡动画，并尊重系统的减少动态偏好。")).not.toBeInTheDocument();
+    expect(screen.queryByText("包含面板进出、签名动效等")).not.toBeInTheDocument();
+    expect(screen.queryByText("配置服务商地址，以及每个可用模型对应的密钥。")).not.toBeInTheDocument();
 
     expect(screen.queryByRole("tab", { name: "模型" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "默认提示词" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "接口密钥" }));
-    expect(screen.getByRole("heading", { name: "模型访问权限" })).toBeInTheDocument();
     expect(screen.queryByText("当前聊天模型")).not.toBeInTheDocument();
     expect(screen.queryByText("当前图像模型")).not.toBeInTheDocument();
     expect(screen.queryByText("当前视频模型")).not.toBeInTheDocument();
@@ -90,7 +94,6 @@ describe("SettingsPage categories", () => {
     renderWithIntl(<SettingsPage />);
 
     await waitFor(() => expect(apiMocks.getEnvConfig).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("tab", { name: "接口密钥" }));
 
     fireEvent.click(screen.getByRole("button", { name: "查看已保存的密钥" }));
     await waitFor(() => expect(screen.getByText("••••••••1234")).toBeInTheDocument());
@@ -112,8 +115,7 @@ describe("SettingsPage categories", () => {
     authMocks.value = { serverMode: true, user: { role: "user" } };
     renderWithIntl(<SettingsPage />);
 
-    expect(screen.getAllByRole("tab")).toHaveLength(1);
-    expect(screen.queryByRole("tab", { name: "接口密钥" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "查看已保存的密钥" })).not.toBeInTheDocument();
     expect(apiMocks.getEnvConfig).not.toHaveBeenCalled();
     expect(apiMocks.inspectApiKeys).not.toHaveBeenCalled();
