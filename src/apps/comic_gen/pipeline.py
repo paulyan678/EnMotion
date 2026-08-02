@@ -154,6 +154,23 @@ _FRAME_TYPE_GUIDANCE = {
     "zoom_out": "Zoom out smoothly while preserving subject continuity.",
 }
 
+_FRAME_TYPE_IMAGE_GUIDANCE = {
+    "static": "Compose this as a locked-off static shot.",
+    "push_in": "Compose this as a push-in shot moving toward the subject.",
+    "pull_out": "Compose this as a pull-out shot revealing more of the scene.",
+    "pan_left": "Compose this as a leftward panning shot.",
+    "pan_right": "Compose this as a rightward panning shot.",
+    "tilt_up": "Compose this as an upward-tilting shot.",
+    "tilt_down": "Compose this as a downward-tilting shot.",
+    "orbit": "Compose this as an orbiting shot around the subject.",
+    "follow": "Compose this as a tracking shot that follows the subject.",
+    "crane_up": "Compose this as a rising crane shot.",
+    "crane_down": "Compose this as a descending crane shot.",
+    "handheld": "Compose this with controlled handheld-camera energy.",
+    "zoom_in": "Compose this as a zoomed-in shot focused on the subject.",
+    "zoom_out": "Compose this as a zoomed-out shot revealing the surroundings.",
+}
+
 _FRAME_TYPE_ALIASES = {
     "静止": "static",
     "固定": "static",
@@ -259,6 +276,92 @@ def _motion_prompt_with_frame_type(prompt: str, frame_type: Optional[str]) -> st
     guidance = _FRAME_TYPE_GUIDANCE[canonical]
     clean = (prompt or "").strip()
     return f"{clean}\n\nCamera direction: {guidance}" if clean else guidance
+
+
+def _image_prompt_with_frame_type(prompt: str, frame_type: Optional[str]) -> str:
+    """Make a visible storyboard camera selection affect the reviewed image prompt."""
+
+    canonical = _normalize_frame_type(frame_type)
+    guidance = _FRAME_TYPE_IMAGE_GUIDANCE[canonical]
+    clean = (prompt or "").strip()
+    return f"{clean}\n\nCamera composition: {guidance}" if clean else guidance
+
+
+def _normalize_video_generation_options(
+    *,
+    model: str,
+    generation_mode: str,
+    image_url: Optional[str],
+    duration: int,
+    resolution: str,
+    ratio: Optional[str],
+    seed: Optional[int],
+    generate_audio: bool,
+    watermark: Optional[bool],
+) -> Dict[str, Any]:
+    """Validate and canonicalize one Seedance request before it is persisted.
+
+    Preview compilation and task creation both call this boundary so a reviewed
+    request cannot later replace already-validated values with a different
+    model, mode, reference, or loosely coerced parameter.
+    """
+
+    selected_model = get_model_spec(model, VIDEO).model_id
+    if not isinstance(generation_mode, str):
+        raise ValueError("Video generation mode must be t2v or i2v")
+    canonical_mode = generation_mode.strip().lower()
+    spec = get_model_spec(selected_model, VIDEO)
+    if canonical_mode not in spec.supported_modes:
+        raise ValueError(
+            f"Model '{selected_model}' does not support generation mode '{canonical_mode}'"
+        )
+
+    if image_url is not None and not isinstance(image_url, str):
+        raise ValueError("Video source image must be a media reference")
+    canonical_image = (image_url or "").strip()
+    if canonical_mode == "i2v" and not canonical_image:
+        raise ValueError("Image-to-video generation requires one source image")
+    if canonical_mode == "t2v" and canonical_image:
+        raise ValueError("Text-to-video generation must not include a source image")
+
+    if isinstance(duration, bool) or not isinstance(duration, int) or not 4 <= duration <= 15:
+        raise ValueError("Seedance video duration must be between 4 and 15 seconds")
+    if not isinstance(resolution, str):
+        raise ValueError("Seedance video resolution must be 720p or 1080p")
+    canonical_resolution = resolution.strip().lower()
+    if canonical_resolution not in {"720p", "1080p"}:
+        raise ValueError("Seedance video resolution must be 720p or 1080p")
+    if canonical_mode == "i2v" and canonical_resolution != "720p":
+        raise ValueError("Image-to-video clip generation supports only 720p")
+    if (
+        canonical_resolution == "1080p"
+        and selected_model != "doubao-seedance-2-0-260128"
+    ):
+        raise ValueError("Only Seedance 2.0 text-to-video supports 1080p")
+
+    if ratio is not None and not isinstance(ratio, str):
+        raise ValueError("Seedance video aspect ratio must be 16:9, 9:16, or 1:1")
+    canonical_ratio = (ratio or "16:9").strip()
+    if canonical_ratio not in {"16:9", "9:16", "1:1"}:
+        raise ValueError("Seedance video aspect ratio must be 16:9, 9:16, or 1:1")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        raise ValueError("Seedance video seed must be an integer")
+    if not isinstance(generate_audio, bool):
+        raise ValueError("Seedance audio setting must be true or false")
+    if watermark is not None and not isinstance(watermark, bool):
+        raise ValueError("Seedance watermark setting must be true or false")
+
+    return {
+        "model": selected_model,
+        "generation_mode": canonical_mode,
+        "image_url": canonical_image or None,
+        "duration": duration,
+        "resolution": canonical_resolution,
+        "ratio": canonical_ratio,
+        "seed": seed,
+        "generate_audio": generate_audio,
+        "watermark": watermark if watermark is not None else False,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1398,6 +1501,35 @@ class ComicGenPipeline:
     def get_script(self, script_id: str) -> Optional[Script]:
         return self.scripts.get(script_id)
 
+    def update_project_metadata(
+        self,
+        script_id: str,
+        *,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        script_summary: Optional[str] = None,
+    ) -> Script:
+        """Persist user-facing project or episode metadata atomically."""
+
+        with self._save_lock:
+            script = self.scripts.get(script_id)
+            if not script:
+                raise ValueError("Project not found")
+
+            if title is not None:
+                normalized_title = title.strip()
+                if not normalized_title:
+                    raise ValueError("Project title cannot be empty")
+                script.title = normalized_title
+            if description is not None:
+                script.description = description.strip()
+            if script_summary is not None:
+                script.script_summary = script_summary.strip()
+
+            script.updated_at = time.time()
+            self._save_data()
+            return script
+
     def _load_data(self) -> Dict[str, Script]:
         if not os.path.exists(self.data_file):
             return {}
@@ -2103,7 +2235,12 @@ class ComicGenPipeline:
                     model=selected_model,
                     prompt=exact_prompt,
                     parameters={
-                        "size": "1024x1024" if phase == "reference_sheet" else effective_size,
+                        # `reference_sheet` is also the canonical storage bucket for
+                        # an imported character's primary/full-body image.  Respect
+                        # the generation-time aspect-ratio selection so the request
+                        # review and provider call cannot silently fall back to a
+                        # square image for that user-facing output.
+                        "size": effective_size,
                         "quality": "high",
                         "n": 1,
                     },
@@ -2796,7 +2933,7 @@ class ComicGenPipeline:
         if not script:
             raise ValueError("Script not found")
         if audio_url:
-            raise ValueError("New API Seedance does not support driving-audio input")
+            raise ValueError("The selected Seedance model does not support driving-audio input")
 
         # Validate against the same Episode > Series > Global asset stack used
         # by the worker before publishing a durable job.  Previously a shared
@@ -5067,7 +5204,7 @@ class ComicGenPipeline:
         )
         canonical_motion_type = self._canonical_motion_type(asset_type, motion_type)
         if audio_url:
-            raise ValueError("New API Seedance does not support driving-audio input")
+            raise ValueError("The selected Seedance model does not support driving-audio input")
         source_image_url = self._motion_reference_source_image_url(
             target_asset, canonical_motion_type
         )
@@ -5168,7 +5305,7 @@ class ComicGenPipeline:
         )
         canonical_motion_type = self._canonical_motion_type(asset_type, motion_type)
         if audio_url:
-            raise ValueError("New API Seedance does not support driving-audio input")
+            raise ValueError("The selected Seedance model does not support driving-audio input")
         source_image_url = self._motion_reference_source_image_url(
             target_asset, canonical_motion_type
         )
@@ -5458,11 +5595,29 @@ class ComicGenPipeline:
         script = self.scripts.get(script_id)
         if script is None:
             raise ValueError("Script not found")
-        if not any(frame.id == frame_id for frame in script.frames):
+        frame = next((frame for frame in script.frames if frame.id == frame_id), None)
+        if frame is None:
             raise ValueError(f"Frame {frame_id} not found")
         clean_prompt = (prompt or "").strip()
         if not clean_prompt:
             raise ValueError("Storyboard image prompt cannot be empty")
+
+        structured_movement = getattr(frame, "camera_movement_structured", None)
+        movement_candidates = (
+            getattr(frame, "camera_movement", None),
+            getattr(structured_movement, "primary", None) if structured_movement else None,
+            getattr(structured_movement, "description", None) if structured_movement else None,
+        )
+        explicit_frame_type = (
+            _frame_type_from_storyboard(frame)
+            if any(isinstance(value, str) and value.strip() for value in movement_candidates)
+            else None
+        )
+        exact_prompt = (
+            _image_prompt_with_frame_type(clean_prompt, explicit_frame_type)
+            if explicit_frame_type
+            else clean_prompt
+        )
 
         settings = self._effective_model_settings(script)
         selected_model = get_model_spec(
@@ -5498,10 +5653,27 @@ class ComicGenPipeline:
         exact = provider_request(
             phase="storyboard_frame",
             model=selected_model,
-            prompt=clean_prompt,
+            prompt=exact_prompt,
             parameters={"size": size, "quality": "high", "n": 1},
             input_media=references,
         )
+        prompt_parts = [
+            {
+                "kind": "user",
+                "label": "Full storyboard prompt",
+                "text": clean_prompt,
+                "editable": True,
+            }
+        ]
+        if explicit_frame_type:
+            prompt_parts.append(
+                {
+                    "kind": "camera_direction",
+                    "label": "Camera composition",
+                    "text": _FRAME_TYPE_IMAGE_GUIDANCE[explicit_frame_type],
+                    "editable": True,
+                }
+            )
         return compile_generation_request(
             category="image",
             mode="i2i" if exact["input_media"] else "t2i",
@@ -5514,15 +5686,9 @@ class ComicGenPipeline:
                 "surface": "storyboard",
                 "aspect_ratio": selected_aspect,
                 "requested_outputs": batch_size,
+                **({"frame_type": explicit_frame_type} if explicit_frame_type else {}),
             },
-            prompt_parts=[
-                {
-                    "kind": "user",
-                    "label": "Full storyboard prompt",
-                    "text": clean_prompt,
-                    "editable": True,
-                }
-            ],
+            prompt_parts=prompt_parts,
         )
 
     def prepare_storyboard_render(
@@ -5556,6 +5722,7 @@ class ComicGenPipeline:
         )
         exact_request = first_provider_request(compiled_request)
         prompt = str(exact_request["prompt"])
+        editable_prompt = str(compiled_request.get("user_prompt") or prompt)
         ref_image_paths: List[str] = []
         for url in exact_request.get("input_media") or []:
             if is_object_key(url) or url.startswith("http"):
@@ -5582,7 +5749,7 @@ class ComicGenPipeline:
         frame.status = GenerationStatus.PROCESSING
         if composition_data:
             frame.composition_data = composition_data
-        frame.image_prompt = prompt
+        frame.image_prompt = editable_prompt
         frame.updated_at = prepared_at
         self._save_data()
 
@@ -5783,10 +5950,26 @@ class ComicGenPipeline:
         script = self.get_script(script_id)
         if script is None:
             raise ValueError("Script not found")
-        selected_model = get_model_spec(
-            model or self._effective_model_settings(script).video_model,
-            VIDEO,
-        ).model_id
+        options = _normalize_video_generation_options(
+            model=model or self._effective_model_settings(script).video_model,
+            generation_mode=generation_mode,
+            image_url=image_url,
+            duration=duration,
+            resolution=resolution,
+            ratio=ratio,
+            seed=seed,
+            generate_audio=generate_audio,
+            watermark=watermark,
+        )
+        selected_model = options["model"]
+        image_url = options["image_url"]
+        duration = options["duration"]
+        resolution = options["resolution"]
+        ratio = options["ratio"]
+        seed = options["seed"]
+        generate_audio = options["generate_audio"]
+        watermark = options["watermark"]
+        generation_mode = options["generation_mode"]
         exact_prompt = (prompt or "").strip()
         if not exact_prompt:
             raise ValueError("Clip generation requires a motion prompt")
@@ -5836,10 +6019,10 @@ class ComicGenPipeline:
             parameters={
                 "duration": duration,
                 "resolution": resolution,
-                "aspect_ratio": ratio or "16:9",
+                "aspect_ratio": ratio,
                 "seed": seed,
                 "generate_audio": generate_audio,
-                "watermark": bool(watermark) if watermark is not None else False,
+                "watermark": watermark,
             },
             input_media=[image_url] if image_url else [],
         )
@@ -5884,27 +6067,87 @@ class ComicGenPipeline:
             raise ValueError("Script not found")
 
         model = model or self._effective_model_settings(script).video_model
-        spec = get_model_spec(model, VIDEO)
-        if generation_mode not in spec.supported_modes:
-            raise ValueError(
-                f"Model '{model}' does not support generation mode '{generation_mode}'"
+
+        # The compiled request is the exact snapshot reviewed by the user. It
+        # becomes authoritative only after its shape, mode, reference, and
+        # strict parameter types have been checked at this persistence boundary.
+        if compiled_request is not None:
+            if not isinstance(compiled_request, dict):
+                raise ValueError("Compiled video request must be an object")
+            if compiled_request.get("category") != "video":
+                raise ValueError("Compiled video request has the wrong generation category")
+            compiled_mode = compiled_request.get("mode")
+            if compiled_mode != generation_mode:
+                raise ValueError("Compiled video request mode does not match the selected mode")
+            exact_requests = compiled_request.get("provider_requests")
+            if (
+                not isinstance(exact_requests, list)
+                or len(exact_requests) != 1
+                or not isinstance(exact_requests[0], dict)
+            ):
+                raise ValueError("Compiled video request must contain exactly one provider request")
+            exact = exact_requests[0]
+            exact_prompt = exact.get("prompt")
+            exact_model = exact.get("model")
+            exact_parameters = exact.get("parameters")
+            exact_inputs = exact.get("input_media")
+            if not isinstance(exact_prompt, str) or not exact_prompt.strip():
+                raise ValueError("Compiled video request is missing its provider prompt")
+            if not isinstance(exact_model, str) or not exact_model.strip():
+                raise ValueError("Compiled video request is missing its provider model")
+            if not isinstance(exact_parameters, dict):
+                raise ValueError("Compiled video request is missing its provider parameters")
+            if not isinstance(exact_inputs, list) or any(
+                not isinstance(item, str) for item in exact_inputs
+            ):
+                raise ValueError("Compiled video request has invalid input media")
+
+            expected_inputs = (
+                [image_url.strip()]
+                if isinstance(image_url, str) and image_url.strip()
+                else []
             )
-        if generation_mode == "i2v" and not image_url:
-            raise ValueError("Image-to-video generation requires one source image")
-        if generation_mode == "t2v" and image_url:
-            raise ValueError("Text-to-video generation must not include a source image")
-        if isinstance(duration, bool) or not isinstance(duration, int) or not 4 <= duration <= 15:
-            raise ValueError("Seedance video duration must be between 4 and 15 seconds")
-        resolution = (resolution or "720p").strip().lower()
-        if resolution not in {"720p", "1080p"}:
-            raise ValueError("Seedance video resolution must be 720p or 1080p")
-        if generation_mode == "i2v" and resolution != "720p":
-            raise ValueError("Image-to-video clip generation supports only 720p")
-        if resolution == "1080p" and model != "doubao-seedance-2-0-260128":
-            raise ValueError("Only Seedance 2.0 text-to-video supports 1080p")
-        ratio = (ratio or "16:9").strip()
-        if ratio not in {"16:9", "9:16", "1:1"}:
-            raise ValueError("Seedance video aspect ratio must be 16:9, 9:16, or 1:1")
+            if exact_inputs != expected_inputs:
+                raise ValueError("Compiled video request input does not match the selected source image")
+            prompt = exact_prompt.strip()
+            model = exact_model.strip()
+            duration = exact_parameters.get("duration", duration)
+            resolution = exact_parameters.get("resolution", resolution)
+            ratio = exact_parameters.get("aspect_ratio", ratio)
+            seed = exact_parameters.get("seed", seed)
+            generate_audio = exact_parameters.get("generate_audio", generate_audio)
+            watermark = exact_parameters.get("watermark", watermark)
+        elif frame_id and prompt:
+            frame = next((f for f in script.frames if f.id == frame_id), None)
+            if frame:
+                from .prompt_assembly import enrich_prompt_with_dialogue
+
+                prompt = enrich_prompt_with_dialogue(prompt, frame)
+
+        options = _normalize_video_generation_options(
+            model=model,
+            generation_mode=generation_mode,
+            image_url=image_url,
+            duration=duration,
+            resolution=resolution,
+            ratio=ratio,
+            seed=seed,
+            generate_audio=generate_audio,
+            watermark=watermark,
+        )
+        model = options["model"]
+        generation_mode = options["generation_mode"]
+        image_url = options["image_url"]
+        duration = options["duration"]
+        resolution = options["resolution"]
+        ratio = options["ratio"]
+        seed = options["seed"]
+        generate_audio = options["generate_audio"]
+        watermark = options["watermark"]
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("Clip generation requires a motion prompt")
+        prompt = prompt.strip()
+
         # Validate the exact selected model's dedicated key before a task is
         # persisted or queued. There is no capability/shared-key fallback.
         resolve_model_api_key(model, VIDEO)
@@ -5918,30 +6161,6 @@ class ComicGenPipeline:
         # the first worker attempt. Retried asset jobs can deliberately refresh
         # this snapshot after the user selects a safer replacement image.
         snapshot_url = self._snapshot_video_input(image_url, task_id)
-
-        # Legacy callers without a compiled snapshot still receive dialogue
-        # enrichment. New callers execute the exact reviewed provider prompt.
-        if compiled_request:
-            exact_requests = compiled_request.get("provider_requests")
-            exact = exact_requests[0] if isinstance(exact_requests, list) and exact_requests else None
-            if not isinstance(exact, dict):
-                raise ValueError("Compiled video request is missing its provider request")
-            prompt = str(exact.get("prompt") or "").strip()
-            model = get_model_spec(str(exact.get("model") or ""), VIDEO).model_id
-            exact_parameters = exact.get("parameters")
-            if isinstance(exact_parameters, dict):
-                duration = int(exact_parameters.get("duration", duration))
-                resolution = str(exact_parameters.get("resolution", resolution))
-                ratio = str(exact_parameters.get("aspect_ratio", ratio or "16:9"))
-                seed = exact_parameters.get("seed", seed)
-                generate_audio = bool(exact_parameters.get("generate_audio", generate_audio))
-                watermark = bool(exact_parameters.get("watermark", watermark or False))
-        elif frame_id and prompt:
-            frame = next((f for f in script.frames if f.id == frame_id), None)
-            if frame:
-                from .prompt_assembly import enrich_prompt_with_dialogue
-
-                prompt = enrich_prompt_with_dialogue(prompt, frame)
 
         task = VideoTask(
             id=task_id,
@@ -7578,7 +7797,7 @@ class ComicGenPipeline:
                     f"Model '{model_name}' does not support generation mode '{task.generation_mode}'"
                 )
             if getattr(task, "audio_url", None):
-                raise ValueError("New API Seedance does not support driving-audio input")
+                raise ValueError("The selected Seedance model does not support driving-audio input")
 
             if self._newapi_video_model is None:
                 from ...models.newapi import NewAPIVideoModel
@@ -7623,7 +7842,7 @@ class ComicGenPipeline:
                 aspect_ratio=task.ratio or "16:9",
                 seed=task.seed,
                 generate_audio=task.generate_audio,
-                watermark=bool(task.watermark) if task.watermark is not None else False,
+                watermark=task.watermark if task.watermark is not None else False,
                 generation_mode=task.generation_mode,
                 provider_task_id=task.provider_task_id or None,
                 on_provider_ids=_capture_newapi_provider_ids,

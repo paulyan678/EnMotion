@@ -10,10 +10,8 @@ import {
   DEFAULT_ACTIVE_MODELS,
   buildSecretReplacementPatch,
   configuredSecretFields,
-  getNewApiValidationErrors,
+  hasConfiguredNewApiModel,
   normalizeActiveModel,
-  type ActiveNewApiSelection,
-  type NewApiCapability,
   type NewApiSecretField,
 } from "@/lib/newApiModels";
 
@@ -25,18 +23,22 @@ interface EnvConfigDialogProps {
 
 interface NewApiDialogConfig {
   baseUrl: string;
-  active: ActiveNewApiSelection;
+  legacyFallbacks: {
+    chat: string;
+    image: string;
+    video: string;
+  };
 }
 
 const DEFAULT_CONFIG: NewApiDialogConfig = {
   baseUrl: "",
-  active: { ...DEFAULT_ACTIVE_MODELS },
+  legacyFallbacks: { ...DEFAULT_ACTIVE_MODELS },
 };
 
 function normalizeConfig(payload?: EnvConfigPayload): NewApiDialogConfig {
   return {
     baseUrl: payload?.NEWAPI_BASE_URL?.trim() || DEFAULT_CONFIG.baseUrl,
-    active: {
+    legacyFallbacks: {
       chat: normalizeActiveModel("chat", payload?.NEWAPI_CHAT_MODEL),
       image: normalizeActiveModel("image", payload?.NEWAPI_IMAGE_MODEL),
       video: normalizeActiveModel("video", payload?.NEWAPI_VIDEO_MODEL),
@@ -79,12 +81,10 @@ export default function EnvConfigDialog({
     if (isOpen) void loadConfig();
   }, [isOpen]);
 
-  const validationErrors = getNewApiValidationErrors(
-    config.baseUrl,
-    config.active,
-    configured,
-    replacements,
-  );
+  const validationErrors = [
+    ...(!config.baseUrl.trim() ? [t("providerUrlRequired")] : []),
+    ...(!hasConfiguredNewApiModel(configured, replacements) ? [t("providerKeyRequired")] : []),
+  ];
   const canClose = !isRequired || validationErrors.length === 0;
 
   const handleSave = async () => {
@@ -97,9 +97,11 @@ export default function EnvConfigDialog({
     try {
       await api.saveEnvConfig({
         NEWAPI_BASE_URL: config.baseUrl,
-        NEWAPI_CHAT_MODEL: config.active.chat,
-        NEWAPI_IMAGE_MODEL: config.active.image,
-        NEWAPI_VIDEO_MODEL: config.active.video,
+        // Preserve historical fallbacks for older project data. All new
+        // generation requests send the model chosen in the composer.
+        NEWAPI_CHAT_MODEL: config.legacyFallbacks.chat,
+        NEWAPI_IMAGE_MODEL: config.legacyFallbacks.image,
+        NEWAPI_VIDEO_MODEL: config.legacyFallbacks.video,
         ...buildSecretReplacementPatch(replacements),
       });
       setReplacements({});
@@ -164,16 +166,9 @@ export default function EnvConfigDialog({
                 <>
                   <NewApiModelManager
                     baseUrl={config.baseUrl}
-                    active={config.active}
                     replacements={replacements}
                     configured={configured}
                     onBaseUrlChange={(baseUrl) => setConfig((current) => ({ ...current, baseUrl }))}
-                    onActiveChange={(capability: NewApiCapability, modelId: string) => {
-                      setConfig((current) => ({
-                        ...current,
-                        active: { ...current.active, [capability]: modelId },
-                      }));
-                    }}
                     onSecretChange={(field, value) => {
                       setReplacements((current) => ({ ...current, [field]: value }));
                     }}

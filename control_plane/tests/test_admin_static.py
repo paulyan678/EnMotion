@@ -107,6 +107,11 @@ def test_provider_configuration_ui_never_requests_existing_secret_values() -> No
     assert "留空表示保留当前密钥" in markup
     assert "/admin/provider-config" in script
     assert "共享 API 配置已验证并更新" in script
+    assert "检查模型访问权限" in markup
+    assert "服务商余额：无法在 EnMotion 中可靠读取" in markup
+    assert "EnMotion 额度仅用于内部计费，不等于服务商账户余额" in markup
+    assert "/admin/provider-config/validate" in script
+    assert "访问已确认" in script
     assert "TLS 证书无效" in script
     assert "data-provider-remove" in script
     assert "config.models.map" in script

@@ -5,8 +5,7 @@ import EnvConfigDialog from "@/components/project/EnvConfigDialog";
 import { api } from "@/lib/api";
 import {
   configuredSecretFields,
-  getNewApiValidationErrors,
-  normalizeActiveModel,
+  hasConfiguredNewApiModel,
 } from "@/lib/newApiModels";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { isHybridModeEnabled } from "@/lib/serverMode";
@@ -23,16 +22,8 @@ export default function EnvConfigChecker() {
   const checkEnvConfig = useCallback(async () => {
     try {
       const config = await api.getEnvConfig();
-      const errors = getNewApiValidationErrors(
-        config.NEWAPI_BASE_URL ?? "",
-        {
-          chat: normalizeActiveModel("chat", config.NEWAPI_CHAT_MODEL),
-          image: normalizeActiveModel("image", config.NEWAPI_IMAGE_MODEL),
-          video: normalizeActiveModel("video", config.NEWAPI_VIDEO_MODEL),
-        },
-        configuredSecretFields(config as Record<string, unknown>),
-      );
-      const hasRequired = errors.length === 0;
+      const hasRequired = Boolean(config.NEWAPI_BASE_URL?.trim())
+        && hasConfiguredNewApiModel(configuredSecretFields(config as Record<string, unknown>));
 
       if (!hasRequired) {
         setEnvRequired(true);

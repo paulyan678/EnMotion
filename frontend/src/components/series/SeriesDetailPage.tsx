@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { motion, AnimatePresence } from "framer-motion";
-import { Image as ImageIcon, Play, ChevronRight } from "lucide-react";
+import { Image as ImageIcon, Play, ChevronRight, Pencil } from "lucide-react";
 import { api } from "@/lib/api";
 import {
   useProjectStore,
@@ -29,6 +29,9 @@ import type {
   AssetRef,
   EditableAsset,
 } from "@/components/assets/assetEditorTypes";
+import ContentMetadataDialog, {
+  type ContentMetadataValue,
+} from "@/components/shared/ContentMetadataDialog";
 
 const ImportAssetsDialog = dynamic(() => import("./ImportAssetsDialog"), { ssr: false });
 const SeriesArtDirectionPanel = dynamic(() => import("./SeriesArtDirectionPanel"), { ssr: false });
@@ -40,63 +43,27 @@ interface SeriesDetailPageProps {
 type AssetTab = "characters" | "scenes" | "props";
 
 interface SeriesTopBarTitleProps {
-  seriesId: string;
   title: string;
-  onSaved: (title: string) => void;
+  onEdit: () => void;
 }
 
-function SeriesTopBarTitle({ seriesId, title, onSaved }: SeriesTopBarTitleProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [draftTitle, setDraftTitle] = useState(title);
+function SeriesTopBarTitle({ title, onEdit }: SeriesTopBarTitleProps) {
   const t = useTranslations("series");
 
-  const saveTitle = async () => {
-    const nextTitle = draftTitle.trim();
-    setIsEditing(false);
-
-    if (!nextTitle || nextTitle === title) {
-      setDraftTitle(title);
-      return;
-    }
-
-    try {
-      await api.updateSeries(seriesId, { title: nextTitle });
-      onSaved(nextTitle);
-    } catch (error) {
-      console.error("Failed to update series title:", error);
-      setDraftTitle(title);
-    }
-  };
-
-  if (isEditing) {
-    return (
-      <input
-        type="text"
-        value={draftTitle}
-        onChange={(event) => setDraftTitle(event.target.value)}
-        onBlur={() => void saveTitle()}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") void saveTitle();
-          if (event.key === "Escape") {
-            setDraftTitle(title);
-            setIsEditing(false);
-          }
-        }}
-        aria-label={t("editTitleHint")}
-        className="min-w-24 max-w-full border-b border-primary bg-transparent font-medium text-foreground outline-none"
-        autoFocus
-      />
-    );
-  }
-
   return (
-    <span
-      data-testid="series-top-bar-title"
-      className="block max-w-full cursor-pointer truncate transition-colors hover:text-primary"
-      onDoubleClick={() => setIsEditing(true)}
-      title={`${title} · ${t("editTitleHint")}`}
-    >
-      {title}
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span data-testid="series-top-bar-title" className="block max-w-full truncate">
+        {title}
+      </span>
+      <button
+        type="button"
+        onClick={onEdit}
+        aria-label={t("editSeries")}
+        title={t("editSeries")}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-text-muted transition-colors hover:bg-hover-bg hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+      >
+        <Pencil size={13} aria-hidden="true" />
+      </button>
     </span>
   );
 }
@@ -111,8 +78,11 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
   const [isCreatingEpisode, setIsCreatingEpisode] = useState(false);
   const [showImportAssets, setShowImportAssets] = useState(false);
   const [editorTarget, setEditorTarget] = useState<AssetRef | null>(null);
+  const [editingSeries, setEditingSeries] = useState(false);
+  const [editingEpisodeId, setEditingEpisodeId] = useState<string | null>(null);
   const [isDeletingSeries, setIsDeletingSeries] = useState(false);
   const deleteSeries = useProjectStore((state) => state.deleteSeries);
+  const updateProject = useProjectStore((state) => state.updateProject);
   const { serverMode } = useAuth();
   const { registerNavigation } = useTopBarNavigation();
 
@@ -215,24 +185,17 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
     [episodes, fetchData, seriesId],
   );
 
-  const handleTitleSaved = useCallback((title: string) => {
-    setSeries((currentSeries) => currentSeries
-      ? { ...currentSeries, title }
-      : currentSeries);
-  }, []);
-
   const seriesTitle = series?.title || "";
   const seriesDescription = series?.description || undefined;
   const topBarTitle = useMemo(() => (
     series ? (
       <SeriesTopBarTitle
         key={`${seriesId}:${seriesTitle}`}
-        seriesId={seriesId}
         title={seriesTitle}
-        onSaved={handleTitleSaved}
+        onEdit={() => setEditingSeries(true)}
       />
     ) : undefined
-  ), [handleTitleSaved, series, seriesId, seriesTitle]);
+  ), [series, seriesId, seriesTitle]);
   const seriesNavigation = useMemo(() => (
     series ? {
       segments: [
@@ -274,6 +237,31 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
 
   const handleOpenEpisode = (episodeId: string) => {
     window.location.hash = `#/series/${seriesId}/episode/${episodeId}`;
+  };
+
+  const handleSaveSeriesMetadata = async (value: ContentMetadataValue) => {
+    const updated = await api.updateSeries(seriesId, {
+      title: value.title,
+      description: value.description,
+    });
+    setSeries((current) => current ? { ...current, ...updated } : current);
+    toast.success(t("metadataSaved"));
+  };
+
+  const handleSaveEpisodeMetadata = async (
+    episodeId: string,
+    value: ContentMetadataValue,
+  ) => {
+    const updated = await api.updateProjectMetadata(episodeId, {
+      title: value.title,
+      description: value.description,
+      script_summary: value.scriptSummary || "",
+    });
+    setEpisodes((current) => current.map((episode) => (
+      episode.id === episodeId ? { ...episode, ...updated } : episode
+    )));
+    updateProject(episodeId, updated);
+    toast.success(t("metadataSaved"));
   };
 
   const handleDeleteSeries = async () => {
@@ -403,8 +391,8 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
               <EpisodeContentPanel
                 key={`episode-${selectedEpisode.id}`}
                 episode={selectedEpisode}
-                seriesId={seriesId}
                 onOpenEditor={() => handleOpenEpisode(selectedEpisode.id)}
+                onEdit={() => setEditingEpisodeId(selectedEpisode.id)}
               />
             ) : null}
           </AnimatePresence>
@@ -430,6 +418,32 @@ export default function SeriesDetailPage({ seriesId }: SeriesDetailPageProps) {
           }}
         />
       ) : null}
+      <ContentMetadataDialog
+        open={editingSeries}
+        kind="series"
+        value={{
+          title: series.title,
+          description: series.description || "",
+        }}
+        onClose={() => setEditingSeries(false)}
+        onSave={handleSaveSeriesMetadata}
+      />
+      {editingEpisodeId ? (() => {
+        const episode = episodes.find((item) => item.id === editingEpisodeId);
+        return episode ? (
+          <ContentMetadataDialog
+            open
+            kind="episode"
+            value={{
+              title: episode.title,
+              description: episode.description || "",
+              scriptSummary: episode.script_summary || "",
+            }}
+            onClose={() => setEditingEpisodeId(null)}
+            onSave={(value) => handleSaveEpisodeMetadata(episode.id, value)}
+          />
+        ) : null;
+      })() : null}
     </main>
   );
 }
@@ -531,19 +545,23 @@ function AssetContentPanel({
 
 function EpisodeContentPanel({
   episode,
-  seriesId,
   onOpenEditor,
+  onEdit,
 }: {
   episode: Project;
-  seriesId: string;
   onOpenEditor: () => void;
+  onEdit: () => void;
 }) {
   const t = useTranslations("series");
 
   const frames = episode.frames || [];
   const characters = episode.characters || [];
   const scenes = episode.scenes || [];
-  const originalText = episode.originalText || "";
+  const summary = episode.script_summary || "";
+  const description = episode.description || "";
+  const generatedClipCount = (episode.video_tasks || []).filter((task: any) => (
+    task?.status === "completed" || !!task?.video_url
+  )).length;
 
   return (
     <motion.div
@@ -555,7 +573,7 @@ function EpisodeContentPanel({
     >
       {/* Header */}
       <div className="px-8 pt-6 pb-4 flex items-start justify-between border-b border-glass-border">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-3 mb-1">
             <span className="text-xs bg-primary/20 text-primary px-2.5 py-1 rounded-lg font-mono font-bold">
               {t("episodeNumber", { number: episode.episode_number || "?" })}
@@ -563,10 +581,22 @@ function EpisodeContentPanel({
             <h2 className="text-xl font-display font-bold text-foreground">
               {episode.title}
             </h2>
+            <button
+              type="button"
+              onClick={onEdit}
+              aria-label={t("editEpisode")}
+              title={t("editEpisode")}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-text-muted transition-colors hover:bg-hover-bg hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            >
+              <Pencil size={14} aria-hidden="true" />
+            </button>
           </div>
           <p className="text-xs text-text-secondary">
-            {t("videoPipelineLabel")} · {t("frameCount", { count: frames.length })}
+            {t("episodeOverviewLine", { frames: frames.length, clips: generatedClipCount })}
           </p>
+          {description ? (
+            <p className="mt-2 max-w-3xl text-xs leading-relaxed text-text-secondary">{description}</p>
+          ) : null}
         </div>
         <motion.button
           whileHover={{ scale: 1.03 }}
@@ -585,12 +615,18 @@ function EpisodeContentPanel({
         {/* Script Summary */}
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-foreground">{t("scriptSummary")}</h3>
-          {originalText ? (
+          {summary ? (
             <p className="text-xs text-text-secondary leading-relaxed line-clamp-4 bg-surface rounded-lg p-3 border border-glass-border">
-              {originalText.slice(0, 300)}{originalText.length > 300 ? "..." : ""}
+              {summary}
             </p>
           ) : (
-            <p className="text-xs text-text-muted italic">{t("noScript")}</p>
+            <button
+              type="button"
+              onClick={onEdit}
+              className="w-full rounded-lg border border-dashed border-glass-border bg-surface p-3 text-left text-xs text-text-muted transition-colors hover:border-primary/50 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            >
+              {t("addScriptSummary")}
+            </button>
           )}
         </div>
 
@@ -645,18 +681,22 @@ function EpisodeContentPanel({
         </div>
 
         {/* Characters & Scenes count */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="bg-surface rounded-lg p-3 border border-glass-border text-center">
             <p className="text-lg font-bold text-foreground">{characters.length}</p>
-            <p className="text-[0.6875rem] text-text-muted">{t("characters")}</p>
+            <p className="text-[0.6875rem] text-text-muted">{t("availableCharacters")}</p>
           </div>
           <div className="bg-surface rounded-lg p-3 border border-glass-border text-center">
             <p className="text-lg font-bold text-foreground">{scenes.length}</p>
-            <p className="text-[0.6875rem] text-text-muted">{t("scenes")}</p>
+            <p className="text-[0.6875rem] text-text-muted">{t("availableScenes")}</p>
           </div>
           <div className="bg-surface rounded-lg p-3 border border-glass-border text-center">
             <p className="text-lg font-bold text-foreground">{frames.length}</p>
             <p className="text-[0.6875rem] text-text-muted">{t("storyboardFrames")}</p>
+          </div>
+          <div className="bg-surface rounded-lg p-3 border border-glass-border text-center">
+            <p className="text-lg font-bold text-foreground">{generatedClipCount}</p>
+            <p className="text-[0.6875rem] text-text-muted">{t("generatedClips")}</p>
           </div>
         </div>
       </div>

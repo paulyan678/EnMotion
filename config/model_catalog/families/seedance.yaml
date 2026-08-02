@@ -27,7 +27,7 @@ transport:
 models:
   - id: doubao-seedance-2-0-260128
     display_name: Seedance 2.0
-    description: Seedance 2.0 through New API for text-to-video and single-image image-to-video
+    description: Seedance 2.0 for text-to-video and single-image image-to-video
     status: active
     release_stage: stable
     capabilities: [t2v, i2v]
@@ -69,7 +69,7 @@ models:
 
   - id: doubao-seedance-2-0-fast-260128
     display_name: Seedance 2.0 Fast
-    description: Faster Seedance 2.0 generation through New API for text-to-video and single-image image-to-video
+    description: Faster Seedance 2.0 generation for text-to-video and single-image image-to-video
     status: active
     release_stage: stable
     capabilities: [t2v, i2v]
@@ -91,7 +91,7 @@ models:
 
   - id: doubao-seedance-2-0-mini-260615
     display_name: Seedance 2.0 Mini
-    description: Cost-efficient Seedance 2.0 generation through New API for text-to-video and single-image image-to-video
+    description: Cost-efficient Seedance 2.0 generation for text-to-video and single-image image-to-video
     status: active
     release_stage: stable
     capabilities: [t2v, i2v]

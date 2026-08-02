@@ -1104,10 +1104,10 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
         except (RuntimeError, ValueError):
             raise PolishError(
                 reason="is_configured_false",
-                message_zh="所选 New API 聊天模型未配置，请检查模型专用密钥和基础地址。",
+                message_zh="所选文本模型未配置，请联系管理员检查模型凭证和服务地址。",
                 message_en=(
-                    "The selected New API chat model is not configured. "
-                    "Check its dedicated key and base URL."
+                    "The selected text model is not configured. "
+                    "Ask an administrator to check its credentials and service address."
                 ),
             ) from None
 
@@ -1216,16 +1216,16 @@ Return a JSON object with ALL fields below. null is acceptable for optional fiel
         if not polish_model and not self.is_configured:
             raise PolishError(
                 reason="is_configured_false",
-                message_zh="所选 New API 聊天模型未配置，请检查模型专用密钥和基础地址。",
-                message_en="The selected New API chat model is not configured. Check its dedicated key and base URL.",
+                message_zh="所选文本模型未配置，请联系管理员检查模型凭证和服务地址。",
+                message_en="The selected text model is not configured. Ask an administrator to check its credentials and service address.",
             )
         try:
             effective_polish_model = self.llm.require_configured(polish_model or None)
         except (RuntimeError, ValueError):
             raise PolishError(
                 reason="is_configured_false",
-                message_zh="所选 New API 聊天模型未配置，请检查模型专用密钥和基础地址。",
-                message_en="The selected New API chat model is not configured. Check its dedicated key and base URL.",
+                message_zh="所选文本模型未配置，请联系管理员检查模型凭证和服务地址。",
+                message_en="The selected text model is not configured. Ask an administrator to check its credentials and service address.",
             )
 
         has_images = bool(image_urls) and _chat_model_accepts_images(

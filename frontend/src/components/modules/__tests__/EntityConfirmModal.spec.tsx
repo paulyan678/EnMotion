@@ -32,7 +32,7 @@ describe("EntityConfirmModal", () => {
 
     expect(onDiscard).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Apply to Cast" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Apply extracted assets" })).toBeDisabled();
   });
 
   it("still dismisses from Escape when no apply is running", () => {

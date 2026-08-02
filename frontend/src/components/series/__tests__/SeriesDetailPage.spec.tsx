@@ -69,6 +69,9 @@ vi.mock('lucide-react', () => ({
     Maximize2: (props: any) => <span data-testid="icon-maximize" {...props} />,
     Copy: (props: any) => <span data-testid="icon-copy" {...props} />,
     Check: (props: any) => <span data-testid="icon-check" {...props} />,
+    Pencil: (props: any) => <span data-testid="icon-pencil" {...props} />,
+    FilePenLine: (props: any) => <span data-testid="icon-file-pen" {...props} />,
+    Loader2: (props: any) => <span data-testid="icon-loader" {...props} />,
 }));
 
 // Mock AssetCard
@@ -82,6 +85,7 @@ vi.mock('@/components/common/AssetCard', () => ({
 const mockGetSeries = vi.fn();
 const mockGetSeriesEpisodes = vi.fn();
 const mockUpdateSeries = vi.fn();
+const mockUpdateProjectMetadata = vi.fn();
 const mockCreateProject = vi.fn();
 const mockAddEpisodeToSeries = vi.fn();
 const mockCreateEpisodeForSeries = vi.fn();
@@ -92,6 +96,7 @@ vi.mock('@/lib/api', () => ({
         getSeries: (...args: any[]) => mockGetSeries(...args),
         getSeriesEpisodes: (...args: any[]) => mockGetSeriesEpisodes(...args),
         updateSeries: (...args: any[]) => mockUpdateSeries(...args),
+        updateProjectMetadata: (...args: any[]) => mockUpdateProjectMetadata(...args),
         createProject: (...args: any[]) => mockCreateProject(...args),
         addEpisodeToSeries: (...args: any[]) => mockAddEpisodeToSeries(...args),
         createEpisodeForSeries: (...args: any[]) => mockCreateEpisodeForSeries(...args),
@@ -202,6 +207,11 @@ describe('SeriesDetailPage', () => {
         authState.serverMode = false;
         mockGetSeries.mockResolvedValue(mockSeries);
         mockGetSeriesEpisodes.mockResolvedValue(mockEpisodes);
+        mockUpdateSeries.mockImplementation(async (_id, patch) => ({ ...mockSeries, ...patch }));
+        mockUpdateProjectMetadata.mockImplementation(async (id, patch) => ({
+            ...mockEpisodes.find((episode) => episode.id === id),
+            ...patch,
+        }));
         useProjectStore.setState({
             projects: mockEpisodes,
             currentProject: null,
@@ -571,83 +581,77 @@ describe('SeriesDetailPage', () => {
         });
     });
 
-    // ── Edit title ──
+    // ── Editable content information ──
 
-    describe('Edit title', () => {
-        it('enters edit mode on double click', async () => {
+    describe('Editable content information', () => {
+        it('edits the series name and description through a visible action', async () => {
             renderPage();
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
+            fireEvent.click(await screen.findByRole('button', { name: '编辑系列信息' }));
+
+            const dialog = screen.getByRole('dialog', { name: '编辑系列信息' });
+            fireEvent.change(within(dialog).getByRole('textbox', { name: '名称' }), {
+                target: { value: '新系列名称' },
             });
-            const titleEl = screen.getByTestId('series-top-bar-title');
-            fireEvent.doubleClick(titleEl);
-            const input = screen.getByDisplayValue('测试系列');
-            expect(input).toBeInTheDocument();
-            expect(input.tagName).toBe('INPUT');
+            fireEvent.change(within(dialog).getByRole('textbox', { name: '描述' }), {
+                target: { value: '新的系列描述' },
+            });
+            fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+
+            await waitFor(() => expect(mockUpdateSeries).toHaveBeenCalledWith('series-1', {
+                title: '新系列名称',
+                description: '新的系列描述',
+            }));
+            expect(await screen.findByText('新系列名称')).toBeInTheDocument();
         });
 
-        it('saves title on blur', async () => {
-            mockUpdateSeries.mockResolvedValue({});
+        it('shows resolved overview data and edits episode name, description, and summary', async () => {
+            const resolvedEpisode = {
+                ...mockEpisodes[0],
+                description: '本集说明',
+                script_summary: '本集已有概要',
+                characters: [{ id: 'shared-character', name: '共享角色', description: '' }],
+                scenes: [{ id: 'shared-scene', name: '共享场景', description: '' }],
+                video_tasks: [{ id: 'video-1', status: 'completed', video_url: 'clips/one.mp4' }],
+            } as Project;
+            mockGetSeriesEpisodes.mockResolvedValue([resolvedEpisode, mockEpisodes[1]]);
+            mockUpdateProjectMetadata.mockResolvedValue({
+                ...resolvedEpisode,
+                title: '更新后的第一集',
+                description: '更新后的说明',
+                script_summary: '更新后的剧本概要',
+            });
+
             renderPage();
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
+            fireEvent.click(await screen.findByText('第一集'));
+            expect(await screen.findByText('1 个分镜 · 1 个已生成片段')).toBeInTheDocument();
+            expect(screen.getByText('本集说明')).toBeInTheDocument();
+            expect(screen.getByText('本集已有概要')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByRole('button', { name: '编辑集数信息' }));
+            const dialog = screen.getByRole('dialog', { name: '编辑集数信息' });
+            fireEvent.change(within(dialog).getByRole('textbox', { name: '名称' }), {
+                target: { value: '更新后的第一集' },
             });
-            const titleEl = screen.getByTestId('series-top-bar-title');
-            fireEvent.doubleClick(titleEl);
-            const input = screen.getByDisplayValue('测试系列');
-            fireEvent.change(input, { target: { value: '新标题' } });
-            fireEvent.blur(input);
-            await waitFor(() => {
-                expect(mockUpdateSeries).toHaveBeenCalledWith('series-1', { title: '新标题' });
+            fireEvent.change(within(dialog).getByRole('textbox', { name: '描述' }), {
+                target: { value: '更新后的说明' },
             });
+            fireEvent.change(within(dialog).getByRole('textbox', { name: '剧本概要' }), {
+                target: { value: '更新后的剧本概要' },
+            });
+            fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+
+            await waitFor(() => expect(mockUpdateProjectMetadata).toHaveBeenCalledWith('ep-1', {
+                title: '更新后的第一集',
+                description: '更新后的说明',
+                script_summary: '更新后的剧本概要',
+            }));
         });
 
-        it('saves title on Enter key', async () => {
-            mockUpdateSeries.mockResolvedValue({});
+        it('offers an explicit add-summary action when the episode has no summary', async () => {
             renderPage();
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
-            });
-            const titleEl = screen.getByTestId('series-top-bar-title');
-            fireEvent.doubleClick(titleEl);
-            const input = screen.getByDisplayValue('测试系列');
-            fireEvent.change(input, { target: { value: '回车标题' } });
-            fireEvent.keyDown(input, { key: 'Enter' });
-            await waitFor(() => {
-                expect(mockUpdateSeries).toHaveBeenCalledWith('series-1', { title: '回车标题' });
-            });
-        });
-
-        it('cancels edit on Escape key', async () => {
-            renderPage();
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
-            });
-            const titleEl = screen.getByTestId('series-top-bar-title');
-            fireEvent.doubleClick(titleEl);
-            const input = screen.getByDisplayValue('测试系列');
-            fireEvent.change(input, { target: { value: '取消的标题' } });
-            fireEvent.keyDown(input, { key: 'Escape' });
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
-            });
-            expect(mockUpdateSeries).not.toHaveBeenCalled();
-        });
-
-        it('reverts title if API fails', async () => {
-            mockUpdateSeries.mockRejectedValue(new Error('API error'));
-            renderPage();
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
-            });
-            const titleEl = screen.getByTestId('series-top-bar-title');
-            fireEvent.doubleClick(titleEl);
-            const input = screen.getByDisplayValue('测试系列');
-            fireEvent.change(input, { target: { value: '失败标题' } });
-            fireEvent.blur(input);
-            await waitFor(() => {
-                expect(screen.getAllByText('测试系列').length).toBeGreaterThanOrEqual(1);
-            });
+            fireEvent.click(await screen.findByText('第一集'));
+            fireEvent.click(await screen.findByRole('button', { name: '添加剧本概要' }));
+            expect(screen.getByRole('dialog', { name: '编辑集数信息' })).toBeInTheDocument();
         });
     });
 

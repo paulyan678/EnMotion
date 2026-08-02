@@ -378,6 +378,39 @@ def test_storyboard_render_compiler_freezes_model_prompt_parameters_and_refs(tmp
     }
 
 
+def test_storyboard_render_compiler_makes_camera_classification_visible(tmp_path):
+    frame = _frame()
+    frame.camera_movement = "follow"
+    script = _script(frame)
+    pipeline = ComicGenPipeline.__new__(ComicGenPipeline)
+    pipeline.scripts = {script.id: script}
+    pipeline.output_root = str(tmp_path)
+    pipeline._effective_model_settings = lambda _script: SimpleNamespace(
+        image_model="gpt-image-2",
+        storyboard_aspect_ratio="16:9",
+    )
+
+    compiled = pipeline.compile_storyboard_render_request(
+        script.id,
+        frame.id,
+        None,
+        "Courier crossing the market",
+    )
+
+    exact_prompt = compiled["provider_requests"][0]["prompt"]
+    assert exact_prompt == (
+        "Courier crossing the market\n\n"
+        "Camera composition: Compose this as a tracking shot that follows the subject."
+    )
+    assert compiled["target"]["frame_type"] == "follow"
+    assert compiled["prompt_parts"][-1] == {
+        "kind": "camera_direction",
+        "label": "Camera composition",
+        "text": "Compose this as a tracking shot that follows the subject.",
+        "editable": True,
+    }
+
+
 def test_exact_storyboard_request_does_not_append_hidden_character_text(monkeypatch, tmp_path):
     frame = _frame()
     frame.character_ids = ["character-1"]

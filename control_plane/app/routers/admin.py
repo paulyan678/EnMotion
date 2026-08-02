@@ -27,6 +27,7 @@ from ..schemas import (
     MessageResponse,
     ProviderConfigPublic,
     ProviderConfigUpdate,
+    ProviderValidationPublic,
     RateCardCreate,
     RateCardPublic,
     RateCardUpdate,
@@ -82,6 +83,39 @@ def get_provider_config(
     except ProviderConfigUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+        ) from exc
+
+
+@router.post("/provider-config/validate", response_model=ProviderValidationPublic)
+async def validate_current_provider_config(
+    _principal: AdminPrincipal,
+    request: Request,
+) -> ProviderValidationPublic:
+    """Run a non-billable access check against the configured model catalog."""
+
+    try:
+        current = request.app.state.provider_config.current()
+        await validate_provider_configuration(
+            client=request.app.state.provider_client,
+            base_url=current.base_url,
+            credentials=current.credentials,
+        )
+        return ProviderValidationPublic(
+            validated_at=utcnow(),
+            configured_models=sorted(
+                model for model, credential in current.credentials.items() if credential
+            ),
+            balance_available=False,
+        )
+    except ProviderConfigUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            str(exc),
+        ) from exc
+    except ProviderValidationError as exc:
+        raise HTTPException(
+            UNPROCESSABLE_CONTENT,
             str(exc),
         ) from exc
 

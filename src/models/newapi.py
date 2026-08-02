@@ -1614,6 +1614,8 @@ class NewAPIVideoModel(VideoGenModel):
         resolution = str(kwargs.get("resolution", "720p")).strip().lower()
         aspect_ratio = str(kwargs.get("aspect_ratio", "16:9")).strip()
         seed = kwargs.get("seed")
+        generate_audio = kwargs.get("generate_audio", True)
+        watermark = kwargs.get("watermark", False)
         ref_images = list(kwargs.get("ref_image_urls") or [])
         primary_reference = img_path or img_url or (ref_images[0] if ref_images else None)
         generation_mode = kwargs.get("generation_mode") or ("i2v" if primary_reference else "t2v")
@@ -1624,6 +1626,12 @@ class NewAPIVideoModel(VideoGenModel):
             raise ValueError("Seedance 视频分辨率必须是 720p 或 1080p")
         if aspect_ratio not in {"16:9", "9:16", "1:1"}:
             raise ValueError("Seedance 视频画面比例必须是 16:9、9:16 或 1:1")
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+            raise ValueError("Seedance 视频随机种子必须是整数")
+        if not isinstance(generate_audio, bool):
+            raise ValueError("Seedance 视频音频设置必须是布尔值")
+        if not isinstance(watermark, bool):
+            raise ValueError("Seedance 视频水印设置必须是布尔值")
         if resolution == "1080p" and (
             generation_mode == "i2v" or model != "doubao-seedance-2-0-260128"
         ):
@@ -1661,11 +1669,11 @@ class NewAPIVideoModel(VideoGenModel):
             "duration": duration,
             "resolution": resolution,
             "ratio": aspect_ratio,
-            "generate_audio": bool(kwargs.get("generate_audio", True)),
-            "watermark": bool(kwargs.get("watermark", False)),
+            "generate_audio": generate_audio,
+            "watermark": watermark,
         }
         if seed is not None:
-            metadata["seed"] = int(seed)
+            metadata["seed"] = seed
         body: Dict[str, Any] = {
             "model": model,
             "prompt": prompt,

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { Palette, Layout, Film, BookOpen, Users, Video, Clapperboard } from "lucide-react";
+import { Palette, Layout, Film, BookOpen, Users, Video, Clapperboard, Pencil } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useProjectStore } from "@/store/projectStore";
 import PipelineSidebar from "@/components/layout/PipelineSidebar";
@@ -14,6 +14,11 @@ import ResizableSidePanel, {
     EPISODE_EDITOR_PANEL_STORAGE_KEYS,
 } from "@/components/layout/ResizableSidePanel";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { api } from "@/lib/api";
+import ContentMetadataDialog, {
+    type ContentMetadataValue,
+} from "@/components/shared/ContentMetadataDialog";
+import { toast } from "@/store/toastStore";
 
 const CreativeCanvas = dynamic(() => import("@/components/canvas/CreativeCanvas"), { ssr: false });
 // Only the active workflow and opened dialogs are fetched. These modules carry
@@ -51,13 +56,16 @@ const UNIFIED_STEPS = [
 
 export default function ProjectClient({ id, breadcrumbSegments }: { id: string; breadcrumbSegments?: BreadcrumbSegment[] }) {
     const [activeStep, setActiveStep] = useState("script");
+    const [editingMetadata, setEditingMetadata] = useState(false);
     const t = useTranslations("project");
     const tp = useTranslations("pipeline");
+    const tm = useTranslations("contentMetadata");
     const { serverMode } = useAuth();
     const { registerNavigation } = useTopBarNavigation();
 
     const selectProject = useProjectStore((state) => state.selectProject);
     const currentProject = useProjectStore((state) => state.currentProject);
+    const updateProject = useProjectStore((state) => state.updateProject);
 
     // R2V v2 Phase 6 — content_mode lives on the parent series; fetch on
     // mount when project has series_id, default to "scripted" otherwise.
@@ -195,11 +203,43 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
         [breadcrumbSegments, currentProject?.title],
     );
     const currentProjectId = currentProject?.id;
+    const currentProjectTitle = currentProject?.title || "";
+    const navigationTitle = useMemo(() => (
+        currentProject ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate">{currentProjectTitle}</span>
+                <button
+                    type="button"
+                    onClick={() => setEditingMetadata(true)}
+                    aria-label={tm("editAction")}
+                    title={tm("editAction")}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-text-muted transition-colors hover:bg-hover-bg hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                >
+                    <Pencil size={13} aria-hidden="true" />
+                </button>
+            </span>
+        ) : undefined
+    ), [currentProject, currentProjectTitle, tm]);
 
     useEffect(() => {
         if (!serverMode || !currentProjectId) return;
-        return registerNavigation({ segments });
-    }, [currentProjectId, registerNavigation, segments, serverMode]);
+        return registerNavigation({
+            segments,
+            currentContent: navigationTitle,
+            description: currentProject?.description || undefined,
+        });
+    }, [currentProject?.description, currentProjectId, navigationTitle, registerNavigation, segments, serverMode]);
+
+    const handleSaveMetadata = async (value: ContentMetadataValue) => {
+        if (!currentProject) return;
+        const updated = await api.updateProjectMetadata(currentProject.id, {
+            title: value.title,
+            description: value.description,
+            script_summary: value.scriptSummary || "",
+        });
+        updateProject(currentProject.id, updated);
+        toast.success(tm("saved"));
+    };
 
     if (!currentProject) {
         return (
@@ -240,6 +280,16 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
                     onStepChange={setActiveStep}
                     steps={steps}
                     breadcrumbSegments={serverMode ? undefined : segments}
+                    headerActions={!serverMode ? (
+                        <button
+                            type="button"
+                            onClick={() => setEditingMetadata(true)}
+                            className="flex min-h-9 items-center gap-2 rounded-lg px-2.5 text-xs text-text-secondary transition-colors hover:bg-hover-bg hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                        >
+                            <Pencil size={13} aria-hidden="true" />
+                            {tm("editAction")}
+                        </button>
+                    ) : undefined}
                     topSlot={
                         currentProject?.series_id ? (
                             <EpisodeMiniList
@@ -273,6 +323,17 @@ export default function ProjectClient({ id, breadcrumbSegments }: { id: string; 
             </div>
 
             <EntityExtractionConfirm />
+            <ContentMetadataDialog
+                open={editingMetadata}
+                kind={currentProject.series_id ? "episode" : "project"}
+                value={{
+                    title: currentProject.title,
+                    description: currentProject.description || "",
+                    scriptSummary: currentProject.script_summary || "",
+                }}
+                onClose={() => setEditingMetadata(false)}
+                onSave={handleSaveMetadata}
+            />
         </main>
     );
 }

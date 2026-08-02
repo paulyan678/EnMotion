@@ -15,7 +15,7 @@
  *
  * 视觉寄存于 Studio 现有 chrome-sm / display-sm / status colors token 体系。
  */
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { Loader2, Sparkles, Check, X, RefreshCw, Copy, CornerDownLeft, AlertCircle, AlertTriangle } from "lucide-react";
 import clsx from "clsx";
 import { useTranslations } from "next-intl";
@@ -23,6 +23,8 @@ import { api } from "@/lib/api";
 import { debugLog } from "@/lib/debugLog";
 import BorderGlow from "@/components/shared/BorderGlow/BorderGlow";
 import WorkflowActionButton from "@/components/shared/WorkflowActionButton";
+import ChatModelSelect from "@/components/generation/ChatModelSelect";
+import { DEFAULT_ACTIVE_MODELS } from "@/lib/newApiModels";
 
 interface PolishedPrompt {
     cn: string;
@@ -94,6 +96,8 @@ export default function PolishPanel({
     const [error, setError] = useState<PolishErrorState | null>(null);
     const [isPolishing, setIsPolishing] = useState(false);
     const [feedback, setFeedback] = useState("");
+    const [polishModel, setPolishModel] = useState<string>(DEFAULT_ACTIVE_MODELS.chat);
+    const polishModelSelectId = useId();
     /** 跟踪两栏的 "已复制" 闪烁状态。 */
     const [copiedCol, setCopiedCol] = useState<"cn" | "en" | "original" | null>(null);
 
@@ -111,7 +115,14 @@ export default function PolishPanel({
         // 成功后再 setPolished 覆盖。
 
         try {
-            const res = await api.polishVideoPrompt(draft, feedbackText, scriptId, prevCn, imageUrls);
+            const res = await api.polishVideoPrompt(
+                draft,
+                feedbackText,
+                scriptId,
+                prevCn,
+                imageUrls,
+                polishModel,
+            );
             if (res?.prompt_cn && res?.prompt_en) {
                 setPolished({ cn: res.prompt_cn, en: res.prompt_en });
                 setFeedback("");
@@ -144,7 +155,7 @@ export default function PolishPanel({
         } finally {
             setIsPolishing(false);
         }
-    }, [prompt, scriptId, polished?.en, polished?.cn, imageUrls, t]);
+    }, [prompt, scriptId, polished?.en, polished?.cn, imageUrls, polishModel, t]);
 
     const handleApply = useCallback((text: string) => {
         onApply(text);
@@ -181,7 +192,14 @@ export default function PolishPanel({
     // ────────────────────────────────────────────────────────────────────
     if (!polished && !error && !isPolishing) {
         return (
-            <div className="flex items-center justify-end">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+                <ChatModelSelect
+                    id={polishModelSelectId}
+                    label={t("polishModel")}
+                    value={polishModel}
+                    onChange={setPolishModel}
+                    disabled={isPolishing}
+                />
                 <WorkflowActionButton
                     variant="secondary"
                     size="sm"
@@ -207,7 +225,7 @@ export default function PolishPanel({
     const containerInner = (
         <>
             {/* Header — label + close button */}
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
                 <span
                     className={clsx(
                         "inline-flex items-center gap-1.5 font-mono text-chrome-sm font-medium uppercase",
@@ -234,6 +252,15 @@ export default function PolishPanel({
                     <X size={12} aria-hidden="true" />
                 </button>
             </div>
+
+            <ChatModelSelect
+                id={polishModelSelectId}
+                label={t("polishModel")}
+                value={polishModel}
+                onChange={setPolishModel}
+                disabled={isPolishing}
+                className="justify-end"
+            />
 
             {/* Error banner — hard errors only（echo warning 走下面的双语 + 黄色容器，不重复出 banner 行） */}
             {isHardError && error ? (

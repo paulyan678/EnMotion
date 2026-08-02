@@ -129,7 +129,29 @@ const completedWithMedia: ApiCallActivity = {
   finished_at: "2026-07-21T08:00:12.000Z",
 };
 
-describe("API Calls dashboard", () => {
+const completedText: ApiCallActivity = {
+  ...running,
+  id: "completed-text",
+  task_id: "completed-text",
+  type: "chat.completions",
+  status: "completed",
+  category: "text",
+  progress: 100,
+  progress_stage: "completed",
+  progress_is_estimated: false,
+  detail: "Optimize video prompt",
+  prompt: "Make the camera slowly push toward the neon sign in the rain",
+  model_name: "Qwen 3.7 Max",
+  source_context: {
+    type: "workspace",
+    route: "#/project/project-1",
+    project_id: "project-1",
+    episode_id: "project-1",
+  },
+  finished_at: "2026-07-21T08:00:12.000Z",
+};
+
+describe("Generation Records dashboard", () => {
   beforeEach(() => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([running, queued, failed]);
     vi.mocked(apiCallsApi.cancel).mockResolvedValue({
@@ -162,7 +184,7 @@ describe("API Calls dashboard", () => {
   it("shows aggregate activity, queue position, failures, and live request metadata", async () => {
     renderWithIntl(<ApiCallsPage />, { locale: "en" });
 
-    const title = screen.getByRole("heading", { name: "API Calls" });
+    const title = screen.getByRole("heading", { name: "Generation Records" });
     expect(title.previousElementSibling).toBeNull();
     expect(screen.queryByText("API Activity · Live Monitor")).not.toBeInTheDocument();
     expect(await screen.findByText("Storyboard image generation")).toBeInTheDocument();
@@ -193,6 +215,20 @@ describe("API Calls dashboard", () => {
     } finally {
       visibility.mockRestore();
     }
+  });
+
+  it("renders managed text calls with the selected model and prompt", async () => {
+    vi.mocked(apiCallsApi.list).mockResolvedValue([completedText]);
+
+    renderWithIntl(<ApiCallsPage />, { locale: "en" });
+
+    expect(await screen.findByText("Text generation")).toBeInTheDocument();
+    expect(screen.getByText("Qwen 3.7 Max")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open details for Text generation" }));
+    expect(screen.getByText(
+      "Make the camera slowly push toward the neon sign in the rain",
+    )).toBeInTheDocument();
+    expect(screen.getAllByText("Succeeded").length).toBeGreaterThan(0);
   });
 
   it("shows a localized actionable message for output video policy failures", async () => {
@@ -389,7 +425,7 @@ describe("API Calls dashboard", () => {
     vi.mocked(apiCallsApi.list).mockResolvedValue([]);
     renderWithIntl(<ApiCallsPage />, { locale: "zh" });
 
-    const title = await screen.findByRole("heading", { name: "接口调用" });
+    const title = await screen.findByRole("heading", { name: "生成记录" });
     expect(title.previousElementSibling).toBeNull();
     expect(title).toHaveAttribute("data-global-page-title");
     expect(title).toHaveClass("text-[1.625rem]", "md:text-[2.125rem]");
@@ -398,9 +434,9 @@ describe("API Calls dashboard", () => {
     expect(screen.queryByText("接口活动 · 实时监控")).not.toBeInTheDocument();
     expect(screen.queryByText("集中查看创作台、工作区及其他功能发起的所有生成请求。")).not.toBeInTheDocument();
     expect(screen.queryByText("实时更新")).not.toBeInTheDocument();
-    expect(await screen.findByText("这里还没有接口调用")).toBeInTheDocument();
+    expect(await screen.findByText("这里还没有生成记录")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "刷新" })).not.toBeInTheDocument();
-    const tabs = screen.getByRole("tablist", { name: "按状态筛选接口调用" });
+    const tabs = screen.getByRole("tablist", { name: "按状态筛选生成记录" });
     expect(tabs).toHaveClass("atelier-pill-tabs", "bg-surface-inset", "rounded-full");
     expect(screen.getByRole("tab", { name: "全部 0" })).toHaveClass(
       "atelier-pill-tab-active",
@@ -443,7 +479,7 @@ describe("API Calls dashboard", () => {
 
     expect(await screen.findByText(/may appear to show a real person/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open details for Motion reference generation" }));
-    const summary = screen.getByText("Technical details");
+    const summary = screen.getAllByText("Technical details").at(-1)!;
     const details = summary.closest("details") as HTMLDetailsElement;
     expect(details.open).toBe(false);
     fireEvent.click(summary);
@@ -465,7 +501,7 @@ describe("API Calls dashboard", () => {
 
     expect(await screen.findByText(/可能看起来像真实人物/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开动态参考生成的详情" }));
-    expect(screen.getByText("技术详情")).toBeInTheDocument();
+    expect(screen.getAllByText("技术详情").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders persisted image and video media, posters, and individual downloads", async () => {
@@ -548,9 +584,10 @@ describe("API Calls dashboard", () => {
     expect(overlay).toHaveClass("z-[220]");
     expect(within(dialog).getByText("Processing timeline")).toBeInTheDocument();
     expect(within(dialog).getByText("A paper boat crossing a moonlit harbor")).toBeInTheDocument();
-    expect(within(dialog).getByText("Seedance 2.0 Fast")).toBeInTheDocument();
+    expect(within(dialog).getAllByText("Seedance 2.0 Fast").length).toBeGreaterThanOrEqual(1);
     expect(within(dialog).getByText("A paper boat crossing a moonlit harbor. Smooth tracking shot.")).toBeInTheDocument();
-    expect(within(dialog).getByText("doubao-seedance-2-0-fast-260128")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByText("Technical details"));
+    expect(within(dialog).getByText(/doubao-seedance-2-0-fast-260128/)).toBeInTheDocument();
     expect(within(dialog).getByText("playground/images/boat.png")).toBeInTheDocument();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Open in Playground" }));

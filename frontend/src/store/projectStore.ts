@@ -299,6 +299,8 @@ export interface Project {
     id: string;
     title: string;
     originalText: string;
+    description?: string;
+    script_summary?: string;
     characters: Character[];
     scenes: Scene[];
     props: Prop[];

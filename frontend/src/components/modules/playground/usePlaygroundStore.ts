@@ -565,45 +565,15 @@ export const usePlaygroundStore = create<PlaygroundState>((set, get) => ({
     set((s) => ({ templates: s.templates.filter((t) => t.id !== id) })),
 
   applyTemplate: (template) => {
-    const current = get();
-    const nextMode = template.default_mode ?? current.mode;
-    const capability = nextMode === 't2i' || nextMode === 'i2i' ? 'image' : 'video';
-    const nextModel = normalizeActiveModel(
-      capability,
-      template.default_model_id ?? (
-        nextMode === current.mode ? current.modelId : current.modelPreferences[nextMode]
-      ),
-    );
-    const hasTemplateParameters = (
-      template.default_parameters != null
-      && Object.keys(template.default_parameters).length > 0
-    );
-    const parameterSource = hasTemplateParameters
-      ? template.default_parameters
-      : nextMode === current.mode && nextModel === current.modelId
-        ? current.parameters
-        : {};
-    const nextInputMedia = getEffectivePlaygroundInputMedia(nextMode, current.inputMedia, {
-      allowTextToImageReferences: (
-        nextMode === 't2i'
-        && nextMode === current.mode
-      ),
-    });
+    // Templates are prompt snippets, not hidden generation presets. Applying
+    // one must never change the user's visible mode, model, inputs, or params.
     const patch: Partial<PlaygroundState> = {
       prompt: template.prompt,
-      mode: nextMode,
-      modelId: nextModel,
-      inputMedia: nextInputMedia,
-      parameters: getEffectivePlaygroundParameters(nextMode, nextModel, parameterSource),
     };
     if (template.negative_prompt != null) {
       patch.negativePrompt = template.negative_prompt;
     }
     set(patch);
-    reclaimOwnedUploads(
-      droppedOwnedUploads(current.inputMedia, nextInputMedia, current.queue),
-      'template-dropped',
-    );
   },
 
   // -- Reset -----------------------------------------------------------------

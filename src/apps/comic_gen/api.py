@@ -65,6 +65,7 @@ from ...utils.newapi_models import (
     get_selected_model,
     migrate_legacy_newapi_environment,
     public_model_status,
+    redact_newapi_secrets,
     resolve_model_api_key,
 )
 from ...utils.oss_utils import (
@@ -81,11 +82,12 @@ from ...utils.uploads import (
     read_upload_bytes,
     save_upload_file,
 )
-from ..hybrid import hybrid_mode_enabled, include_hybrid_mode, workspace_isolation_enabled
 from ..generation_contract import assert_generation_checksum
+from ..hybrid import hybrid_mode_enabled, include_hybrid_mode, workspace_isolation_enabled
 from ..hybrid.activity import (
     record_asset_activity,
     record_storyboard_activity,
+    record_text_activity,
     record_video_activity,
     update_asset_activity,
 )
@@ -505,6 +507,126 @@ def _submit_workspace_media_task(
         raise
 
 
+def _hybrid_text_failure(exc: BaseException) -> tuple[str, str | None, str | None]:
+    """Return safe activity fields while retaining structured provider context."""
+
+    public_message = "文本生成失败，请检查模型配置和输入后重试。"
+    error_code: str | None = None
+    diagnostic: str | None = None
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        candidate_code = str(getattr(current, "error_code", "") or "").strip()
+        candidate_diagnostic = str(getattr(current, "diagnostic", "") or "").strip()
+        if candidate_code:
+            error_code = candidate_code[:120]
+            public_message = str(current) or public_message
+        if candidate_diagnostic:
+            diagnostic = candidate_diagnostic
+        current = current.__cause__ or current.__context__
+
+    if diagnostic is None:
+        reason = str(getattr(exc, "reason", "") or "").strip()
+        diagnostic = f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
+    return (
+        redact_newapi_secrets(public_message)[:1_000],
+        error_code,
+        redact_newapi_secrets(diagnostic)[:2_000],
+    )
+
+
+class _HybridTextActivity:
+    """Best-effort durable lifecycle for one synchronous or awaited chat call."""
+
+    def __init__(
+        self,
+        *,
+        detail: str,
+        prompt: str,
+        model_name: str,
+        source_route: str,
+        source_context: dict[str, Any] | None = None,
+        parameters: dict[str, str | int | bool] | None = None,
+        enabled: bool = True,
+    ) -> None:
+        self.workspace_id: str | None = None
+        self.task_id = uuid.uuid4().hex
+        self.detail = detail
+        self.prompt = prompt
+        self.model_name = model_name
+        self.source_route = source_route
+        self.source_context = source_context
+        self.parameters = parameters
+        if enabled and hybrid_mode_enabled():
+            tenant = get_tenant(required=False)
+            if tenant is not None:
+                self.workspace_id = tenant.workspace_id
+
+    def __enter__(self) -> "_HybridTextActivity":
+        if self.workspace_id is None:
+            return self
+        try:
+            record_text_activity(
+                self.workspace_id,
+                task_id=self.task_id,
+                source_route=self.source_route,
+                detail=self.detail,
+                prompt=self.prompt,
+                model_name=self.model_name,
+                source_context=self.source_context,
+                parameters=self.parameters,
+            )
+            update_asset_activity(self.workspace_id, self.task_id, status="running")
+        except Exception:
+            # Activity storage must never turn an otherwise valid provider call
+            # into a user-visible generation failure.
+            logger.exception("Unable to start managed text activity")
+            self.workspace_id = None
+        return self
+
+    def __exit__(self, exc_type, exc, traceback_value) -> bool:
+        if self.workspace_id is None:
+            return False
+        try:
+            if exc is None:
+                update_asset_activity(self.workspace_id, self.task_id, status="completed")
+            else:
+                public_message, error_code, diagnostic = _hybrid_text_failure(exc)
+                update_asset_activity(
+                    self.workspace_id,
+                    self.task_id,
+                    status="failed",
+                    error=public_message,
+                    error_code=error_code,
+                    error_diagnostic=diagnostic,
+                )
+        except Exception:
+            logger.exception("Unable to finish managed text activity")
+        return False
+
+
+def _project_text_activity_metadata(
+    script_id: str,
+    *,
+    frame_id: str | None = None,
+) -> tuple[Script | None, str, dict[str, Any]]:
+    """Resolve the user-facing route and ownership for one project chat call."""
+
+    script = pipeline.get_script(script_id)
+    series_id = getattr(script, "series_id", None) if script is not None else None
+    route = f"#/series/{series_id}/episode/{script_id}" if series_id else f"#/project/{script_id}"
+    context: dict[str, Any] = {
+        "project_id": script_id,
+        "episode_id": script_id,
+    }
+    if series_id:
+        context["series_id"] = series_id
+    if frame_id:
+        context["frame_id"] = frame_id
+    return script, route, context
+
+
 def _hybrid_asset_source_route(
     source_kind: str,
     source_id: str,
@@ -708,9 +830,7 @@ def _hybrid_storyboard_input_media(
 ) -> list[dict[str, Any]]:
     references: list[str] = []
     exact_requests = (
-        compiled_request.get("provider_requests")
-        if isinstance(compiled_request, dict)
-        else None
+        compiled_request.get("provider_requests") if isinstance(compiled_request, dict) else None
     )
     if isinstance(exact_requests, list) and exact_requests:
         references.extend(exact_requests[0].get("input_media") or [])
@@ -1617,6 +1737,53 @@ def _serialize_resolved_assets(
     return payloads
 
 
+def _project_response_payload(script: Script) -> Dict[str, Any]:
+    """Return one project with its effective settings and resolved assets.
+
+    Series episodes persist shared assets on the Series owner, so serializing
+    the raw Script makes healthy episodes look as if they contain zero
+    characters or scenes.  All project-list and project-detail surfaces use
+    this presentation payload to report the same authoritative content.
+    """
+
+    payload = script.model_dump()
+    payload["model_settings"] = pipeline._effective_model_settings(script).model_dump()
+    series = pipeline.get_series(script.series_id) if script.series_id else None
+    payload["inherited_model_settings"] = pipeline._effective_series_model_settings(
+        series
+    ).model_dump()
+    resolved = pipeline.resolve_episode_assets(script, series)
+    episode_character_ids = {asset.id for asset in script.characters}
+    episode_scene_ids = {asset.id for asset in script.scenes}
+    episode_prop_ids = {asset.id for asset in script.props}
+    series_character_ids = {asset.id for asset in series.characters} if series else set()
+    series_scene_ids = {asset.id for asset in series.scenes} if series else set()
+    series_prop_ids = {asset.id for asset in series.props} if series else set()
+
+    payload["characters"] = _serialize_resolved_assets(
+        resolved["characters"],
+        episode_asset_ids=episode_character_ids,
+        series_asset_ids=series_character_ids,
+        episode_id=script.id,
+        series_id=script.series_id,
+    )
+    payload["scenes"] = _serialize_resolved_assets(
+        resolved["scenes"],
+        episode_asset_ids=episode_scene_ids,
+        series_asset_ids=series_scene_ids,
+        episode_id=script.id,
+        series_id=script.series_id,
+    )
+    payload["props"] = _serialize_resolved_assets(
+        resolved["props"],
+        episode_asset_ids=episode_prop_ids,
+        series_asset_ids=series_prop_ids,
+        episode_id=script.id,
+        series_id=script.series_id,
+    )
+    return payload
+
+
 # ============================================================
 # Shared Request Models (used by both Project and Series endpoints)
 # ============================================================
@@ -1899,18 +2066,38 @@ async def create_project(request: CreateProjectRequest, skip_analysis: bool = Fa
     of that series; omitting it keeps the standalone-project behavior
     unchanged.
     """
-    # asyncio.to_thread propagates the authenticated workspace ContextVar.
     try:
-        result = await asyncio.to_thread(
-            pipeline.create_project,
-            request.title,
-            request.text,
-            skip_analysis,
-            request.workflow_mode,
-            request.series_id,
-            request.model_settings,
-            request.prompt_config,
-        )
+        chat_model = get_selected_model(CHAT)
+        if request.series_id:
+            parent_series = pipeline.get_series(request.series_id)
+            if parent_series is not None:
+                chat_model = pipeline._effective_series_model_settings(parent_series).chat_model
+        elif request.model_settings is not None:
+            chat_model = request.model_settings.chat_model
+        source_route = f"#/series/{request.series_id}" if request.series_id else "#/workspace"
+        source_context: dict[str, Any] = {}
+        if request.series_id:
+            source_context["series_id"] = request.series_id
+
+        # asyncio.to_thread propagates the authenticated workspace ContextVar.
+        with _HybridTextActivity(
+            detail="提取角色、场景与道具",
+            prompt=request.text,
+            model_name=chat_model,
+            source_route=source_route,
+            source_context=source_context,
+            enabled=not skip_analysis,
+        ):
+            result = await asyncio.to_thread(
+                pipeline.create_project,
+                request.title,
+                request.text,
+                skip_analysis,
+                request.workflow_mode,
+                request.series_id,
+                request.model_settings,
+                request.prompt_config,
+            )
     except (ValueError, MissingNewAPIKeyError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     return get_project(result.id)
@@ -1923,6 +2110,27 @@ class ReparseProjectRequest(BaseModel):
 
 class UpdateScriptTextRequest(BaseModel):
     text: str = Field(max_length=2_000_000)
+
+
+class UpdateProjectMetadataRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=20_000)
+    script_summary: Optional[str] = Field(default=None, max_length=20_000)
+
+
+@app.put("/projects/{script_id}/metadata")
+def update_project_metadata(script_id: str, request: UpdateProjectMetadataRequest):
+    """Update editable project/episode metadata without reparsing the script."""
+
+    try:
+        script = pipeline.update_project_metadata(
+            script_id,
+            **request.model_dump(exclude_unset=True),
+        )
+        return signed_response(_project_response_payload(script))
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Project not found" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @app.put("/projects/{script_id}/text", response_model=Script)
@@ -1969,9 +2177,30 @@ async def reparse_project(script_id: str, request: ReparseProjectRequest):
 async def extract_preview(script_id: str, request: ReparseProjectRequest):
     """Dry-run entity extraction — returns entities without saving."""
     try:
-        result, revision = await asyncio.to_thread(
-            pipeline.extract_preview, script_id, request.text
+        script = pipeline.get_script(script_id)
+        if script is None:
+            raise ValueError("Script not found")
+        source_route = (
+            f"#/series/{script.series_id}/episode/{script_id}"
+            if script.series_id
+            else f"#/project/{script_id}"
         )
+        source_context: dict[str, Any] = {
+            "project_id": script_id,
+            "episode_id": script_id,
+        }
+        if script.series_id:
+            source_context["series_id"] = script.series_id
+        with _HybridTextActivity(
+            detail="提取角色、场景与道具",
+            prompt=request.text,
+            model_name=pipeline._effective_chat_model(script),
+            source_route=source_route,
+            source_context=source_context,
+        ):
+            result, revision = await asyncio.to_thread(
+                pipeline.extract_preview, script_id, request.text
+            )
         return {
             "characters": [c.dict() for c in result.characters],
             "scenes": [s.dict() for s in result.scenes],
@@ -1988,7 +2217,7 @@ async def extract_preview(script_id: str, request: ReparseProjectRequest):
 def list_projects():
     """Lists all projects from backend storage."""
     scripts = list(pipeline.scripts.values())
-    return signed_response(scripts)
+    return signed_response([_project_response_payload(script) for script in scripts])
 
 
 @app.post("/projects/{script_id}/toggle_starred")
@@ -2167,7 +2396,7 @@ def get_series_episodes(series_id: str):
     """Get all episodes in a Series."""
     try:
         episodes = pipeline.get_series_episodes(series_id)
-        return signed_response(episodes)
+        return signed_response([_project_response_payload(episode) for episode in episodes])
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -3716,9 +3945,7 @@ def _compile_owned_motion_request(
     return compiled
 
 
-@app.post(
-    "/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/motion/preview"
-)
+@app.post("/asset-sources/{source_kind}/{source_id}/assets/{asset_type}/{asset_id}/motion/preview")
 def preview_source_asset_motion(
     source_kind: str,
     source_id: str,
@@ -4058,7 +4285,17 @@ async def import_file_preview(
         if not text.strip():
             raise HTTPException(status_code=400, detail="文件内容为空")
 
-        episodes = await asyncio.to_thread(pipeline.import_file_and_split, text, suggested_episodes)
+        with _HybridTextActivity(
+            detail="分析并划分剧集",
+            prompt=text,
+            model_name=get_selected_model(CHAT),
+            source_route="#/workspace",
+        ):
+            episodes = await asyncio.to_thread(
+                pipeline.import_file_and_split,
+                text,
+                suggested_episodes,
+            )
         # Store text in pipeline cache, return import_id instead of full text
         import_id = str(uuid.uuid4())
         pipeline._import_cache[import_id] = text
@@ -4432,42 +4669,7 @@ def get_project(script_id: str):
     if not script:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    payload = script.model_dump()
-    payload["model_settings"] = pipeline._effective_model_settings(script).model_dump()
-    series = pipeline.get_series(script.series_id) if script.series_id else None
-    payload["inherited_model_settings"] = pipeline._effective_series_model_settings(
-        series
-    ).model_dump()
-    resolved = pipeline.resolve_episode_assets(script, series)
-    episode_character_ids = {asset.id for asset in script.characters}
-    episode_scene_ids = {asset.id for asset in script.scenes}
-    episode_prop_ids = {asset.id for asset in script.props}
-    series_character_ids = {asset.id for asset in series.characters} if series else set()
-    series_scene_ids = {asset.id for asset in series.scenes} if series else set()
-    series_prop_ids = {asset.id for asset in series.props} if series else set()
-
-    payload["characters"] = _serialize_resolved_assets(
-        resolved["characters"],
-        episode_asset_ids=episode_character_ids,
-        series_asset_ids=series_character_ids,
-        episode_id=script.id,
-        series_id=script.series_id,
-    )
-    payload["scenes"] = _serialize_resolved_assets(
-        resolved["scenes"],
-        episode_asset_ids=episode_scene_ids,
-        series_asset_ids=series_scene_ids,
-        episode_id=script.id,
-        series_id=script.series_id,
-    )
-    payload["props"] = _serialize_resolved_assets(
-        resolved["props"],
-        episode_asset_ids=episode_prop_ids,
-        series_asset_ids=series_prop_ids,
-        episode_id=script.id,
-        series_id=script.series_id,
-    )
-    return signed_response(payload)
+    return signed_response(_project_response_payload(script))
 
 
 @app.delete("/projects/{script_id}")
@@ -5228,7 +5430,19 @@ def analyze_to_storyboard(script_id: str, request: AnalyzeToStoryboardRequest):
     Replaces existing frames with newly generated ones.
     """
     try:
-        updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
+        script, source_route, source_context = _project_text_activity_metadata(script_id)
+        with _HybridTextActivity(
+            detail="生成分镜结构",
+            prompt=request.text,
+            model_name=(
+                pipeline._effective_chat_model(script)
+                if script is not None
+                else get_selected_model(CHAT)
+            ),
+            source_route=source_route,
+            source_context=source_context,
+        ):
+            updated_script = pipeline.analyze_text_to_frames(script_id, request.text)
         return signed_response(updated_script)
     except AssemblyMutationConflictError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -5261,13 +5475,31 @@ def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest):
     from .llm import PolishError
 
     try:
-        result = pipeline.refine_frame_prompt(
+        script, source_route, source_context = _project_text_activity_metadata(
             script_id,
-            request.frame_id,
-            request.raw_prompt,
-            request.assets,
-            request.feedback,
+            frame_id=request.frame_id,
         )
+        activity_prompt = request.raw_prompt
+        if request.feedback.strip():
+            activity_prompt += f"\n\n用户修改要求：\n{request.feedback.strip()}"
+        with _HybridTextActivity(
+            detail="优化分镜图像提示词",
+            prompt=activity_prompt,
+            model_name=(
+                pipeline._effective_polish_model(script)
+                if script is not None
+                else get_selected_model(CHAT)
+            ),
+            source_route=source_route,
+            source_context=source_context,
+        ):
+            result = pipeline.refine_frame_prompt(
+                script_id,
+                request.frame_id,
+                request.raw_prompt,
+                request.assets,
+                request.feedback,
+            )
         return result
     except PolishError as e:
         logger.warning("refine_storyboard_prompt failed: %s", e)
@@ -5283,9 +5515,30 @@ def refine_storyboard_prompt(script_id: str, request: RefinePromptRequest):
 def refine_single_frame(script_id: str, frame_id: str):
     """Phase 2: Refine a single coarse frame into a rich frame with structured fields."""
     try:
-        frame = pipeline.refine_frame(script_id, frame_id)
-        if not frame:
-            raise HTTPException(status_code=500, detail="Refine returned no result")
+        script, source_route, source_context = _project_text_activity_metadata(
+            script_id,
+            frame_id=frame_id,
+        )
+        source_frame = (
+            next((item for item in script.frames if item.id == frame_id), None)
+            if script is not None
+            else None
+        )
+        prompt = source_frame.action_description if source_frame is not None else ""
+        with _HybridTextActivity(
+            detail="完善分镜内容",
+            prompt=prompt,
+            model_name=(
+                pipeline._effective_chat_model(script)
+                if script is not None
+                else get_selected_model(CHAT)
+            ),
+            source_route=source_route,
+            source_context=source_context,
+        ):
+            frame = pipeline.refine_frame(script_id, frame_id)
+            if not frame:
+                raise HTTPException(status_code=500, detail="Refine returned no result")
         return frame.model_dump() if hasattr(frame, "model_dump") else frame.dict()
     except (AssemblyMutationConflictError, AssemblyOperationInProgressError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -5320,13 +5573,46 @@ def refine_storyboard_batch(script_id: str):
 
     from fastapi.responses import StreamingResponse
 
-    script = pipeline.get_script(script_id)
-    if not script:
+    script, source_route, source_context = _project_text_activity_metadata(script_id)
+    if script is None:
         raise HTTPException(status_code=404, detail="Script not found")
+    frames = list(getattr(script, "frames", ()) or ())
+    effective_chat_model = getattr(pipeline, "_effective_chat_model", None)
+    activity = _HybridTextActivity(
+        detail=f"批量完善 {len(frames)} 个分镜",
+        prompt="\n".join(str(getattr(frame, "action_description", "")) for frame in frames),
+        model_name=(
+            effective_chat_model(script)
+            if callable(effective_chat_model)
+            else get_selected_model(CHAT)
+        ),
+        source_route=source_route,
+        source_context=source_context,
+    )
+    activity.__enter__()
 
     def event_stream():
-        for event_type, data in pipeline.refine_batch_generator(script_id):
-            yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        finalized = False
+        try:
+            for event_type, data in pipeline.refine_batch_generator(script_id):
+                yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                if event_type == "batch_complete":
+                    failed = int(data.get("failed") or 0)
+                    if failed:
+                        error = RuntimeError("One or more storyboard refinements failed")
+                        activity.__exit__(RuntimeError, error, None)
+                    else:
+                        activity.__exit__(None, None, None)
+                    finalized = True
+        except BaseException as exc:
+            if not finalized:
+                activity.__exit__(type(exc), exc, exc.__traceback__)
+                finalized = True
+            raise
+        finally:
+            if not finalized:
+                error = RuntimeError("Storyboard refinement stream ended before completion")
+                activity.__exit__(RuntimeError, error, None)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -5400,7 +5686,7 @@ class CreateVideoTaskRequest(BaseModel):
     @classmethod
     def validate_generation_mode(cls, value):
         if value not in {"t2v", "i2v"}:
-            raise ValueError("New API video generation supports only t2v and i2v")
+            raise ValueError("Video generation supports only text-to-video and image-to-video")
         return value
 
     @field_validator("prompt")
@@ -7086,8 +7372,8 @@ async def analyze_script_for_styles(script_id: str, request: AnalyzeStyleRequest
     """Analyze script content and recommend visual styles using LLM"""
     try:
         # Get the script to ensure it exists
-        script = pipeline.get_script(script_id)
-        if not script:
+        script, source_route, source_context = _project_text_activity_metadata(script_id)
+        if script is None:
             raise HTTPException(status_code=404, detail="Script not found")
 
         # Use LLM to analyze and recommend styles without blocking the event loop.
@@ -7095,12 +7381,20 @@ async def analyze_script_for_styles(script_id: str, request: AnalyzeStyleRequest
             "style_analysis",
             script,
         )
-        recommendations = await asyncio.to_thread(
-            pipeline.script_processor.analyze_script_for_styles,
-            request.script_text,
-            custom_style,
-            pipeline._effective_chat_model(script),
-        )
+        chat_model = pipeline._effective_chat_model(script)
+        with _HybridTextActivity(
+            detail="分析视觉风格",
+            prompt=request.script_text,
+            model_name=chat_model,
+            source_route=source_route,
+            source_context=source_context,
+        ):
+            recommendations = await asyncio.to_thread(
+                pipeline.script_processor.analyze_script_for_styles,
+                request.script_text,
+                custom_style,
+                chat_model,
+            )
 
         return {"recommendations": recommendations}
     except StyleAnalysisError as e:
@@ -7318,16 +7612,35 @@ def polish_video_prompt(request: PolishVideoPromptRequest):
         custom_prompt = _get_custom_prompt(request.script_id, "video_polish")
         # Polish model: request override → project/series PromptConfig → ""
         polish_model = request.polish_model or _get_polish_model_for_project(request.script_id)
-        processor = ScriptProcessor()
-        result = processor.polish_video_prompt(
-            request.draft_prompt,
-            request.feedback,
-            custom_prompt,
-            request.prev_cn,
-            image_urls=request.image_urls or None,
-            polish_model=polish_model,
-            output_root=current_output_root(),
-        )
+        source_route = "#/playground"
+        source_context: dict[str, Any] = {}
+        if request.script_id:
+            _, source_route, source_context = _project_text_activity_metadata(request.script_id)
+        activity_prompt = request.draft_prompt
+        if request.prev_cn.strip():
+            activity_prompt = (
+                f"中文提示词：\n{request.prev_cn.strip()}\n\n"
+                f"英文提示词：\n{request.draft_prompt}"
+            )
+        if request.feedback.strip():
+            activity_prompt += f"\n\n用户修改要求：\n{request.feedback.strip()}"
+        with _HybridTextActivity(
+            detail="优化视频提示词",
+            prompt=activity_prompt,
+            model_name=polish_model,
+            source_route=source_route,
+            source_context=source_context,
+        ):
+            processor = ScriptProcessor()
+            result = processor.polish_video_prompt(
+                request.draft_prompt,
+                request.feedback,
+                custom_prompt,
+                request.prev_cn,
+                image_urls=request.image_urls or None,
+                polish_model=polish_model,
+                output_root=current_output_root(),
+            )
         response = {
             "prompt_cn": result.get("prompt_cn", ""),
             "prompt_en": result.get("prompt_en", ""),

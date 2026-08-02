@@ -141,12 +141,14 @@ export default function GroupedModelGrid({
             {groups.map((group) => (
                 <div key={group.family}>
                     {/* Section header */}
-                    <div className="flex items-center gap-2 mb-2">
-                        <span className="text-[0.6875rem] font-medium uppercase tracking-wider text-text-muted">
-                            {group.family === 'New API' ? tm('familyNewApi') : group.displayName}
-                        </span>
-                        <div className="flex-1 h-px bg-glass-border" />
-                    </div>
+                    {groups.length > 1 && group.family !== '_ungrouped' ? (
+                        <div className="mb-2 flex items-center gap-2">
+                            <span className="text-[0.6875rem] font-medium uppercase tracking-wider text-text-muted">
+                                {group.displayName}
+                            </span>
+                            <div className="h-px flex-1 bg-glass-border" />
+                        </div>
+                    ) : null}
 
                     {/* Model cards */}
                     <div className={`grid ${gridCols} gap-2`}>

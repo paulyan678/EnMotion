@@ -77,7 +77,10 @@ describe("SettingsPage categories", () => {
     expect(screen.queryByRole("tab", { name: "默认提示词" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "接口密钥" }));
-    expect(screen.getByRole("heading", { name: "模型接口管理" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "模型访问权限" })).toBeInTheDocument();
+    expect(screen.queryByText("当前聊天模型")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前图像模型")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前视频模型")).not.toBeInTheDocument();
     expect(screen.queryByText("供应商模型标识符")).not.toBeInTheDocument();
     expect(screen.queryByText("gpt-image-2")).not.toBeInTheDocument();
   });

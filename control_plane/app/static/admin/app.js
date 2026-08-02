@@ -421,6 +421,9 @@ function renderProviderConfig(config) {
   const configuredCount = config.models.filter((item) => item.configured).length;
   $("#provider-version").textContent = String(config.version);
   $("#provider-configured-count").textContent = String(configuredCount);
+  $("#provider-last-check").textContent = config.updated_at
+    ? `保存时已验证 · ${new Date(config.updated_at).toLocaleString("zh-CN")}`
+    : "尚未检查";
   const source = $("#provider-source");
   source.textContent = config.source === "managed" ? "服务器受管理配置" : "环境变量配置";
   source.classList.toggle("off", configuredCount === 0);
@@ -463,6 +466,7 @@ function renderProviderConfig(config) {
   warning.classList.toggle("hidden", config.writable);
   $("#provider-config-form").querySelectorAll("input, button").forEach((field) => {
     if (field.matches("[data-provider-remove][disabled]")) return;
+    if (field.matches("[data-provider-access-check]")) return;
     field.disabled = !config.writable;
   });
 }
@@ -636,6 +640,35 @@ $("#provider-config-form").addEventListener("submit", async (event) => {
     showNotice("共享 API 配置已验证并更新，新请求将立即使用新配置");
   } catch (error) { showNotice(error.message, true); }
   finally { endFormSubmit(form); }
+});
+
+$("#provider-check-access").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  const previous = button.textContent;
+  button.textContent = "正在检查…";
+  try {
+    const result = await api("/admin/provider-config/validate", {
+      method: "POST",
+      body: "{}",
+    });
+    $("#provider-last-check").textContent = new Date(result.validated_at).toLocaleString("zh-CN");
+    const accessible = new Set(result.configured_models);
+    $("#provider-credential-fields").querySelectorAll("[data-provider-model]").forEach((row) => {
+      const status = row.querySelector(".status");
+      if (accessible.has(row.dataset.providerModel)) {
+        status.textContent = "访问已确认";
+        status.classList.remove("off");
+      }
+    });
+    showNotice(`模型访问检查通过：${result.configured_models.length} 个已配置模型可用`);
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    button.textContent = previous;
+    button.disabled = false;
+  }
 });
 
 $("#rate-form").addEventListener("submit", async (event) => {

@@ -746,6 +746,27 @@ class TestNewAPIImageModel:
 
 
 class TestNewAPIVideoModel:
+    @pytest.mark.parametrize(
+        ("parameter", "value", "message"),
+        [
+            ("seed", True, "随机种子必须是整数"),
+            ("seed", "7", "随机种子必须是整数"),
+            ("generate_audio", "false", "音频设置必须是布尔值"),
+            ("watermark", 1, "水印设置必须是布尔值"),
+        ],
+    )
+    def test_rejects_loose_video_parameter_types_before_network(
+        self, tmp_path, parameter, value, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            NewAPIVideoModel({}).generate(
+                "a fictional skyline at dawn",
+                str(tmp_path / "invalid.mp4"),
+                model_id="doubao-seedance-2-0-fast-260128",
+                generation_mode="t2v",
+                **{parameter: value},
+            )
+
     def test_http_safety_rejection_has_safe_message_and_bounded_diagnostics(
         self, monkeypatch, tmp_path
     ):

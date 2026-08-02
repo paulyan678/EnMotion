@@ -41,7 +41,7 @@ class VideoGenerator:
         selected_model = model_id or get_selected_model(VIDEO)
         get_model_spec(selected_model, VIDEO)
         if audio_url:
-            raise ValueError("New API Seedance does not support driving-audio input")
+            raise ValueError("The selected Seedance model does not support driving-audio input")
 
         logger.info(f"Generating I2V motion reference: prompt={prompt[:50]}..., duration={duration}")
 

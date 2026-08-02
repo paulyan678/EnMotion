@@ -298,6 +298,80 @@ def record_video_activity(
     return row
 
 
+def record_text_activity(
+    workspace_id: str,
+    *,
+    task_id: str,
+    source_route: str,
+    detail: str,
+    prompt: str | None,
+    model_name: str | None,
+    source_context: dict[str, Any] | None = None,
+    parameters: dict[str, str | int | bool] | None = None,
+) -> dict[str, Any]:
+    """Insert a queued chat lifecycle for the managed desktop dashboard.
+
+    Text generation is synchronous in the local desktop, but it is still a
+    provider request and must be visible in the same durable activity history
+    as image and video work.  Callers advance this row to ``running`` before
+    invoking the provider and then to a terminal state with
+    :func:`update_asset_activity`.
+    """
+
+    path = _activity_path(workspace_id)
+    timestamp = _now()
+    context = {
+        "type": "workspace",
+        "route": source_route,
+        **dict(source_context or {}),
+    }
+    row: dict[str, Any] = {
+        "id": f"hybrid:{task_id}",
+        "task_id": task_id,
+        "type": "chat.completions",
+        "status": "queued",
+        "category": "text",
+        "source": "workspace",
+        "progress": 0,
+        "progress_stage": "queued",
+        "progress_is_estimated": False,
+        "progress_steps": [
+            {
+                "id": "queued",
+                "state": "active",
+                "started_at": timestamp,
+                "finished_at": None,
+            }
+        ],
+        "error": None,
+        "detail": _compact(detail, limit=240),
+        "prompt": _compact(prompt, limit=4_000) or None,
+        "model_name": _compact(model_name, limit=120) or None,
+        "parameters": {
+            str(key): value
+            for key, value in dict(parameters or {}).items()
+            if isinstance(value, (str, int, bool))
+        },
+        "source_context": context,
+        "input_media": [],
+        "compiled_request": None,
+        "outputs": [],
+        "attempts": 1,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "started_at": None,
+        "finished_at": None,
+        "managed_read_only": True,
+        "activity_kind": "generation",
+        "billing_status": None,
+        "_process_id": _PROCESS_ID,
+    }
+    with _lock_for(path):
+        rows = [candidate for candidate in _read(path) if candidate.get("task_id") != task_id]
+        _write(path, [row, *rows])
+    return row
+
+
 def update_asset_activity(
     workspace_id: str,
     task_id: str,

@@ -121,6 +121,55 @@ def test_hybrid_video_activity_persists_input_parameters_and_output(
     assert row["outputs"][0]["media_path"] == "video/video-task-1.mp4"
 
 
+def test_hybrid_text_activity_persists_model_prompt_and_terminal_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("ENMOTION_WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    activity.record_text_activity(
+        "workspace-alice",
+        task_id="text-task-1",
+        source_route="#/series/series-1/episode/project-1",
+        detail="优化视频提示词",
+        prompt="让镜头缓慢推近雨中的霓虹招牌",
+        model_name="deepseek-v4-pro",
+        source_context={
+            "project_id": "project-1",
+            "episode_id": "project-1",
+            "series_id": "series-1",
+            "frame_id": "frame-1",
+        },
+    )
+    activity.update_asset_activity(
+        "workspace-alice",
+        "text-task-1",
+        status="running",
+    )
+    activity.update_asset_activity(
+        "workspace-alice",
+        "text-task-1",
+        status="completed",
+    )
+
+    row = activity.list_activity("workspace-alice")[0]
+    assert row["type"] == "chat.completions"
+    assert row["category"] == "text"
+    assert row["source"] == "workspace"
+    assert row["status"] == "completed"
+    assert row["detail"] == "优化视频提示词"
+    assert row["prompt"] == "让镜头缓慢推近雨中的霓虹招牌"
+    assert row["model_name"] == "deepseek-v4-pro"
+    assert row["source_context"] == {
+        "type": "workspace",
+        "route": "#/series/series-1/episode/project-1",
+        "project_id": "project-1",
+        "episode_id": "project-1",
+        "series_id": "series-1",
+        "frame_id": "frame-1",
+    }
+    assert row["finished_at"]
+
+
 def test_hybrid_storyboard_activity_identifies_frame_and_input(
     monkeypatch,
     tmp_path,
